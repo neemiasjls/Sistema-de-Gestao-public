@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover: no iPhone instalado o site usa a tela toda; as bordas
+         seguras (env(safe-area-inset-*)) ficam por conta do layout (UI-20) -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="Gestão operacional da TRX Transportes" />
+    <!-- Cor da barra do navegador no celular: a da barra de cima do site, por tema
+         (src/utils/tema.ts troca na hora; o script abaixo acerta antes de desenhar) -->
+    <meta name="theme-color" content="#ffffff" />
+    <link rel="icon" href="/icone.svg" type="image/svg+xml" />
+    <link rel="icon" href="/icone-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="TRX" />
+    <!-- App instalável (F-03, UI-20): manifest + service worker (src/pwa) -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <!-- "default": no iPhone instalado a barra de status fica separada do site
+         (com "black-translucent" o topo do site ficaria embaixo do relógio) -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet" />
+    <title>TRX Transportes</title>
+    <script>
+      // Aplica o tema antes de desenhar a página, para não piscar branco.
+      // A mesma lógica de src/utils/tema.ts: mexeu lá, mexa aqui.
+      try {
+        var t = localStorage.getItem('trx_tema');
+        var tom = localStorage.getItem('trx_tom');
+        if (t === 'escuro' || (t !== 'claro' && matchMedia('(prefers-color-scheme: dark)').matches)) {
+          var raiz = document.documentElement;
+          raiz.classList.add('dark');
+          var barra = { preto: '#0e0f10', medio: '#1e1f21', grafite: '#2c2f33' }[tom];
+          if (barra) raiz.classList.add('tema-' + tom);
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', barra || '#161e27');
+        }
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

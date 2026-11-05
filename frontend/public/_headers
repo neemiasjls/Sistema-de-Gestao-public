@@ -1,0 +1,7 @@
+# Regras de cabeçalho do Cloudflare Pages (F-03, UI-20).
+# O service worker e o manifest nunca podem ficar presos em cópia velha:
+# é por eles que o app instalado descobre a versão nova.
+/sw.js
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache

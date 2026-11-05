@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="ClosedXML" Version="0.102.2" />
+    <PackageReference Include="ExcelDataReader" Version="3.7.0" />
+    <PackageReference Include="PdfPig" Version="0.1.9" />
+    <PackageReference Include="Microsoft.Extensions.Identity.Core" Version="8.0.0" />
+    <PackageReference Include="SkiaSharp" Version="2.88.8" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="2.88.8" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.5.0" />
+    <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="7.5.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Templates\*.xlsx" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\TransportadoraSystem.Core\TransportadoraSystem.Core.csproj" />
+    <ProjectReference Include="..\TransportadoraSystem.Infrastructure\TransportadoraSystem.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

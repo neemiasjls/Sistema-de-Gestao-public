@@ -1,0 +1,45 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.log
+
+# Segredos — NUNCA commitar estes arquivos
+.env
+appsettings.Development.json
+appsettings.Production.json
+appsettings.Staging.json
+*.pfx
+*.p12
+secrets.json
+
+# Exemplo seguro (pode commitar)
+!.env.example
+!appsettings.json
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# PostgreSQL dumps
+*.dump
+*.sql.gz
+
+# Saídas geradas com dados reais — nunca subir
+ctes_extraidos.xlsx
+planilhas_por_placa/
+backup-banco.sql
+Sistema-de-Gestao.zip
+Sistema-de-Gestao.rar
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Worktrees e configuracoes locais continuam especificos deste computador.
+**/settings.local.json
+.idea/
+*.tsbuildinfo

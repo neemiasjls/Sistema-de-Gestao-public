@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#ffffff" />
+  <meta name="robots" content="noindex" />
+  <link rel="icon" href="/icone.svg" type="image/svg+xml" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <title>Arquivos recebidos · TRX Transportes</title>
+  <!--
+    Arquivos recebidos pelo "Compartilhar" do celular (F-05, UI-20).
+    O service worker (pwa/sw.js) recebe o POST do share_target, guarda os
+    arquivos no IndexedDB "trx-compartilhados" e abre esta página. Página solta
+    (fora do React) para não mexer nas rotas do App.tsx.
+    PRÓXIMO PASSO: as telas lerem "?compartilhados=1" (src/pwa/compartilhados.ts);
+    quando isso estiver ligado, trocar TELAS_LIGADAS para true.
+  -->
+  <style>
+    :root { --fundo: #f4f6f8; --cartao: #ffffff; --texto: #161d25; --fraco: #525e6b; --borda: #dce2e8;
+            --primario: #213a52; --primario-texto: #ffffff; --aviso: #fff8e5; --aviso-borda: #fbcf55; --erro: #b42318; }
+    :root.dark { --fundo: #0e141a; --cartao: #161e27; --texto: #f1f4f6; --fraco: #b6c0ca; --borda: #2a3541;
+                 --primario: #93a9bf; --primario-texto: #0b1520; --aviso: #2a2310; --aviso-borda: #7a4d0f; --erro: #ff8a80; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--fundo); color: var(--texto); font: 16px/1.45 Barlow, system-ui, -apple-system, sans-serif;
+           padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+    main { max-width: 560px; margin: 0 auto; }
+    h1 { font-size: 1.35rem; margin: 8px 0 4px; }
+    h2 { font-size: 1rem; margin: 24px 0 8px; }
+    p { margin: 4px 0; }
+    .fraco { color: var(--fraco); font-size: .9rem; }
+    ul { list-style: none; padding: 0; margin: 12px 0 0; }
+    li { display: flex; align-items: center; gap: 8px; background: var(--cartao); border: 1px solid var(--borda); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+    li .nome { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    a, button { font: inherit; }
+    .botao { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 16px; border-radius: 8px;
+             border: 1px solid var(--borda); background: var(--cartao); color: var(--texto); text-decoration: none; cursor: pointer; }
+    .botao.primario { background: var(--primario); color: var(--primario-texto); border-color: var(--primario); font-weight: 600; }
+    .botao:focus-visible { outline: 2px solid var(--primario); outline-offset: 2px; }
+    .destinos { display: grid; grid-template-columns: 1fr; gap: 8px; }
+    @media (min-width: 480px) { .destinos { grid-template-columns: 1fr 1fr; } }
+    .aviso { background: var(--aviso); border: 1px solid var(--aviso-borda); border-radius: 10px; padding: 10px 12px; margin-top: 16px; font-size: .95rem; }
+    .erro { color: var(--erro); font-weight: 600; }
+    .rodape { margin-top: 24px; }
+  </style>
+  <script>
+    // Mesmo tema do sistema (index.html / src/utils/tema.ts)
+    try {
+      var t = localStorage.getItem('trx_tema');
+      if (t === 'escuro' || (t !== 'claro' && matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+        document.querySelector('meta[name="theme-color"]').setAttribute('content', '#161e27');
+      }
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  <main>
+    <h1>Arquivos recebidos</h1>
+    <p id="resumo" class="fraco" role="status">Procurando os arquivos...</p>
+    <ul id="lista"></ul>
+
+    <section id="secao-destinos" hidden>
+      <h2>Para qual tela vão?</h2>
+      <div class="destinos">
+        <a class="botao primario" href="/abastecimentos?compartilhados=1">Abastecimentos</a>
+        <a class="botao primario" href="/boletos?compartilhados=1">Boletos</a>
+        <a class="botao primario" href="/acerto-alfa?compartilhados=1">Acerto Alfa</a>
+        <a class="botao primario" href="/frete?compartilhados=1">Viagens (notas)</a>
+      </div>
+      <p id="aviso-ligacao" class="aviso" hidden>
+        A tela ainda não puxa estes arquivos sozinha. Por enquanto, abra a tela e escolha o arquivo pelo botão
+        "Escolher arquivos". Eles ficam guardados aqui por 7 dias.
+      </p>
+    </section>
+
+    <p class="rodape"><a class="botao" href="/">Voltar ao sistema</a></p>
+  </main>
+
+  <script>
+    var TELAS_LIGADAS = false;
+    var BANCO = 'trx-compartilhados', LOJA = 'arquivos';
+    var params = new URLSearchParams(location.search);
+    var resumo = document.getElementById('resumo');
+    var lista = document.getElementById('lista');
+
+    function abrirBanco() {
+      return new Promise(function (ok, falha) {
+        var pedido = indexedDB.open(BANCO, 1);
+        pedido.onupgradeneeded = function () {
+          var db = pedido.result;
+          if (!db.objectStoreNames.contains(LOJA)) db.createObjectStore(LOJA, { keyPath: 'id', autoIncrement: true });
+        };
+        pedido.onsuccess = function () { ok(pedido.result); };
+        pedido.onerror = function () { falha(pedido.error); };
+      });
+    }
+
+    function tamanho(bytes) {
+      if (bytes < 1024) return bytes + ' bytes';
+      if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' kB';
+      return (bytes / 1024 / 1024).toFixed(1).replace('.', ',') + ' MB';
+    }
+
+    function tirar(id) {
+      abrirBanco().then(function (db) {
+        var tx = db.transaction(LOJA, 'readwrite');
+        tx.objectStore(LOJA).delete(id);
+        tx.oncomplete = function () { db.close(); mostrar(); };
+      });
+    }
+
+    function mostrar() {
+      abrirBanco().then(function (db) {
+        var pedido = db.transaction(LOJA).objectStore(LOJA).getAll();
+        pedido.onsuccess = function () {
+          var itens = pedido.result || [];
+          db.close();
+          lista.textContent = '';
+          itens.sort(function (a, b) { return b.recebidoEm - a.recebidoEm; });
+          itens.forEach(function (i) {
+            var li = document.createElement('li');
+            var nome = document.createElement('span');
+            nome.className = 'nome';
+            nome.textContent = i.nome + ' (' + tamanho(i.tamanho) + ')';
+            var abrir = document.createElement('a');
+            abrir.className = 'botao';
+            abrir.textContent = 'Abrir';
+            abrir.href = URL.createObjectURL(i.arquivo);
+            abrir.target = '_blank';
+            abrir.rel = 'noopener';
+            var botaoTirar = document.createElement('button');
+            botaoTirar.type = 'button';
+            botaoTirar.className = 'botao';
+            botaoTirar.textContent = 'Tirar';
+            botaoTirar.setAttribute('aria-label', 'Tirar ' + i.nome);
+            botaoTirar.onclick = function () { tirar(i.id); };
+            li.append(nome, abrir, botaoTirar);
+            lista.appendChild(li);
+          });
+          var erro = params.has('erro');
+          var recebidos = Number(params.get('recebidos') || '0');
+          if (erro) {
+            resumo.className = 'erro';
+            resumo.textContent = 'Não deu para receber os arquivos. Tente compartilhar de novo.';
+          } else if (!itens.length) {
+            resumo.className = 'fraco';
+            resumo.textContent = recebidos === 0 && params.has('recebidos')
+              ? 'Nenhum PDF ou XML veio no compartilhamento.'
+              : 'Nada guardado. Compartilhe um PDF ou XML pelo celular escolhendo "TRX".';
+          } else {
+            resumo.className = 'fraco';
+            resumo.textContent = itens.length === 1 ? '1 arquivo guardado neste aparelho.' : itens.length + ' arquivos guardados neste aparelho.';
+          }
+          document.getElementById('secao-destinos').hidden = !itens.length;
+          document.getElementById('aviso-ligacao').hidden = TELAS_LIGADAS;
+        };
+      }).catch(function () {
+        resumo.className = 'erro';
+        resumo.textContent = 'Este navegador não deixou guardar os arquivos.';
+      });
+    }
+
+    mostrar();
+  </script>
+</body>
+</html>

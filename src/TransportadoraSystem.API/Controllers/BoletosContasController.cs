@@ -1,0 +1,499 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using TransportadoraSystem.Application.Services;
+using TransportadoraSystem.Core.Entities;
+using TransportadoraSystem.Infrastructure.Data;
+
+namespace TransportadoraSystem.API.Controllers;
+
+/// <summary>
+/// A tela Boletos em duas abas. "A pagar": os boletos dos postos (os mesmos da
+/// tela Abastecimentos, tabela BoletosPosto) mais os avulsos subidos aqui.
+/// "A receber": os boletos que a transportadora emite para os clientes — o das
+/// produtosD da CD e o do frete da Girassol —, no formato da planilha de controle
+/// de cada um (data da carga, caminhão, número, valor, vencimento, recebido).
+/// </summary>
+[Authorize]
+[ApiController]
+[Route("api/boletos-contas")]
+public class BoletosContasController(AppDbContext db, ILogger<BoletosContasController> logger) : ControllerBase
+{
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+
+    // O dia no Brasil: o servidor roda em UTC e à noite já seria amanhã
+    private static DateOnly Hoje() => DateOnly.FromDateTime(DateTime.UtcNow.AddHours(-3));
+
+    private static bool Data(string? s, out DateOnly? data)
+    {
+        data = null;
+        if (string.IsNullOrWhiteSpace(s)) return true;
+        if (!DateOnly.TryParseExact(s.Trim(), ["yyyy-MM-dd", "dd/MM/yyyy"], CultureInfo.InvariantCulture, DateTimeStyles.None, out var d))
+            return false;
+        if (d.Year is < 2000 or > 2100) return false;
+        data = d;
+        return true;
+    }
+
+    private static List<string> Lista(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try { return JsonSerializer.Deserialize<List<string>>(json, Json) ?? []; }
+        catch (JsonException) { return []; }
+    }
+
+    private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
+
+    private static async Task<List<(string Nome, byte[] Bytes)>> LerArquivos(IFormFileCollection arquivos)
+    {
+        var lista = new List<(string, byte[])>();
+        foreach (var arq in arquivos)
+        {
+            using var ms = new MemoryStream();
+            await arq.CopyToAsync(ms);
+            lista.Add((Path.GetFileName(arq.FileName), ms.ToArray()));
+        }
+        return lista;
+    }
+
+    private static string NomeOuPadrao(string nome, string padrao) => string.IsNullOrWhiteSpace(nome) ? padrao : nome;
+
+    // ═════════════════════════ A pagar ═════════════════════════
+
+    // Postos e avulsos juntos, numa lista só. O filtro (em aberto / pagos) é da tela.
+    [HttpGet("pagar")]
+    public async Task<IActionResult> ListarAPagar()
+    {
+        var hoje = Hoje();
+        var postos = await db.BoletosPosto.AsNoTracking()
+            .Select(b => new
+            {
+                b.Id, b.Posto, b.NumeroDocumento, b.NossoNumero, b.Valor, b.Vencimento, b.DataChegada, b.PagoEm,
+                b.LidoDoPdf, b.AvisosJson, b.NomeArquivo, TemPdf = b.Pdf != null,
+                Fatura = b.Fatura != null ? b.Fatura.Numero : null,
+            })
+            .ToListAsync();
+        var avulsos = await db.BoletosPagarAvulsos.AsNoTracking()
+            .Select(b => new
+            {
+                b.Id, b.Descricao, b.Beneficiario, b.Numero, b.Valor, b.Vencimento, b.DataChegada, b.PagoEm,
+                b.LidoDoPdf, b.AvisosJson, b.NomeArquivo, TemPdf = b.Pdf != null,
+            })
+            .ToListAsync();
+
+        var boletos = postos.Select(b => new BoletoAPagar(
+                "POSTO", b.Id, b.Posto, b.Fatura != null ? $"Fatura {b.Fatura}" : "Posto de combustível",
+                b.NumeroDocumento != "" ? b.NumeroDocumento : b.NossoNumero, b.Valor, b.Vencimento, b.DataChegada, b.PagoEm,
+                b.LidoDoPdf, Lista(b.AvisosJson), b.NomeArquivo, b.TemPdf))
+            .Concat(avulsos.Select(b => new BoletoAPagar(
+                "AVULSO", b.Id, b.Beneficiario, b.Descricao, b.Numero, b.Valor, b.Vencimento, b.DataChegada, b.PagoEm,
+                b.LidoDoPdf, Lista(b.AvisosJson), b.NomeArquivo, b.TemPdf)))
+            .OrderBy(b => b.PagoEm != null)
+            .ThenBy(b => b.Vencimento ?? DateOnly.MaxValue)
+            .ThenByDescending(b => b.DataChegada)
+            .ToList();
+
+        var abertos = boletos.Where(b => b.PagoEm == null).ToList();
+        var vencidos = abertos.Where(b => b.Vencimento < hoje).ToList();
+        var aVencer = abertos.Where(b => b.Vencimento == null || b.Vencimento >= hoje).ToList();
+        return Ok(new
+        {
+            Hoje = hoje,
+            Resumo = new
+            {
+                Abertos = abertos.Count,
+                TotalAberto = abertos.Sum(b => b.Valor ?? 0),
+                TotalAVencer = aVencer.Sum(b => b.Valor ?? 0),
+                Vencidos = vencidos.Count,
+                TotalVencido = vencidos.Sum(b => b.Valor ?? 0),
+                SemValor = abertos.Count(b => b.Valor == null),
+                VencemEm7Dias = abertos.Where(b => b.Vencimento >= hoje && b.Vencimento <= hoje.AddDays(7)).Sum(b => b.Valor ?? 0),
+            },
+            Boletos = boletos,
+        });
+    }
+
+    public record BoletoAPagar(string Origem, int Id, string Beneficiario, string Descricao, string Numero, decimal? Valor,
+        DateOnly? Vencimento, DateOnly DataChegada, DateOnly? PagoEm, bool LidoDoPdf, List<string> Avisos,
+        string NomeArquivo, bool TemPdf);
+
+    public record PagoPedido(string? PagoEm);
+
+    // Marcar (ou desmarcar, com data vazia) o pagamento do boleto de posto. Só
+    // a data do pagamento: o resto do boleto do posto se edita na tela Abastecimentos.
+    [HttpPut("pagar/posto/{id:int}/pago")]
+    public async Task<IActionResult> PagarPosto(int id, [FromBody] PagoPedido req)
+    {
+        if (!Data(req.PagoEm, out var pagoEm)) return BadRequest(new { erro = "Data do pagamento inválida." });
+        var n = await db.BoletosPosto.Where(b => b.Id == id)
+            .ExecuteUpdateAsync(s => s.SetProperty(b => b.PagoEm, pagoEm).SetProperty(b => b.AtualizadoEm, DateTime.UtcNow));
+        if (n == 0) return NotFound(new { erro = "Boleto não encontrado." });
+        return NoContent();
+    }
+
+    [HttpPut("pagar/avulsos/{id:int}/pago")]
+    public async Task<IActionResult> PagarAvulso(int id, [FromBody] PagoPedido req)
+    {
+        if (!Data(req.PagoEm, out var pagoEm)) return BadRequest(new { erro = "Data do pagamento inválida." });
+        var n = await db.BoletosPagarAvulsos.Where(b => b.Id == id)
+            .ExecuteUpdateAsync(s => s.SetProperty(b => b.PagoEm, pagoEm).SetProperty(b => b.AtualizadoEm, DateTime.UtcNow));
+        if (n == 0) return NotFound(new { erro = "Boleto não encontrado." });
+        return NoContent();
+    }
+
+    // Boletos avulsos em PDF: cada um é lido (beneficiário, número, valor,
+    // vencimento); o que não der para ler fica guardado para digitar. O mesmo
+    // PDF subido de novo fica de fora.
+    [HttpPost("pagar/avulsos")]
+    [RequestSizeLimit(60_000_000)]
+    public async Task<IActionResult> ImportarAvulsos(IFormFileCollection arquivos, [FromForm] string? descricao,
+        [FromServices] BoletoReceberImportacao importacao)
+    {
+        if (arquivos == null || arquivos.Count == 0)
+            return BadRequest(new { erro = "Envie os PDFs dos boletos." });
+
+        var avisos = new List<string>();
+        var novos = new List<BoletoPagarAvulso>();
+        var hoje = Hoje();
+        var agora = DateTime.UtcNow;
+        // Boleto emitido pela TRX (CD, Girassol) solto aqui vai para A receber, como no Acerto
+        // e nos E-mails: o sistema reconhece pelo beneficiário (Admin, 06/10/2026)
+        var daTransportadora = new List<(string Nome, byte[] Bytes)>();
+        foreach (var (nome, bytes) in await LerArquivos(arquivos))
+        {
+            if (!nome.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) { avisos.Add($"{nome}: não é PDF (ficou de fora)."); continue; }
+            if (BoletoReceberLeitor.EmitidoPelaTransportadora(bytes)) { daTransportadora.Add((nome, bytes)); continue; }
+            var hash = Hash(bytes);
+            if (novos.Any(b => b.Hash == hash) || await db.BoletosPagarAvulsos.AnyAsync(b => b.Hash == hash))
+            { avisos.Add($"{nome}: esse boleto já estava guardado e ficou de fora."); continue; }
+
+            var lido = CobrancaAbastecimentoService.Ler(bytes, nome).Boleto;
+            var avisosBoleto = lido?.Avisos ?? [$"{nome}: não reconheci como boleto; preencha os dados à mão."];
+            avisos.AddRange(avisosBoleto);
+            var b = new BoletoPagarAvulso
+            {
+                Descricao = (descricao ?? "").Trim(),
+                Beneficiario = lido?.Posto ?? "",
+                Numero = lido == null ? "" : lido.NumeroDocumento != "" ? lido.NumeroDocumento : lido.NossoNumero,
+                Valor = lido?.Valor is double v ? Math.Round((decimal)v, 2) : null,
+                Vencimento = lido?.Vencimento,
+                DataChegada = hoje,
+                LidoDoPdf = lido?.Lido ?? false,
+                AvisosJson = JsonSerializer.Serialize(avisosBoleto, Json),
+                NomeArquivo = nome,
+                Pdf = bytes,
+                Hash = hash,
+                CriadoEm = agora,
+                AtualizadoEm = agora,
+            };
+            db.BoletosPagarAvulsos.Add(b);
+            novos.Add(b);
+        }
+
+        var aReceber = daTransportadora.Count > 0 ? await importacao.Importar(daTransportadora) : null;
+        if (aReceber != null)
+        {
+            foreach (var i in aReceber.Itens)
+            {
+                if (i.Boleto != null && i.Situacao != "REPETIDO")
+                    avisos.Add($"{i.Arquivo}: é boleto emitido pela TRX para {BoletoReceberLeitor.RotuloCliente(i.Boleto.Cliente)}; foi para A receber.");
+                else if (i.Situacao == "REPETIDO")
+                    avisos.Add($"{i.Arquivo}: boleto da TRX que já estava em A receber; ficou de fora.");
+                avisos.AddRange(i.Avisos);
+            }
+        }
+
+        try { await db.SaveChangesAsync(); }
+        catch (DbUpdateException ex)
+        {
+            logger.LogError(ex, "Erro ao guardar boletos avulsos a pagar");
+            return Conflict(new { erro = "Não consegui guardar: o mesmo boleto pode ter sido subido ao mesmo tempo. Tente de novo." });
+        }
+        return Ok(new
+        {
+            Boletos = novos.Select(b => new { b.Id, b.Beneficiario, b.Numero, b.Valor, b.Vencimento, b.LidoDoPdf, b.NomeArquivo }),
+            ParaReceber = aReceber?.Guardados.Count ?? 0,
+            Avisos = avisos,
+        });
+    }
+
+    public record AvulsoEdicao(string? Descricao, string? Beneficiario, string? Numero, decimal? Valor,
+        string? Vencimento, string? DataChegada, string? PagoEm);
+
+    // Boleto a pagar sem PDF (ou antes de o PDF chegar)
+    [HttpPost("pagar/avulsos/manual")]
+    public async Task<IActionResult> CriarAvulso([FromBody] AvulsoEdicao req)
+    {
+        var b = new BoletoPagarAvulso { DataChegada = Hoje(), CriadoEm = DateTime.UtcNow };
+        var erro = AplicarAvulso(b, req);
+        if (erro != null) return BadRequest(new { erro });
+        db.BoletosPagarAvulsos.Add(b);
+        await db.SaveChangesAsync();
+        return Ok(new { b.Id });
+    }
+
+    [HttpPut("pagar/avulsos/{id:int}")]
+    public async Task<IActionResult> EditarAvulso(int id, [FromBody] AvulsoEdicao req)
+    {
+        var b = await db.BoletosPagarAvulsos.FirstOrDefaultAsync(x => x.Id == id);
+        if (b == null) return NotFound(new { erro = "Boleto não encontrado." });
+        var erro = AplicarAvulso(b, req);
+        if (erro != null) return BadRequest(new { erro });
+        await db.SaveChangesAsync();
+        return NoContent();
+    }
+
+    private static string? AplicarAvulso(BoletoPagarAvulso b, AvulsoEdicao req)
+    {
+        if (!Data(req.Vencimento, out var venc)) return "Vencimento inválido.";
+        if (!Data(req.PagoEm, out var pago)) return "Data do pagamento inválida.";
+        if (!Data(req.DataChegada, out var chegada)) return "Data de chegada inválida.";
+        if (req.Valor is < 0) return "O valor não pode ser negativo.";
+        var descricao = (req.Descricao ?? "").Trim();
+        var beneficiario = (req.Beneficiario ?? "").Trim();
+        if (descricao == "" && beneficiario == "") return "Informe a descrição ou o beneficiário.";
+
+        b.Descricao = descricao;
+        b.Beneficiario = beneficiario;
+        b.Numero = (req.Numero ?? "").Trim();
+        b.Valor = req.Valor is decimal v ? Math.Round(v, 2) : null;
+        b.Vencimento = venc;
+        if (chegada != null) b.DataChegada = chegada.Value;
+        b.PagoEm = pago;
+        b.AtualizadoEm = DateTime.UtcNow;
+        return null;
+    }
+
+    [HttpGet("pagar/avulsos/{id:int}/pdf")]
+    public async Task<IActionResult> BaixarAvulso(int id)
+    {
+        var b = await db.BoletosPagarAvulsos.AsNoTracking().Where(x => x.Id == id)
+            .Select(x => new { x.NomeArquivo, x.Pdf, x.Numero }).FirstOrDefaultAsync();
+        if (b == null) return NotFound(new { erro = "Boleto não encontrado." });
+        if (b.Pdf == null) return NotFound(new { erro = "Esse boleto não tem PDF guardado." });
+        return File(b.Pdf, "application/pdf", NomeOuPadrao(b.NomeArquivo, $"BOLETO {b.Numero}.pdf".Trim()));
+    }
+
+    [HttpDelete("pagar/avulsos/{id:int}")]
+    public async Task<IActionResult> ExcluirAvulso(int id)
+    {
+        var n = await db.BoletosPagarAvulsos.Where(b => b.Id == id).ExecuteDeleteAsync();
+        if (n == 0) return NotFound(new { erro = "Boleto não encontrado." });
+        return NoContent();
+    }
+
+    // ═════════════════════════ A receber ═════════════════════════
+
+    [HttpGet("receber")]
+    public async Task<IActionResult> ListarAReceber()
+    {
+        var hoje = Hoje();
+        var lista = await db.BoletosReceber.AsNoTracking()
+            .OrderByDescending(b => b.DataCarga).ThenByDescending(b => b.Id)
+            .Select(b => new
+            {
+                b.Id, b.Cliente, b.Sequencia, b.Numero, b.NossoNumero, b.Pagador, b.Placa, b.Valor, b.Vencimento,
+                b.Emissao, b.DataCarga, b.RecebidoEm, b.Observacao, b.LidoDoPdf, b.AvisosJson, b.NomeArquivo,
+                TemPdf = b.Pdf != null, b.CriadoEm,
+            })
+            .ToListAsync();
+
+        var clientes = BoletoReceberLeitor.Clientes.Select(c =>
+        {
+            var doCliente = lista.Where(b => b.Cliente == c).ToList();
+            var abertos = doCliente.Where(b => b.RecebidoEm == null).ToList();
+            var vencidos = abertos.Where(b => b.Vencimento < hoje).ToList();
+            return new
+            {
+                Chave = c,
+                Rotulo = BoletoReceberLeitor.RotuloCliente(c),
+                Quantidade = doCliente.Count,
+                TotalEmitido = doCliente.Sum(b => b.Valor ?? 0),
+                TotalRecebido = doCliente.Where(b => b.RecebidoEm != null).Sum(b => b.Valor ?? 0),
+                Abertos = abertos.Count,
+                TotalAReceber = abertos.Sum(b => b.Valor ?? 0),
+                Vencidos = vencidos.Count,
+                TotalVencido = vencidos.Sum(b => b.Valor ?? 0),
+            };
+        });
+
+        return Ok(new
+        {
+            Hoje = hoje,
+            Clientes = clientes,
+            Boletos = lista.Select(b => new
+            {
+                b.Id, b.Cliente, b.Sequencia, b.Numero, b.NossoNumero, b.Pagador, b.Placa, b.Valor, b.Vencimento,
+                b.Emissao, b.DataCarga, b.RecebidoEm, b.Observacao, b.LidoDoPdf, Avisos = Lista(b.AvisosJson),
+                b.NomeArquivo, b.TemPdf, b.CriadoEm,
+            }),
+        });
+    }
+
+    // Vários PDFs de uma vez. O cliente vem do pagador impresso no boleto; se o
+    // PDF não disser, vale o da aba. O mesmo PDF subido de novo fica de fora;
+    // boleto de mesmo nosso número já lançado sem PDF (vindo da planilha de
+    // controle) ganha o PDF e os dados lidos.
+    // soDaTransportadora (tela E-mails aos clientes, onde se arrasta qualquer PDF):
+    // só entra o boleto emitido pela transportadora. Boleto e romaneio da fazenda
+    // ficam de fora com aviso: eles têm o caminho próprio no Acerto Alfa (ACE-07),
+    // e a fazenda pode ter o mesmo pagador da CD (o pagador sozinho não separa).
+    [HttpPost("receber/importar")]
+    [RequestSizeLimit(60_000_000)]
+    public async Task<IActionResult> ImportarAReceber(IFormFileCollection arquivos, [FromQuery] string? cliente,
+        [FromServices] BoletoReceberImportacao importacao, [FromQuery] bool soDaTransportadora = false,
+        [FromQuery] bool substituir = false)
+    {
+        if (arquivos == null || arquivos.Count == 0)
+            return BadRequest(new { erro = "Envie os PDFs dos boletos." });
+        var clienteAba = (cliente ?? "").Trim().ToUpperInvariant();
+        if (clienteAba != "" && !BoletoReceberLeitor.Clientes.Contains(clienteAba))
+            return BadRequest(new { erro = "Cliente desconhecido." });
+
+        var lidos = await LerArquivos(arquivos);
+        var deFora = new List<(string Nome, string Aviso)>();
+        if (soDaTransportadora)
+        {
+            var dela = new List<(string Nome, byte[] Bytes)>();
+            foreach (var a in lidos)
+            {
+                if (!a.Nome.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+                    deFora.Add((a.Nome, $"{a.Nome}: não é PDF (ficou de fora)."));
+                else if (!BoletoReceberLeitor.EmitidoPelaTransportadora(a.Bytes))
+                    deFora.Add((a.Nome, $"{a.Nome}: não é boleto emitido pela TRX. Boleto e romaneio da fazenda entram pelo Acerto Alfa (ficou de fora)."));
+                else dela.Add(a);
+            }
+            lidos = dela;
+        }
+
+        var r = await importacao.Importar(lidos, clienteAba, substituir);
+
+        try { await db.SaveChangesAsync(); }
+        catch (DbUpdateException ex)
+        {
+            logger.LogError(ex, "Erro ao guardar boletos a receber");
+            return Conflict(new { erro = "Não consegui guardar: o mesmo boleto pode ter sido subido ao mesmo tempo. Tente de novo." });
+        }
+
+        return Ok(new
+        {
+            r.Novos,
+            r.Completados,
+            r.Repetidos,
+            r.Substituidos,
+            Boletos = r.Guardados.Select(b => new
+            {
+                b.Id, b.Cliente, b.Sequencia, b.NossoNumero, b.Placa, b.Valor, b.Vencimento, b.DataCarga, b.NomeArquivo, b.LidoDoPdf,
+            }),
+            Avisos = r.Avisos.Concat(deFora.Select(f => f.Aviso)).ToList(),
+            // Um por arquivo, na ordem: o que foi lido e onde ficou
+            Itens = r.Itens.Select(i => new
+            {
+                i.Arquivo, i.Situacao, i.Pagador,
+                Cliente = i.Boleto?.Cliente, Valor = i.Boleto?.Valor, Vencimento = i.Boleto?.Vencimento,
+                DataCarga = i.Boleto?.DataCarga, Placa = i.Boleto?.Placa, NossoNumero = i.Boleto?.NossoNumero,
+                Numero = i.Boleto?.Numero, Emissao = i.Boleto?.Emissao,
+                i.Avisos,
+                // Repetido: o boleto do PDF subido, para comparar com o guardado (acima)
+                Novo = i.Novo == null ? null : (object)new
+                {
+                    i.Novo.Numero, i.Novo.NossoNumero, i.Novo.Valor, i.Novo.Emissao, i.Novo.Vencimento, i.Novo.DataCarga,
+                },
+            }).Concat(deFora.Select(f => new
+            {
+                Arquivo = f.Nome, Situacao = "RECUSADO", Pagador = (string?)null,
+                Cliente = (string?)null, Valor = (decimal?)null, Vencimento = (DateOnly?)null,
+                DataCarga = (DateOnly?)null, Placa = (string?)null, NossoNumero = (string?)null,
+                Numero = (string?)null, Emissao = (DateOnly?)null,
+                Avisos = new List<string> { f.Aviso },
+                Novo = (object?)null,
+            })),
+        });
+    }
+
+    public record ReceberEdicao(string? Cliente, int? Sequencia, string? Numero, string? NossoNumero, string? Pagador,
+        string? Placa, decimal? Valor, string? Vencimento, string? Emissao, string? DataCarga, string? RecebidoEm, string? Observacao);
+
+    // Boleto lançado à mão (o que ainda não tem PDF, ou o que veio da planilha)
+    [HttpPost("receber/manual")]
+    public async Task<IActionResult> CriarAReceber([FromBody] ReceberEdicao req)
+    {
+        var b = new BoletoReceber { CriadoEm = DateTime.UtcNow };
+        var erro = AplicarReceber(b, req);
+        if (erro != null) return BadRequest(new { erro });
+        db.BoletosReceber.Add(b);
+        await db.SaveChangesAsync();
+        return Ok(new { b.Id });
+    }
+
+    [HttpPut("receber/{id:int}")]
+    public async Task<IActionResult> EditarAReceber(int id, [FromBody] ReceberEdicao req)
+    {
+        var b = await db.BoletosReceber.FirstOrDefaultAsync(x => x.Id == id);
+        if (b == null) return NotFound(new { erro = "Boleto não encontrado." });
+        var erro = AplicarReceber(b, req);
+        if (erro != null) return BadRequest(new { erro });
+        await db.SaveChangesAsync();
+        return NoContent();
+    }
+
+    private static string? AplicarReceber(BoletoReceber b, ReceberEdicao req)
+    {
+        var cliente = (req.Cliente ?? "").Trim().ToUpperInvariant();
+        if (!BoletoReceberLeitor.Clientes.Contains(cliente)) return "Escolha o cliente.";
+        if (!Data(req.Vencimento, out var venc)) return "Vencimento inválido.";
+        if (!Data(req.Emissao, out var emissao)) return "Data de emissão inválida.";
+        if (!Data(req.DataCarga, out var carga)) return "Data da carga inválida.";
+        if (!Data(req.RecebidoEm, out var recebido)) return "Data do recebimento inválida.";
+        if (req.Valor is < 0) return "O valor não pode ser negativo.";
+        if (carga == null) return "Informe a data da carga.";
+
+        b.Cliente = cliente;
+        b.Sequencia = req.Sequencia;
+        b.Numero = (req.Numero ?? "").Trim();
+        b.NossoNumero = (req.NossoNumero ?? "").Trim();
+        b.Pagador = (req.Pagador ?? "").Trim();
+        b.Placa = EmailClienteService.Placa(req.Placa);
+        b.Valor = req.Valor is decimal v ? Math.Round(v, 2) : null;
+        b.Vencimento = venc;
+        b.Emissao = emissao;
+        b.DataCarga = carga;
+        b.RecebidoEm = recebido;
+        b.Observacao = (req.Observacao ?? "").Trim();
+        b.AtualizadoEm = DateTime.UtcNow;
+        return null;
+    }
+
+    public record RecebidoPedido(string? RecebidoEm);
+
+    [HttpPut("receber/{id:int}/recebido")]
+    public async Task<IActionResult> MarcarRecebido(int id, [FromBody] RecebidoPedido req)
+    {
+        if (!Data(req.RecebidoEm, out var recebido)) return BadRequest(new { erro = "Data do recebimento inválida." });
+        var n = await db.BoletosReceber.Where(b => b.Id == id)
+            .ExecuteUpdateAsync(s => s.SetProperty(b => b.RecebidoEm, recebido).SetProperty(b => b.AtualizadoEm, DateTime.UtcNow));
+        if (n == 0) return NotFound(new { erro = "Boleto não encontrado." });
+        return NoContent();
+    }
+
+    [HttpGet("receber/{id:int}/pdf")]
+    public async Task<IActionResult> BaixarAReceber(int id)
+    {
+        var b = await db.BoletosReceber.AsNoTracking().Where(x => x.Id == id)
+            .Select(x => new { x.NomeArquivo, x.Pdf, x.Cliente, x.NossoNumero }).FirstOrDefaultAsync();
+        if (b == null) return NotFound(new { erro = "Boleto não encontrado." });
+        if (b.Pdf == null) return NotFound(new { erro = "Esse boleto não tem PDF guardado." });
+        return File(b.Pdf, "application/pdf", NomeOuPadrao(b.NomeArquivo, $"BOLETO {b.Cliente} {b.NossoNumero}.pdf"));
+    }
+
+    [HttpDelete("receber/{id:int}")]
+    public async Task<IActionResult> ExcluirAReceber(int id)
+    {
+        var n = await db.BoletosReceber.Where(b => b.Id == id).ExecuteDeleteAsync();
+        if (n == 0) return NotFound(new { erro = "Boleto não encontrado." });
+        return NoContent();
+    }
+}

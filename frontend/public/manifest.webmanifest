@@ -1,0 +1,74 @@
+{
+  "id": "/",
+  "name": "TRX Transportes",
+  "short_name": "TRX",
+  "description": "Gestão operacional da TRX Transportes",
+  "lang": "pt-BR",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#ffffff",
+  "background_color": "#f4f6f8",
+  "categories": [
+    "business",
+    "productivity"
+  ],
+  "icons": [
+    {
+      "src": "/icone-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icone-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icone-mascara-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Anotar produtoB",
+      "short_name": "Anotar",
+      "url": "/estoque/volumes/anotar",
+      "icons": [
+        {
+          "src": "/icone-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Abastecimento",
+      "url": "/abastecimentos",
+      "icons": [
+        {
+          "src": "/icone-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Boletos",
+      "url": "/boletos",
+      "icons": [
+        {
+          "src": "/icone-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ]
+}
