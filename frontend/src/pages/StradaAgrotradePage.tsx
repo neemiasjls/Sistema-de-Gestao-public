@@ -56,7 +56,7 @@ function SeletorMes({ ano, mes, andar }: ReturnType<typeof useMes>) {
     <div className="inline-flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-1" role="group" aria-label="Mês">
       <button type="button" onClick={() => andar(-1)} aria-label="Mês anterior"
               className="min-h-10 sm:min-h-8 px-2 rounded-md text-gray-600 hover:bg-gray-100"><ChevronLeft className="w-4 h-4" /></button>
-      <span className="px-2 text-sm font-medium text-gray-900 min-w-36 text-center capitalize" aria-live="polite">{MESES[mes - 1]} de {ano}</span>
+      <span className="px-2 text-sm font-medium text-gray-900 min-w-36 text-center" aria-live="polite">{MESES[mes - 1][0].toUpperCase() + MESES[mes - 1].slice(1)} de {ano}</span>
       <button type="button" onClick={() => andar(1)} aria-label="Próximo mês"
               className="min-h-10 sm:min-h-8 px-2 rounded-md text-gray-600 hover:bg-gray-100"><ChevronRight className="w-4 h-4" /></button>
     </div>
