@@ -10,6 +10,7 @@ import { boletosContasApi } from '../services/boletosContasApi'
 import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
 import { sicoobApi, type BoletoSugerido, type ExtratoSicoob, type LancamentoSicoob } from '../services/sicoobApi'
 import { dataBr } from '../utils/formato'
+import ConferenciaBoletosPagos from './ConferenciaBoletosPagos'
 
 // Aba "Extrato do banco" de Boletos: o que entrou e saiu da conta PJ no Sicoob,
 // lido pela API do banco (só consulta, BOL-10). Entrada de mesmo valor que um
@@ -65,6 +66,7 @@ export default function ExtratoSicoob() {
 
   return (
     <div className="space-y-4">
+      <ConferenciaBoletosPagos mudou={() => carregar(inicio, fim)} />
       <section aria-label="Período" className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
         <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
           <label className="block text-sm">

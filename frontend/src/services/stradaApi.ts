@@ -27,6 +27,9 @@ export interface FaturaResumo {
   taxa: number
   repasse: number
   incompleta: boolean
+  caiuNoBanco: boolean
+  dataCreditoBanco: string | null
+  conferidaSemCredito: boolean
   avisos: string[]
   contratos: number
   pendencias: number
@@ -129,7 +132,18 @@ const enviar = (rota: string, arquivos: File[], modo?: Modo) => {
     .then(r => comDados(r, d => comoLista<ResultadoArquivo>(d, 'resultado da importação')))
 }
 
+export interface ConferenciaBanco {
+  fatura: string
+  dataPagamento: string | null
+  repasse: number
+  situacao: 'caiu' | 'duvida' | 'nao caiu' | 'aguardando'
+  dataCredito: string | null
+  mensagem: string | null
+}
+
 export const stradaApi = {
+  conferirBanco: () => api.post('/api/strada/faturas/conferir-banco')
+    .then(r => comDados(r, d => comoLista<ConferenciaBanco>(d, 'conferência com o banco'))),
   importarBase: (arquivo: File, modo?: Modo) => {
     const fd = new FormData()
     fd.append('arquivo', arquivo)

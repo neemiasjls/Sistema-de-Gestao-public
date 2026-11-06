@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { AlertTriangle, ChevronLeft, ChevronRight, FileText, Inbox, LayoutDashboard, Link2, ListChecks, Search, Truck, Unlink } from 'lucide-react'
+import { AlertTriangle, Landmark, ChevronLeft, ChevronRight, FileText, Inbox, LayoutDashboard, Link2, ListChecks, Search, Truck, Unlink } from 'lucide-react'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
 import { Abas, PainelAba, useAbas } from '../components/ui/Abas'
 import AreaSoltar from '../components/ui/AreaSoltar'
@@ -13,7 +13,7 @@ import { formatBRL } from '../services/api'
 import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
 import {
   stradaApi, type ContratoFatura, type FaturaDetalhe, type FaturaResumo, type Modo, type Painel,
-  type ResultadoArquivo, type ViagemBase, type ViagemResumo,
+  type ResultadoArquivo, type ViagemBase, type ViagemResumo, type ConferenciaBanco,
 } from '../services/stradaApi'
 import { dataBr } from '../utils/formato'
 
@@ -224,9 +224,31 @@ function AbaFaturas({ ano, mes, versao, mudou, abrir }: { ano: number; mes: numb
   }, [ano, mes])
   useEffect(() => { carregar() }, [carregar, versao])
 
+  const [conferindo, setConferindo] = useState(false)
+  const [banco, setBanco] = useState<ConferenciaBanco[] | null>(null)
+  const conferirBanco = async () => {
+    setConferindo(true)
+    try {
+      const { data: r } = await stradaApi.conferirBanco()
+      setBanco(r)
+      const caiu = r.filter(x => x.situacao === 'caiu').length
+      toast.success(r.length === 0 ? 'Nenhuma fatura dos últimos 60 dias para conferir.' : `${caiu} de ${r.length} ${r.length === 1 ? 'fatura conferida' : 'faturas conferidas'} com crédito no banco.`)
+      mudou()
+    } catch (e) { toast.error(await erroApi(e, 'Não consegui conferir com o Sicoob.')) }
+    finally { setConferindo(false) }
+  }
+
   return (
     <div className="space-y-5">
       <Envio mudou={mudou} />
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+        <p className="flex-1 text-sm text-gray-600">O repasse de cada fatura tem de cair na conta do Sicoob (Pix da Strada) até 5 dias depois do pagamento.</p>
+        <Botao icone={Landmark} carregando={conferindo} textoCarregando="Lendo o banco..." onClick={conferirBanco}>Conferir com o banco</Botao>
+      </div>
+      {banco && banco.some(b => b.situacao !== 'caiu') && (
+        <Aviso tipo="atencao" titulo="Faturas para conferir no banco" onFechar={() => setBanco(null)}
+               itens={banco.filter(b => b.situacao !== 'caiu').map(b => `Fatura ${b.fatura}: ${b.mensagem ?? b.situacao}`)} />
+      )}
       {carregando && !faturas ? <Carregando linhas={4} rotulo="Carregando as faturas" />
         : erro ? <ErroCarga mensagem={erro} onTentar={carregar} />
         : !faturas || faturas.length === 0 ? (
@@ -249,6 +271,9 @@ function AbaFaturas({ ano, mes, versao, mudou, abrir }: { ano: number; mes: numb
                       <p className="font-semibold">Repasse {formatBRL(f.repasse)}</p>
                     </div>
                   </div>
+                  <p className={`mt-2 text-sm ${f.conferidaSemCredito ? 'text-amber-800' : 'text-gray-600'}`}>
+                    {f.caiuNoBanco ? `Caiu no banco em ${data(f.dataCreditoBanco)}.` : f.conferidaSemCredito ? 'Não caiu no banco: confira.' : 'Ainda não conferida com o banco.'}
+                  </p>
                   {(f.incompleta || f.pendencias > 0) && (
                     <p className="mt-2 text-sm text-amber-800">
                       {f.incompleta ? 'Fatura incompleta: falta o "Exportar detalhamento". ' : ''}

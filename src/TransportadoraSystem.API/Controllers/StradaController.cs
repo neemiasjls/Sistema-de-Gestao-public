@@ -13,7 +13,7 @@ namespace TransportadoraSystem.API.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/strada")]
-public class StradaController(StradaService strada, ILogger<StradaController> logger) : ControllerBase
+public class StradaController(StradaService strada, SicoobService sicoob, ILogger<StradaController> logger) : ControllerBase
 {
     public record LigarPedido(int? ViagemId, string? Placa);
 
@@ -79,6 +79,23 @@ public class StradaController(StradaService strada, ILogger<StradaController> lo
             logger.LogError(ex, "Erro ao importar PDFs da Strada");
             return StatusCode(500, new { erro = $"Não consegui importar os PDFs: {ex.Message}" });
         }
+    }
+
+    // Confere com o extrato do Sicoob (só leitura) se o repasse de cada fatura caiu na conta.
+    [HttpPost("faturas/conferir-banco")]
+    public async Task<IActionResult> ConferirBanco([FromQuery] DateOnly? inicio, [FromQuery] DateOnly? fim, CancellationToken ct)
+    {
+        var hoje = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(-3));
+        var ate = fim is { } f && f < hoje ? f : hoje;
+        var de = inicio ?? ate.AddDays(-60);
+        if (de > ate) return BadRequest(new { erro = "A data inicial está depois da final." });
+        if (ate.DayNumber - de.DayNumber > 92) return BadRequest(new { erro = "Escolha um período de até 3 meses." });
+        var falta = sicoob.FaltaConfigurar();
+        if (falta != null) return BadRequest(new { erro = falta });
+        var (extrato, erro) = await sicoob.ExtratoAsync(de, ate, ct);
+        if (extrato == null) return StatusCode(StatusCodes.Status502BadGateway, new { erro });
+        // Fatura paga até 5 dias antes do fim do extrato: procura o crédito no período lido
+        return Ok(await strada.ConferirBancoAsync(extrato.Lancamentos, de, ate, hoje, ct));
     }
 
     [HttpGet("faturas")]

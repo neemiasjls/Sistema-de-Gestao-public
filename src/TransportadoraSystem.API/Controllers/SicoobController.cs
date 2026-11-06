@@ -85,4 +85,51 @@ public class SicoobController(AppDbContext db, SicoobService sicoob) : Controlle
             Lancamentos = lancamentos,
         });
     }
+
+    // Conferência dos boletos a receber (CD e Girassol) pela SOMA dos créditos "CRÉD.LIQUIDAÇÃO COBRANÇA"
+    // (o Sicoob credita um valor por dia com todos os boletos pagos). Só lê: a baixa é a rota de sempre.
+    [HttpGet("conferir-boletos")]
+    public async Task<IActionResult> ConferirBoletos([FromQuery] string? inicio, [FromQuery] string? fim, CancellationToken ct)
+    {
+        var hoje = Hoje();
+        var ate = Data(fim) ?? hoje;
+        if (ate > hoje) ate = hoje;
+        var de = Data(inicio) ?? ate.AddDays(-60);
+        if (de > ate) return BadRequest(new { erro = "A data inicial está depois da final." });
+        if (ate.DayNumber - de.DayNumber > 92) return BadRequest(new { erro = "Escolha um período de até 3 meses." });
+
+        var falta = sicoob.FaltaConfigurar();
+        if (falta != null) return Ok(new { Configurado = false, Erro = falta, Inicio = de, Fim = ate });
+        var (extrato, erro) = await sicoob.ExtratoAsync(de, ate, ct);
+        if (extrato == null) return StatusCode(StatusCodes.Status502BadGateway, new { erro });
+
+        var creditos = extrato.Lancamentos
+            .Where(l => l.Credito && l.Data != null && ConferenciaCobranca.EhLiquidacaoCobranca(l.Descricao))
+            .Select(l => new ConferenciaCobranca.Credito(l.Id, l.Data!.Value, l.Valor)).ToList();
+        var boletos = (await db.BoletosReceber.AsNoTracking()
+                .Where(b => b.Valor != null && b.Vencimento != null && b.Vencimento >= de.AddDays(-15))
+                .Select(b => new { b.Id, b.Cliente, b.NossoNumero, b.Valor, b.Vencimento, b.RecebidoEm, b.Placa, b.DataCarga })
+                .ToListAsync(ct));
+        var porId = boletos.ToDictionary(b => b.Id);
+        var r = ConferenciaCobranca.Conferir(creditos,
+            boletos.Select(b => new ConferenciaCobranca.Boleto(b.Id, b.Cliente, b.NossoNumero, b.Valor!.Value, b.Vencimento, b.RecebidoEm)).ToList(), hoje);
+
+        object Item(ConferenciaCobranca.Boleto b) => new
+        {
+            b.Id, b.Cliente, Rotulo = BoletoReceberLeitor.RotuloCliente(b.Cliente), b.NossoNumero, b.Valor, b.Vencimento,
+            b.RecebidoEm, porId[b.Id].Placa, porId[b.Id].DataCarga,
+        };
+        return Ok(new
+        {
+            Configurado = true, Inicio = de, Fim = ate, Hoje = hoje,
+            PagosSemBaixa = r.PagosSemBaixa.Select(p => new { Boleto = Item(p.Boleto), DataCredito = p.Credito.Data, ValorCredito = p.Credito.Valor }),
+            VencidosSemCredito = r.VencidosSemCredito.Select(Item),
+            Creditos = r.Creditos.OrderByDescending(c => c.Credito.Data).Select(c => new
+            {
+                c.Credito.Data, c.Credito.Valor, c.Achou, c.Duvida,
+                Boletos = c.Boletos.Select(Item),
+                Alternativas = c.Alternativas.Select(a => a.Select(Item)),
+            }),
+        });
+    }
 }

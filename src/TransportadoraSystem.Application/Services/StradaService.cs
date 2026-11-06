@@ -372,6 +372,54 @@ public sealed class StradaService(AppDbContext db)
         return resultado;
     }
 
+    // ───────────────────────── Caiu no banco (extrato do Sicoob) ─────────────────────────
+
+    public record ConferenciaBanco(string Fatura, DateOnly? DataPagamento, decimal Repasse, string Situacao,
+        DateOnly? DataCredito, string? Mensagem);
+
+    /// <summary>
+    /// Para cada fatura ainda não conferida: crédito no extrato com o valor do repasse, data do pagamento
+    /// até 5 dias depois, e "STRADA" na descrição/complemento (o Pix vem de "STRADA PAY"). Um lançamento
+    /// liga a uma fatura só. Dois candidatos → não marca. Sem crédito com a data já passada → marca
+    /// "conferida sem crédito" (LancamentoBancoId vazio) e o painel avisa "não caiu no banco".
+    /// </summary>
+    public async Task<List<ConferenciaBanco>> ConferirBancoAsync(IReadOnlyList<SicoobService.Lancamento> lancamentos,
+        DateOnly inicio, DateOnly fim, DateOnly hoje, CancellationToken ct = default)
+    {
+        var faturas = await db.StradaFaturas.Where(f => !f.CaiuNoBanco && f.DataPagamento >= inicio && f.DataPagamento <= fim)
+            .OrderBy(f => f.DataPagamento).ToListAsync(ct);
+        var usados = (await db.StradaFaturas.Where(f => f.LancamentoBancoId != null && f.LancamentoBancoId != "")
+            .Select(f => f.LancamentoBancoId!).ToListAsync(ct)).ToHashSet();
+        var strada = lancamentos.Where(l => l.Credito && l.Data != null &&
+            (l.Descricao + " " + l.Complemento).Contains("STRADA", StringComparison.OrdinalIgnoreCase)).ToList();
+        var resultado = new List<ConferenciaBanco>();
+        foreach (var f in faturas)
+        {
+            var pago = f.DataPagamento!.Value;
+            var cand = strada.Where(l => !usados.Contains(l.Id) && l.Valor == f.Repasse
+                && l.Data >= pago && l.Data!.Value.DayNumber - pago.DayNumber <= 5).ToList();
+            if (cand.Count == 1)
+            {
+                var l = cand[0];
+                f.CaiuNoBanco = true; f.DataCreditoBanco = l.Data; f.LancamentoBancoId = l.Id; f.AtualizadoEm = DateTime.UtcNow;
+                usados.Add(l.Id);
+                resultado.Add(new(f.Numero, pago, f.Repasse, "caiu", l.Data, null));
+            }
+            else if (cand.Count > 1)
+                resultado.Add(new(f.Numero, pago, f.Repasse, "duvida", null,
+                    $"{cand.Count} créditos da Strada de {Dinheiro(f.Repasse)} entre {Data(pago)} e 5 dias depois: confira no extrato."));
+            else if (pago.AddDays(5) < hoje && fim >= pago.AddDays(5))
+            {
+                f.LancamentoBancoId = ""; f.AtualizadoEm = DateTime.UtcNow;
+                resultado.Add(new(f.Numero, pago, f.Repasse, "nao caiu", null,
+                    $"Nenhum crédito da Strada de {Dinheiro(f.Repasse)} até 5 dias depois de {Data(pago)}."));
+            }
+            else resultado.Add(new(f.Numero, pago, f.Repasse, "aguardando", null, "Ainda dentro do prazo de 5 dias."));
+        }
+        await db.SaveChangesAsync(ct);
+        return resultado;
+    }
+
     // ───────────────────────── Ligação à mão ─────────────────────────
 
     public async Task<string?> LigarAsync(int contratoId, int? viagemId, string? placa, CancellationToken ct = default)
@@ -539,6 +587,7 @@ public sealed class StradaService(AppDbContext db)
         return faturas.Select(f => new
         {
             f.Id, f.Numero, f.DataPagamento, f.Total, f.Taxa, f.Repasse, f.Incompleta,
+            f.CaiuNoBanco, f.DataCreditoBanco, ConferidaSemCredito = !f.CaiuNoBanco && f.LancamentoBancoId == "",
             Avisos = Linhas(f.Avisos),
             Contratos = f.Contratos.Count,
             Pendencias = f.Contratos.Count(c => c.Situacao is SemViagem or Sugestao || Diverge(c) || (c.Placa != null && c.Socio == null)),
@@ -686,6 +735,9 @@ public sealed class StradaService(AppDbContext db)
         var divergencias = new List<object>();
         foreach (var f in faturas.OrderBy(f => f.DataPagamento))
         {
+            if (!f.CaiuNoBanco && f.LancamentoBancoId == "")
+                divergencias.Add(new { Tipo = "fatura não caiu no banco", Fatura = f.Numero, ContratoId = (int?)null, Contrato = (string?)null,
+                    Texto = $"Fatura {f.Numero}: repasse de {f.Repasse.ToString("N2", PtBr)} pago em {Data(f.DataPagamento)} não apareceu no extrato do Sicoob." });
             if (f.Incompleta && f.Contratos.Count == 0)
                 divergencias.Add(new { Tipo = "fatura incompleta", Fatura = f.Numero, ContratoId = (int?)null, Contrato = (string?)null,
                     Texto = $"Fatura {f.Numero} ({f.Total.ToString("N2", PtBr)}): só o cabeçalho; suba o \"Exportar detalhamento\"." });

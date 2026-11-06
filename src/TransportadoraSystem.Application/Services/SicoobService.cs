@@ -70,8 +70,43 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
 
     public record Extrato(decimal? Saldo, decimal? SaldoLimite, decimal? SaldoBloqueado, List<Lancamento> Lancamentos);
 
+    // Extrato guardado por período: consultar muitas vezes seguidas dá 429 do Sicoob (visto em 06/11/2026).
+    // Vale 10 minutos; se o banco recusar, usa o último lido do mesmo período (até 12 horas).
+    private static readonly Dictionary<(DateOnly, DateOnly), (DateTime Lido, Extrato Extrato)> Guardados = [];
+    private static readonly SemaphoreSlim TravaExtrato = new(1, 1);
+    private const string NaoLiberou = "O Sicoob não liberou a consulta. Confira se o aplicativo está aprovado com o escopo de consulta.";
+
     // Erro vira texto para a tela; null no lugar do extrato quando falhou
     public async Task<(Extrato? Extrato, string? Erro)> ExtratoAsync(DateOnly inicio, DateOnly fim, CancellationToken ct = default)
+    {
+        await TravaExtrato.WaitAsync(ct);
+        try
+        {
+            var chave = (inicio, fim);
+            if (Guardados.TryGetValue(chave, out var g) && DateTime.UtcNow - g.Lido < TimeSpan.FromMinutes(10))
+                return (g.Extrato, null);
+            var (extrato, erro) = await BuscarExtratoAsync(inicio, fim, ct);
+            // 401/403 com token vencido (visto em 06/11/2026): o token foi descartado; tenta uma vez com outro
+            if (extrato == null && erro == NaoLiberou)
+                (extrato, erro) = await BuscarExtratoAsync(inicio, fim, ct);
+            if (extrato != null)
+            {
+                foreach (var velho in Guardados.Where(x => DateTime.UtcNow - x.Value.Lido > TimeSpan.FromHours(12)).Select(x => x.Key).ToList())
+                    Guardados.Remove(velho);
+                Guardados[chave] = (DateTime.UtcNow, extrato);
+                return (extrato, null);
+            }
+            if (Guardados.TryGetValue(chave, out g) && DateTime.UtcNow - g.Lido < TimeSpan.FromHours(12))
+            {
+                log.LogWarning("Sicoob recusou o extrato ({Erro}); usando o lido às {Hora:HH:mm} UTC", erro, g.Lido);
+                return (g.Extrato, null);
+            }
+            return (null, erro);
+        }
+        finally { TravaExtrato.Release(); }
+    }
+
+    private async Task<(Extrato? Extrato, string? Erro)> BuscarExtratoAsync(DateOnly inicio, DateOnly fim, CancellationToken ct)
     {
         var falta = FaltaConfigurar();
         if (falta != null) return (null, falta);
@@ -168,11 +203,13 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
             {
                 _token = null;
                 log.LogWarning("Sicoob {Url}: {Status} {Corpo}", SemConta(url), (int)resp.StatusCode, Curto(corpo));
-                return (null, "O Sicoob não liberou a consulta. Confira se o aplicativo está aprovado com o escopo de consulta.");
+                return (null, NaoLiberou);
             }
             if (!resp.IsSuccessStatusCode)
             {
                 log.LogWarning("Sicoob {Url}: {Status} {Corpo}", SemConta(url), (int)resp.StatusCode, Curto(corpo));
+                if ((int)resp.StatusCode == 429)
+                    return (null, "O Sicoob pediu um tempo (muitas consultas seguidas). Tente de novo em alguns minutos.");
                 return (null, MensagemSicoob(corpo) ?? $"O Sicoob respondeu com erro ({(int)resp.StatusCode}).");
             }
             return (JsonDocument.Parse(string.IsNullOrWhiteSpace(corpo) ? "{}" : corpo), null);
