@@ -24,6 +24,11 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
     private const string UrlTokenPadrao = "https://auth.sicoob.com.br/auth/realms/cooperado/protocol/openid-connect/token";
     private const string UrlContaCorrente = "https://api.sicoob.com.br/conta-corrente/v4";
     private const string Escopos = "cco_consulta";
+    private const string UrlCobranca = "https://api.sicoob.com.br/cobranca-bancaria/v3";
+    // Só consulta de boleto (nunca emitir, alterar ou baixar por aqui)
+    private const string EscoposCobranca = "boletos_consulta";
+    private string? NumeroCliente => new string((config["Sicoob:NumeroCliente"] ?? "").Where(char.IsDigit).ToArray()) is { Length: > 0 } n ? n : null;
+    private string Modalidade => config["Sicoob:CodigoModalidade"] ?? "1";
 
     private string? ClientId => config["Sicoob:ClientId"];
     private string? Conta    => new string((config["Sicoob:Conta"] ?? "").Where(char.IsDigit).ToArray());
@@ -31,8 +36,12 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
 
     // O token vale alguns minutos e serve para todas as chamadas até lá
     private static readonly SemaphoreSlim TravaToken = new(1, 1);
-    private static string? _token;
-    private static DateTime _tokenVenceEm;
+    // Um token por conjunto de escopos: a cobrança recusada não derruba o extrato
+    private static readonly Dictionary<string, (string Token, DateTime VenceEm)> Tokens = [];
+    private static string? TokenGuardado(string escopos)
+    {
+        lock (Tokens) return Tokens.TryGetValue(escopos, out var t) && DateTime.UtcNow < t.VenceEm ? t.Token : null;
+    }
 
     public string? FaltaConfigurar()
     {
@@ -152,13 +161,72 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
             Texto(t, "descricao"), Texto(t, "numeroDocumento"), Texto(t, "cpfCnpj"), Texto(t, "descInfComplementar"));
     }
 
-    private async Task<(string? Token, string? Erro)> TokenAsync(CancellationToken ct)
+    // ───────────── Cobrança: situação de um boleto (só consulta) ─────────────
+
+    public record SituacaoBoleto(string NossoNumero, string? Situacao, bool Liquidado, DateOnly? DataLiquidacao, decimal? ValorPago);
+
+    /// <summary>
+    /// Consulta o boleto pelo nosso número ("670-9"): tenta com o dígito (6709) e, se o banco não achar, sem ele (670).
+    /// Liquidado = situação "Liquidado" ou histórico com liquidação; a data vem do histórico.
+    /// </summary>
+    public async Task<(SituacaoBoleto? Situacao, string? Erro)> ConsultarBoletoAsync(string nossoNumero, decimal? valorEsperado, CancellationToken ct = default)
     {
-        if (_token != null && DateTime.UtcNow < _tokenVenceEm) return (_token, null);
+        if (FaltaConfigurar() is { } falta) return (null, falta);
+        if (NumeroCliente == null) return (null, "Falta Sicoob__NumeroCliente (código do beneficiário) no Render.");
+        var digitos = new string(nossoNumero.Where(char.IsDigit).ToArray());
+        if (digitos.Length == 0) return (null, "Boleto sem nosso número.");
+        var tentativas = new List<string> { digitos };
+        if (nossoNumero.Contains('-') && digitos.Length > 1) tentativas.Add(digitos[..^1]);
+
+        string? erro = null;
+        foreach (var n in tentativas)
+        {
+            var (token, erroToken) = await TokenAsync(ct, EscoposCobranca);
+            if (token == null) return (null, erroToken);
+            var url = $"{UrlCobranca}/boletos?numeroCliente={NumeroCliente}&codigoModalidade={Modalidade}&nossoNumero={n}";
+            var (json, e) = await GetAsync(url, token, ct);
+            if (json == null)
+            {
+                if (e == NaoLiberou) return (null, "O Sicoob não liberou a consulta de boletos para este aplicativo (API de Cobrança Bancária).");
+                erro = e; continue;
+            }
+            using (json)
+            {
+                var r = Resultado(json.RootElement);
+                if (r.ValueKind == JsonValueKind.Array) r = r.EnumerateArray().FirstOrDefault();
+                // Resposta vazia (204 vira {}) ou de outro título não serve: confere nosso número e valor
+                if (r.ValueKind != JsonValueKind.Object || !r.TryGetProperty("nossoNumero", out var nn)) { erro = "O Sicoob não achou o boleto."; continue; }
+                var devolvido = new string((nn.ValueKind == JsonValueKind.Number ? nn.GetRawText() : nn.GetString() ?? "").Where(char.IsDigit).ToArray());
+                var valorBanco = Valor(r, "valor");
+                if (devolvido.TrimStart('0') != n.TrimStart('0') || (valorEsperado != null && valorBanco != null && Math.Abs(valorBanco.Value - valorEsperado.Value) > 0.01m))
+                {
+                    log.LogWarning("Sicoob boleto {Nosso}: veio outro título ({Devolvido}, {Valor})", n, devolvido, valorBanco);
+                    erro = "O Sicoob devolveu outro boleto para esse número; confira no internet banking."; continue;
+                }
+                log.LogInformation("Sicoob boleto {Nosso}: {Corpo}", n, Curto(r.GetRawText()));
+                var situacao = Texto(r, "situacaoBoleto");
+                DateOnly? data = null;
+                if (r.TryGetProperty("listaHistorico", out var h) && h.ValueKind == JsonValueKind.Array)
+                    foreach (var item in h.EnumerateArray())
+                        if ((Texto(item, "descricaoHistorico") + " " + Texto(item, "tipoHistorico")).Contains("iquida", StringComparison.OrdinalIgnoreCase))
+                            data = DataDe(Texto(item, "dataHistorico")) ?? data;
+                decimal? pago = null;
+                foreach (var campo in new[] { "valorPago", "valorRecebido", "valorLiquidado", "valorLiquidacao" })
+                    pago ??= Valor(r, campo);
+                var liquidado = situacao.Contains("iquida", StringComparison.OrdinalIgnoreCase) || data != null;
+                return (new SituacaoBoleto(nossoNumero, situacao, liquidado, data, pago), null);
+            }
+        }
+        return (null, erro ?? "O Sicoob não achou o boleto.");
+    }
+
+    private async Task<(string? Token, string? Erro)> TokenAsync(CancellationToken ct, string escopos = Escopos)
+    {
+        if (TokenGuardado(escopos) is { } guardado) return (guardado, null);
         await TravaToken.WaitAsync(ct);
         try
         {
-            if (_token != null && DateTime.UtcNow < _tokenVenceEm) return (_token, null);
+            if (TokenGuardado(escopos) is { } guardado2) return (guardado2, null);
 
             using var req = new HttpRequestMessage(HttpMethod.Post, UrlToken)
             {
@@ -166,7 +234,7 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
                 {
                     ["grant_type"] = "client_credentials",
                     ["client_id"]  = ClientId!,
-                    ["scope"]      = Escopos,
+                    ["scope"]      = escopos,
                 }),
             };
             using var resp = await http.SendAsync(req, ct);
@@ -174,13 +242,16 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
             if (!resp.IsSuccessStatusCode)
             {
                 log.LogWarning("Sicoob token: {Status} {Corpo}", (int)resp.StatusCode, Curto(corpo));
-                return (null, "O Sicoob recusou o acesso. Confira o Client ID, o certificado e se o aplicativo está aprovado.");
+                return (null, escopos == Escopos
+                    ? "O Sicoob recusou o acesso. Confira o Client ID, o certificado e se o aplicativo está aprovado."
+                    : "O Sicoob recusou a consulta de boletos: no portal do desenvolvedor, o aplicativo precisa ter a API de Cobrança Bancária (só consulta) liberada.");
             }
             using var doc = JsonDocument.Parse(corpo);
-            _token = Texto(doc.RootElement, "access_token");
+            var token = Texto(doc.RootElement, "access_token");
             var segundos = doc.RootElement.TryGetProperty("expires_in", out var e) && e.TryGetInt32(out var s) ? s : 300;
-            _tokenVenceEm = DateTime.UtcNow.AddSeconds(Math.Max(30, segundos - 30));
-            return string.IsNullOrEmpty(_token) ? (null, "O Sicoob não devolveu o acesso.") : (_token, null);
+            if (string.IsNullOrEmpty(token)) return (null, "O Sicoob não devolveu o acesso.");
+            lock (Tokens) Tokens[escopos] = (token, DateTime.UtcNow.AddSeconds(Math.Max(30, segundos - 30)));
+            return (token, null);
         }
         catch (HttpRequestException ex)
         {
@@ -201,7 +272,7 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
             var corpo = await resp.Content.ReadAsStringAsync(ct);
             if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
-                _token = null;
+                lock (Tokens) foreach (var k in Tokens.Where(t => t.Value.Token == token).Select(t => t.Key).ToList()) Tokens.Remove(k);
                 log.LogWarning("Sicoob {Url}: {Status} {Corpo}", SemConta(url), (int)resp.StatusCode, Curto(corpo));
                 return (null, NaoLiberou);
             }

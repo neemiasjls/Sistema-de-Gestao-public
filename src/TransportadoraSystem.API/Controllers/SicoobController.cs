@@ -132,4 +132,18 @@ public class SicoobController(AppDbContext db, SicoobService sicoob) : Controlle
             }),
         });
     }
+
+    // Situação de UM boleto na Cobrança do Sicoob (só consulta): pega o pago com juros ou desconto,
+    // que não fecha na soma do crédito do dia. Um por vez, para o banco não pedir tempo (429).
+    [HttpGet("boletos/{id:int}/situacao")]
+    public async Task<IActionResult> SituacaoBoleto(int id, CancellationToken ct)
+    {
+        var b = await db.BoletosReceber.AsNoTracking().Where(x => x.Id == id)
+            .Select(x => new { x.Id, x.NossoNumero, x.Valor, x.RecebidoEm }).FirstOrDefaultAsync(ct);
+        if (b == null) return NotFound(new { erro = "Boleto não encontrado." });
+        if (string.IsNullOrWhiteSpace(b.NossoNumero)) return BadRequest(new { erro = "Este boleto não tem nosso número." });
+        var (sit, erro) = await sicoob.ConsultarBoletoAsync(b.NossoNumero, b.Valor, ct);
+        if (sit == null) return StatusCode(StatusCodes.Status502BadGateway, new { erro });
+        return Ok(new { b.Id, b.NossoNumero, b.Valor, b.RecebidoEm, sit.Situacao, sit.Liquidado, sit.DataLiquidacao, sit.ValorPago });
+    }
 }

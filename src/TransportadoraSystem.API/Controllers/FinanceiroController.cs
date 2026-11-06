@@ -163,27 +163,6 @@ public class FinanceiroController(AppDbContext db) : ControllerBase
         saldo.DataRecebimento = dto.DataRecebimento ?? DateTime.Today;
         saldo.NumeroDocumento = dto.NumeroDocumento;
 
-        // Gerar lançamento bancário automático para Bento quando for TIP BANK
-        if (saldo.CartaoFrete == TipoCartaoFrete.TipBank && saldo.VeiculoId.HasValue)
-        {
-            var veiculo = await db.Veiculos.FindAsync(saldo.VeiculoId.Value);
-            if (veiculo != null)
-            {
-                var lanc = new LancamentoBanco
-                {
-                    Socio     = Socio.Bento,   // TIP BANK sempre no pai
-                    Tipo      = TipoLancamento.Entrada,
-                    Descricao = $"TIP BANK — {saldo.Empresa} ({veiculo.Placa}) — Doc: {dto.NumeroDocumento}",
-                    Valor     = saldo.Valor,
-                    Data      = saldo.DataRecebimento.Value,
-                    Mes       = saldo.DataRecebimento.Value.Month,
-                    Ano       = saldo.DataRecebimento.Value.Year,
-                    VeiculoId = saldo.VeiculoId,
-                };
-                db.LancamentosBanco.Add(lanc);
-            }
-        }
-
         await db.SaveChangesAsync();
         return Ok(new { mensagem = "Saldo marcado como recebido.", saldo });
     }

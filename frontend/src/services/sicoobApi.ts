@@ -53,6 +53,17 @@ export interface BoletoConferido {
   dataCarga: string | null
 }
 
+export interface SituacaoBoletoBanco {
+  id: number
+  nossoNumero: string
+  valor: number | null
+  recebidoEm: string | null
+  situacao: string | null
+  liquidado: boolean
+  dataLiquidacao: string | null
+  valorPago: number | null
+}
+
 export interface ConferenciaBoletos {
   configurado: boolean
   erro?: string
@@ -64,6 +75,8 @@ export interface ConferenciaBoletos {
 }
 
 export const sicoobApi = {
+  situacaoBoleto: (id: number) =>
+    api.get(`/api/sicoob/boletos/${id}/situacao`).then(r => comDados(r, d => comoObjeto<SituacaoBoletoBanco>(d, [], 'situação do boleto'))),
   conferirBoletos: (inicio?: string, fim?: string) =>
     api.get('/api/sicoob/conferir-boletos', { params: { inicio, fim } }).then(r => comDados(r, d =>
       comoObjeto<ConferenciaBoletos>(d, ['pagosSemBaixa', 'vencidosSemCredito', 'creditos'], 'conferência dos boletos'))),

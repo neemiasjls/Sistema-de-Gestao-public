@@ -8,7 +8,7 @@ import { useConfirmar } from './ui/Confirmar'
 import { formatBRL } from '../services/api'
 import { boletosContasApi } from '../services/boletosContasApi'
 import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
-import { sicoobApi, type BoletoConferido, type ConferenciaBoletos } from '../services/sicoobApi'
+import { sicoobApi, type BoletoConferido, type ConferenciaBoletos, type SituacaoBoletoBanco } from '../services/sicoobApi'
 import { dataBr } from '../utils/formato'
 
 // Conferência dos boletos a receber da CD e da Girassol com o extrato do Sicoob (BOL-10).
@@ -24,6 +24,20 @@ export default function ConferenciaBoletosPagos({ mudou }: { mudou: () => void }
   const [erro, setErro] = useState<string | null>(null)
   const [baixando, setBaixando] = useState<number | 'todos' | null>(null)
   const [verCreditos, setVerCreditos] = useState(false)
+  const [consultando, setConsultando] = useState<number | null>(null)
+  const [situacoes, setSituacoes] = useState<Record<number, SituacaoBoletoBanco | string>>({})
+
+  // Pergunta ao banco a situação de um boleto (pago com juros não fecha na soma do crédito do dia)
+  const consultar = async (b: BoletoConferido) => {
+    setConsultando(b.id)
+    try {
+      const { data } = await sicoobApi.situacaoBoleto(b.id)
+      setSituacoes(s => ({ ...s, [b.id]: data }))
+    } catch (e) {
+      const msg = await erroApi(e, 'Não consegui consultar o boleto no Sicoob.')
+      setSituacoes(s => ({ ...s, [b.id]: msg }))
+    } finally { setConsultando(null) }
+  }
 
   const conferir = async () => {
     setCarregando(true)
@@ -108,8 +122,46 @@ export default function ConferenciaBoletosPagos({ mudou }: { mudou: () => void }
           ))}
 
           {dados.vencidosSemCredito.length > 0 && (
-            <Aviso tipo="atencao" titulo={dados.vencidosSemCredito.length === 1 ? '1 boleto vencido sem crédito no banco' : `${dados.vencidosSemCredito.length} boletos vencidos sem crédito no banco`}
-                   itens={dados.vencidosSemCredito.map(b => `${nome(b)}, venceu ${b.vencimento ? dataBr(b.vencimento) : 'sem data'}`)} />
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+              <p className="text-sm font-semibold text-amber-900">
+                {dados.vencidosSemCredito.length === 1 ? '1 boleto vencido sem crédito no banco' : `${dados.vencidosSemCredito.length} boletos vencidos sem crédito no banco`}
+              </p>
+              <p className="text-sm text-amber-900">Pago com juros ou desconto não fecha na soma: consulte o boleto no banco.</p>
+              <ul className="space-y-2">
+                {dados.vencidosSemCredito.map(b => {
+                  const s = situacoes[b.id]
+                  return (
+                    <li key={b.id} className="text-sm space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="flex-1 min-w-[220px] text-gray-900">
+                          {nome(b)}, venceu {b.vencimento ? dataBr(b.vencimento) : 'sem data'}
+                        </span>
+                        <Botao tamanho="sm" variante="secundario" carregando={consultando === b.id} textoCarregando="Consultando..."
+                               disabled={consultando !== null || baixando !== null || !b.nossoNumero} onClick={() => consultar(b)}>
+                          Consultar no banco
+                        </Botao>
+                      </div>
+                      {typeof s === 'string' && <p className="text-red-700">{s}</p>}
+                      {s && typeof s !== 'string' && (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="flex-1 min-w-[220px] text-gray-800">
+                            No Sicoob: <b>{s.situacao || 'sem situação'}</b>
+                            {s.liquidado && (s.dataLiquidacao ? <> · pago em {dataBr(s.dataLiquidacao)}</> : <> · sem data do pagamento</>)}
+                            {s.valorPago != null && <> · {formatBRL(s.valorPago)}</>}
+                          </span>
+                          {s.liquidado && s.dataLiquidacao && (
+                            <Botao tamanho="sm" carregando={baixando === b.id} disabled={baixando !== null}
+                                   onClick={() => baixar([{ boleto: b, dataCredito: s.dataLiquidacao! }], false)}>
+                              Dar baixa em {dataBr(s.dataLiquidacao).slice(0, 5)}
+                            </Botao>
+                          )}
+                        </div>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
           )}
 
           {dados.creditos.some(c => !c.achou) && (

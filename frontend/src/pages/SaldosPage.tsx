@@ -2,7 +2,6 @@ import { Inbox, Plus, Search } from 'lucide-react'
 import { Carregando, ErroCarga, Vazio } from '../components/ui/Estados'
 import { Modal, Campo, BotoesModal } from '../components/ModalBase'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
-import Aviso from '../components/ui/Aviso'
 import { Segmentado } from '../components/ui/Abas'
 import Botao from '../components/ui/Botao'
 import { classeCampo, classeNumero } from '../components/EstoquePecas'
@@ -13,7 +12,7 @@ import { dataBr } from '../utils/formato'
 
 const EMPRESAS_COMUNS = ['Logix Logística/Zico', 'Agrotrade', 'TransRota']
 const TIPOS = ['Frete', 'Descarga', 'Diária', 'Outros']
-const CARTOES = ['TipBank', 'PamCard']
+const CARTOES = ['PamCard']
 
 interface SaldosData {
   totalPendente: number
@@ -262,7 +261,7 @@ function ModalReceber({ saldo, onClose, onSalvo }: { saldo: SaldoReceber; onClos
     setSalvando(true)
     try {
       await financeiroApi.receberSaldo(saldo.id, form)
-      toast.success('Saldo marcado como recebido. Lançamento bancário gerado.')
+      toast.success('Saldo marcado como recebido.')
       onSalvo()
     } catch { toast.error('Não consegui confirmar o recebimento.') }
     finally { setSalvando(false) }
@@ -274,11 +273,10 @@ function ModalReceber({ saldo, onClose, onSalvo }: { saldo: SaldoReceber; onClos
       <Campo rotulo="Data do recebimento">
         <input type="date" value={form.dataRecebimento} onChange={e => setForm(p => ({ ...p, dataRecebimento: e.target.value }))} className={classeCampo} />
       </Campo>
-      <Campo rotulo="Número do documento / TIP BANK">
+      <Campo rotulo="Número do documento">
         <input value={form.numeroDocumento} onChange={e => setForm(p => ({ ...p, numeroDocumento: e.target.value }))}
-               placeholder="Ex: TIP-12345" className={classeCampo} />
+               placeholder="Ex: 12345" className={classeCampo} />
       </Campo>
-      <Aviso tipo="info">Se for TIP BANK, um lançamento bancário é gerado sozinho para o Bento.</Aviso>
       <BotoesModal salvando={salvando} onSalvar={confirmarReceber} onClose={onClose} rotulo="Confirmar recebimento" />
     </Modal>
   )

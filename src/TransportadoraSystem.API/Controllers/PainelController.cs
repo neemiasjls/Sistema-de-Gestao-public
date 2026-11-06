@@ -402,7 +402,7 @@ public class PainelController(AppDbContext db, RomaneiosEmbalarService embalar, 
                 BoletoCliente("frete-horacio-seg", BoletoReceberLeitor.Perfil, "Boleto de frete do Horacio (Perfil)",
                     "Só se a placa for do Bento ou do Caio.", "lembrete"),
                 Lembrete("sicoob", "Anotar o banco Sicoob quando houver placa do Bento", "/abastecimentos"),
-                Lembrete("tip-bank", "Conferir as faturas TIP BANK", "/abastecimentos"),
+                Lembrete("tip-bank", "Conferir as faturas TIP BANK", "/agrotrade-tip"),
             ]),
             // ROT-02
             new(2, "Terça", [
