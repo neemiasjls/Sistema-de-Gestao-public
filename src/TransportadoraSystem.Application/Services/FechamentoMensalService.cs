@@ -12,14 +12,14 @@ public record DadosSalarioFechamento(decimal Salario, decimal HorasExtras, decim
 public record DespesaFechamentoEntrada(DateOnly? Data, string? Referencia, decimal? Valor, string? Parcela, string? Observacao, string? Origem, bool Corrigida);
 public record CreditoFechamentoEntrada(string? Referencia, decimal Valor);
 public record ValeFechamentoEntrada(DateOnly? Data, decimal Valor, string? Referencia);
-public record FechamentoEntrada(string Placa, int Ano, int Mes, decimal? SaldoAnteriorDigitado, DadosSalarioFechamento Salario,
+public record FechamentoEntrada(int MotoristaId, int Ano, int Mes, decimal? SaldoAnteriorDigitado, DadosSalarioFechamento Salario,
     string? Observacao, List<DespesaFechamentoEntrada>? Despesas, List<CreditoFechamentoEntrada>? Creditos, List<ValeFechamentoEntrada>? Vales);
-public record MesFechamentoEntrada(string Placa, int Ano, int Mes);
+public record MesFechamentoEntrada(int MotoristaId, int Ano, int Mes);
 public record ConsorcioEntrada(string Placa, string Descricao, string? Cota, decimal ValorParcela, int TotalParcelas,
     int PrimeiroAno, int PrimeiroMes, bool Ativo);
 
 // Saída (o que a tela mostra)
-public record LinhaViagem(int Id, DateOnly? DataSaida, string? Destino, string Motorista, decimal Resultado,
+public record LinhaViagem(int Id, DateOnly? DataSaida, string? Destino, string Motorista, string Placa, string? PlacaCarreta, decimal Resultado,
     decimal FreteComissao, decimal PorcentagemComissao, decimal Comissao);
 public record LinhaDespesa(DateOnly? Data, string Referencia, decimal? Valor, string? Parcela, string? Observacao,
     string Origem, bool Automatica, bool Corrigida, decimal? ValorAutomatico, string? DeOndeVem, string? Aviso);
@@ -27,25 +27,42 @@ public record LinhaCredito(string Referencia, decimal Valor);
 public record LinhaVale(DateOnly? Data, decimal Valor, string? Referencia);
 public record TotaisFechamento(decimal EntradaViagens, decimal Creditos, decimal EntradaTotal, decimal SaidaTotal,
     decimal Sobra, decimal SaldoAnterior, decimal Total, decimal ComissaoTotal, decimal TotalVales, decimal SalarioLiquido);
-public record ModeloFechamento(string Placa, int Ano, int Mes, bool Salvo, int? Id, bool Fechado, DateTime? FechadoEm,
+public record ModeloFechamento(int MotoristaId, string Motorista, List<string> Placas, int Ano, int Mes, bool Salvo, int? Id, bool Fechado, DateTime? FechadoEm,
     string? Observacao, List<LinhaViagem> Viagens, List<LinhaCredito> Creditos, List<LinhaDespesa> Despesas,
     List<LinhaVale> Vales, DadosSalarioFechamento Salario, decimal? SaldoAnteriorDigitado, string SaldoAnteriorOrigem,
     TotaisFechamento Totais, List<string> Avisos);
 
 /// <summary>
-/// Fechamento mensal por caminhão (VIA-18): junta as viagens do mês (data de saída),
+/// Fechamento mensal por motorista (VIA-18, VIA-21 desde 02/11/2026; era por caminhão): junta as
+/// viagens do motorista no mês (data de saída), com qualquer placa,
 /// os créditos, as despesas (manuais + automáticas: ICMS/seguro da SG do mês anterior,
 /// consórcio e as retenções do salário), a comissão e o salário. Aberto edita; fechado trava.
 /// </summary>
 public class FechamentoMensalService(AppDbContext db)
 {
-    public static readonly string[] PlacasDoAcerto = ["XAC-6D57", "XAA-9457", "XAB-4C58"];
+    // Os três do acerto (Admin, 02/11/2026): Bento, Renato, Paulo Henrique (MotoristasFrota.Id)
+    public static readonly int[] MotoristasDoAcerto = [10, 12, 4];
+
+    private async Task<(int Id, string Nome)> MotoristaValidoAsync(int motoristaId)
+    {
+        if (!MotoristasDoAcerto.Contains(motoristaId))
+            throw new ErroViagem("O fechamento mensal é só do Bento, do Renato e do Paulo Henrique.");
+        var nome = await db.MotoristasFrota.AsNoTracking().Where(m => m.Id == motoristaId).Select(m => m.Nome).FirstOrDefaultAsync()
+            ?? throw new ErroViagem("Motorista não encontrado.");
+        return (motoristaId, nome);
+    }
+
+    public async Task<List<object>> MotoristasAsync()
+    {
+        var ms = await db.MotoristasFrota.AsNoTracking().Where(m => MotoristasDoAcerto.Contains(m.Id))
+            .Select(m => new { m.Id, m.Nome }).ToListAsync();
+        return [.. MotoristasDoAcerto.Select(id => ms.FirstOrDefault(m => m.Id == id)).Where(m => m != null).Cast<object>()];
+    }
 
     private static string PlacaValida(string? placa)
     {
         var p = NormalizarPlaca(placa);
-        if (!PlacasDoAcerto.Contains(p))
-            throw new ErroViagem($"O fechamento mensal é só dos caminhões {string.Join(", ", PlacasDoAcerto)}.");
+        if (p.Length == 0) throw new ErroViagem("Informe a placa do caminhão.");
         return p;
     }
 
@@ -58,19 +75,20 @@ public class FechamentoMensalService(AppDbContext db)
 
     // ───────────────────────── Montagem ─────────────────────────
 
-    public async Task<ModeloFechamento> MontarAsync(string placa, int ano, int mes)
+    public async Task<ModeloFechamento> MontarAsync(int motoristaId, int ano, int mes)
     {
-        var p = PlacaValida(placa);
+        var m = await MotoristaValidoAsync(motoristaId);
         MesValido(ano, mes);
-        return await MontarModeloAsync(p, ano, mes, 0);
+        return await MontarModeloAsync(m, ano, mes, 0);
     }
 
-    private async Task<ModeloFechamento> MontarModeloAsync(string placa, int ano, int mes, int profundidade)
+    private async Task<ModeloFechamento> MontarModeloAsync((int Id, string Nome) mot, int ano, int mes, int profundidade)
     {
+        var motoristaId = mot.Id;
         var avisos = new List<string>();
         var rec = await db.FechamentosMensais.AsNoTracking()
             .Include(f => f.Despesas).Include(f => f.Creditos).Include(f => f.Vales).AsSplitQuery()
-            .FirstOrDefaultAsync(f => f.Placa == placa && f.Ano == ano && f.Mes == mes);
+            .FirstOrDefaultAsync(f => f.MotoristaId == motoristaId && f.Ano == ano && f.Mes == mes);
         var fechado = rec?.Fechado == true;
         var sal = rec == null ? new DadosSalarioFechamento(0, 0, 0, 0, 0, 0)
             : new DadosSalarioFechamento(rec.Salario, rec.HorasExtras, rec.Fgts, rec.Inss, rec.Irr, rec.Quinquenio);
@@ -80,7 +98,7 @@ public class FechamentoMensalService(AppDbContext db)
         var fim = ini.AddMonths(1);
         var viagens = await db.ViagensCaminhao.AsNoTracking()
             .Include(v => v.Volumes).Include(v => v.Abastecimentos).Include(v => v.Despesas).AsSplitQuery()
-            .Where(v => v.Placa == placa && v.DataSaida >= ini && v.DataSaida < fim)
+            .Where(v => v.MotoristaId == motoristaId && v.DataSaida >= ini && v.DataSaida < fim)
             .ToListAsync();
         var ids = viagens.Select(v => v.Id).ToList();
         var rets = await db.RetornosFrete.AsNoTracking()
@@ -88,11 +106,11 @@ public class FechamentoMensalService(AppDbContext db)
         var linhasViagem = viagens.OrderBy(v => v.DataSaida).ThenBy(v => v.Id).Select(v =>
         {
             var c = Calcular(v, rets.Where(r => r.ViagemId == v.Id), 0);
-            return new LinhaViagem(v.Id, v.DataSaida, v.Destino, v.MotoristaNome, c.Resultado_, c.BaseComissao,
+            return new LinhaViagem(v.Id, v.DataSaida, v.Destino, v.MotoristaNome, v.Placa, v.PlacaCarreta, c.Resultado_, c.BaseComissao,
                 v.PorcentagemComissao, c.Comissao);
         }).ToList();
         if (linhasViagem.Count == 0) avisos.Add($"Nenhuma viagem saiu em {NomeMesAno(mes, ano)}.");
-        var semSaida = await db.ViagensCaminhao.CountAsync(v => v.Placa == placa && v.DataSaida == null
+        var semSaida = await db.ViagensCaminhao.CountAsync(v => v.MotoristaId == motoristaId && v.DataSaida == null
             && v.AnoReferencia == ano && v.MesReferencia == mes);
         if (semSaida > 0)
             avisos.Add($"{semSaida} viagem(ns) do acerto de {NomeMesAno(mes, ano)} sem data de saída ficaram de fora.");
@@ -108,7 +126,7 @@ public class FechamentoMensalService(AppDbContext db)
         else
         {
             despesas = [];
-            foreach (var auto in await AutomaticasAsync(placa, ano, mes, sal))
+            foreach (var auto in await AutomaticasAsync(motoristaId, ano, mes, sal))
             {
                 var corrigida = rec?.Despesas.FirstOrDefault(d => d.Origem == auto.Origem && d.Corrigido);
                 despesas.Add(corrigida == null ? auto : auto with
@@ -131,10 +149,10 @@ public class FechamentoMensalService(AppDbContext db)
         var (aa, ma) = MesAnterior(ano, mes);
         decimal saldo;
         string origem;
-        var anterior = await db.FechamentosMensais.AsNoTracking().FirstOrDefaultAsync(f => f.Placa == placa && f.Ano == aa && f.Mes == ma);
+        var anterior = await db.FechamentosMensais.AsNoTracking().FirstOrDefaultAsync(f => f.MotoristaId == motoristaId && f.Ano == aa && f.Mes == ma);
         if (anterior != null && profundidade < 36)
         {
-            saldo = (await MontarModeloAsync(placa, aa, ma, profundidade + 1)).Totais.Total;
+            saldo = (await MontarModeloAsync(mot, aa, ma, profundidade + 1)).Totais.Total;
             origem = "fechamento";
             if (!anterior.Fechado)
                 avisos.Add($"O fechamento de {NomeMesAno(ma, aa)} ainda está aberto: o saldo anterior pode mudar.");
@@ -157,31 +175,60 @@ public class FechamentoMensalService(AppDbContext db)
         var totais = new TotaisFechamento(t.EntradaViagens, t.Creditos, t.EntradaTotal, t.SaidaTotal, t.Sobra, t.SaldoAnterior, t.Total,
             comissao, totalVales, SalarioLiquido(sal.Salario, sal.HorasExtras, comissao, sal.Quinquenio, sal.Inss, sal.Irr, totalVales));
 
-        return new ModeloFechamento(placa, ano, mes, rec != null, rec?.Id, fechado, rec?.FechadoEm, rec?.Observacao,
+        var placas = linhasViagem.Select(v => v.Placa).Where(p => p.Length > 0).Distinct().OrderBy(p => p).ToList();
+        return new ModeloFechamento(motoristaId, mot.Nome, placas, ano, mes, rec != null, rec?.Id, fechado, rec?.FechadoEm, rec?.Observacao,
             linhasViagem, creditos, despesas, vales, sal, rec?.SaldoAnteriorDigitado, origem, totais, avisos);
     }
 
     private static string? DeOndeVem(string origem, int ano, int mes)
     {
-        if (origem == "icms") { var (a, m) = MesAnterior(ano, mes); return $"Planilha SG de {NomeMesAno(m, a)}"; }
+        if (origem == "icms") { var (a, m) = MesAnterior(ano, mes); return $"Planilha SG de {NomeMesAno(m, a)}, placas com que ele viajou nesse mês"; }
         if (origem.StartsWith("consorcio:")) return "Cadastro de consórcio";
         if (origem.StartsWith("salario:")) return "Parte Salário";
         return null;
     }
 
     /// <summary>As linhas automáticas do mês, com o valor calculado agora.</summary>
-    private async Task<List<LinhaDespesa>> AutomaticasAsync(string placa, int ano, int mes, DadosSalarioFechamento sal)
+    private async Task<List<LinhaDespesa>> AutomaticasAsync(int motoristaId, int ano, int mes, DadosSalarioFechamento sal)
     {
         var lista = new List<LinhaDespesa>();
 
-        // ICMS/SEGURO CARGAS: total da placa na SG do mês anterior
+        // ICMS/SEGURO CARGAS (Admin, 02/11/2026): soma, na SG do mês anterior, o total das placas
+        // (cavalos) com que o motorista viajou naquele mês. Placa usada por outro motorista no mesmo
+        // mês: avisa, para acertar à mão.
         var (aa, ma) = MesAnterior(ano, mes);
-        var (valor, aviso) = TotalSeguroDaPlaca(await ResumoSgAsync(aa, ma), placa, ma, aa);
-        lista.Add(new LinhaDespesa(null, "ICMS/SEGURO CARGAS", valor, null, null, "icms", true, false, valor,
-            DeOndeVem("icms", ano, mes), aviso));
+        var iniAnt = new DateOnly(aa, ma, 1);
+        var fimAnt = iniAnt.AddMonths(1);
+        var doMesAnterior = await db.ViagensCaminhao.AsNoTracking()
+            .Where(v => v.DataSaida >= iniAnt && v.DataSaida < fimAnt && v.Placa != "")
+            .Select(v => new { v.Placa, v.MotoristaId }).ToListAsync();
+        var placasAnt = doMesAnterior.Where(v => v.MotoristaId == motoristaId).Select(v => v.Placa).Distinct().OrderBy(p => p).ToList();
+        decimal? valor = null;
+        var avisosIcms = new List<string>();
+        if (placasAnt.Count == 0)
+            avisosIcms.Add($"ICMS/SEGURO: ele não tem viagem em {NomeMesAno(ma, aa)}; digite o valor se houver");
+        else
+        {
+            var resumo = await ResumoSgAsync(aa, ma);
+            foreach (var placa in placasAnt)
+            {
+                var (v, aviso) = TotalSeguroDaPlaca(resumo, placa, ma, aa);
+                if (v is { } x) valor = (valor ?? 0) + x;
+                if (aviso != null) avisosIcms.Add(aviso);
+                if (doMesAnterior.Any(o => o.Placa == placa && o.MotoristaId != motoristaId))
+                    avisosIcms.Add($"ICMS/SEGURO: a {placa} também rodou com outro motorista em {NomeMesAno(ma, aa)}; o total dela entrou inteiro aqui, confira");
+            }
+        }
+        lista.Add(new LinhaDespesa(null, "ICMS/SEGURO CARGAS", valor, null, placasAnt.Count > 0 ? string.Join(", ", placasAnt) : null,
+            "icms", true, false, valor, DeOndeVem("icms", ano, mes), avisosIcms.Count > 0 ? string.Join(". ", avisosIcms) : null));
 
-        // Consórcios dentro do prazo
-        var consorcios = await db.Consorcios.AsNoTracking().Where(c => c.Placa == placa && c.Ativo).OrderBy(c => c.Id).ToListAsync();
+        // Consórcios dentro do prazo, das placas com que ele viajou no mês
+        var ini = new DateOnly(ano, mes, 1);
+        var fim = ini.AddMonths(1);
+        var placasMes = await db.ViagensCaminhao.AsNoTracking()
+            .Where(v => v.MotoristaId == motoristaId && v.DataSaida >= ini && v.DataSaida < fim)
+            .Select(v => v.Placa).Distinct().ToListAsync();
+        var consorcios = await db.Consorcios.AsNoTracking().Where(c => placasMes.Contains(c.Placa) && c.Ativo).OrderBy(c => c.Id).ToListAsync();
         foreach (var c in consorcios)
         {
             if (NumeroParcela(c.PrimeiroAno, c.PrimeiroMes, c.TotalParcelas, ano, mes) is not { } n) continue;
@@ -215,21 +262,21 @@ public class FechamentoMensalService(AppDbContext db)
 
     // ───────────────────────── Gravação ─────────────────────────
 
-    private Task<FechamentoMensal?> CarregarAsync(string placa, int ano, int mes) =>
+    private Task<FechamentoMensal?> CarregarAsync(int motoristaId, int ano, int mes) =>
         db.FechamentosMensais.Include(f => f.Despesas).Include(f => f.Creditos).Include(f => f.Vales).AsSplitQuery()
-            .FirstOrDefaultAsync(f => f.Placa == placa && f.Ano == ano && f.Mes == mes);
+            .FirstOrDefaultAsync(f => f.MotoristaId == motoristaId && f.Ano == ano && f.Mes == mes);
 
     private static ErroViagem MesFechado() => new("O mês está fechado. Reabra para alterar.");
 
     public async Task SalvarAsync(FechamentoEntrada e)
     {
-        var placa = PlacaValida(e.Placa);
+        var mot = await MotoristaValidoAsync(e.MotoristaId);
         MesValido(e.Ano, e.Mes);
-        var rec = await CarregarAsync(placa, e.Ano, e.Mes);
+        var rec = await CarregarAsync(mot.Id, e.Ano, e.Mes);
         if (rec?.Fechado == true) throw MesFechado();
         if (rec == null)
         {
-            rec = new FechamentoMensal { Placa = placa, Ano = e.Ano, Mes = e.Mes };
+            rec = new FechamentoMensal { MotoristaId = mot.Id, Placa = "", Ano = e.Ano, Mes = e.Mes };
             db.FechamentosMensais.Add(rec);
         }
         rec.SaldoAnteriorDigitado = e.SaldoAnteriorDigitado;
@@ -278,17 +325,17 @@ public class FechamentoMensalService(AppDbContext db)
     /// <summary>Fecha o mês: grava o retrato das linhas automáticas e trava.</summary>
     public async Task FecharAsync(MesFechamentoEntrada e)
     {
-        var placa = PlacaValida(e.Placa);
+        var mot = await MotoristaValidoAsync(e.MotoristaId);
         MesValido(e.Ano, e.Mes);
-        var rec = await CarregarAsync(placa, e.Ano, e.Mes);
+        var rec = await CarregarAsync(mot.Id, e.Ano, e.Mes);
         if (rec?.Fechado == true) throw new ErroViagem("O mês já está fechado.");
         if (rec == null)
         {
-            rec = new FechamentoMensal { Placa = placa, Ano = e.Ano, Mes = e.Mes };
+            rec = new FechamentoMensal { MotoristaId = mot.Id, Placa = "", Ano = e.Ano, Mes = e.Mes };
             db.FechamentosMensais.Add(rec);
             await db.SaveChangesAsync();
         }
-        var modelo = await MontarModeloAsync(placa, e.Ano, e.Mes, 0);
+        var modelo = await MontarModeloAsync(mot, e.Ano, e.Mes, 0);
         db.FechamentoDespesas.RemoveRange(rec.Despesas); rec.Despesas.Clear();
         var ordem = 0;
         foreach (var d in modelo.Despesas)
@@ -305,9 +352,9 @@ public class FechamentoMensalService(AppDbContext db)
     /// <summary>Reabre: as automáticas voltam a ser recalculadas (as corrigidas à mão ficam).</summary>
     public async Task ReabrirAsync(MesFechamentoEntrada e)
     {
-        var placa = PlacaValida(e.Placa);
+        var mot = await MotoristaValidoAsync(e.MotoristaId);
         MesValido(e.Ano, e.Mes);
-        var rec = await CarregarAsync(placa, e.Ano, e.Mes);
+        var rec = await CarregarAsync(mot.Id, e.Ano, e.Mes);
         if (rec == null || !rec.Fechado) throw new ErroViagem("O mês não está fechado.");
         db.FechamentoDespesas.RemoveRange(rec.Despesas.Where(d => d.Origem != "manual" && !d.Corrigido));
         rec.Fechado = false;

@@ -7,6 +7,8 @@ namespace TransportadoraSystem.Core.Entities;
 /// <summary>Um caminhão num mês: salário do motorista, saldo anterior digitado e a situação (aberto/fechado).</summary>
 public class FechamentoMensal : BaseEntity
 {
+    // Por motorista desde 02/11/2026 (VIA-21); Placa ficou vazia, só para os antigos
+    public int? MotoristaId { get; set; }
     public string Placa { get; set; } = "";
     public int Ano { get; set; }
     public int Mes { get; set; }

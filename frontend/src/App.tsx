@@ -29,6 +29,7 @@ const FreteCalculoPage = tela(() => import('./pages/FreteCalculoPage'))
 const BoletosPage = tela(() => import('./pages/BoletosPage'))
 const FinanceiroPage = tela(() => import('./pages/FinanceiroPage'))
 const SaldosPage = tela(() => import('./pages/SaldosPage'))
+const StradaAgrotradePage = tela(() => import('./pages/StradaAgrotradePage'))
 const PlanilhasPage = tela(() => import('./pages/PlanilhasPage'))
 const CTeExportPage = tela(() => import('./pages/CTeExportPage'))
 const SemPararPage = tela(() => import('./pages/SemPararPage'))
@@ -178,6 +179,7 @@ function Layout() {
             <Route path="/financeiro" element={<FinanceiroPage />} />
             <Route path="/despesas-divididas" element={<DespesasDivididasPage />} />
             <Route path="/saldos" element={<SaldosPage />} />
+            <Route path="/agrotrade-tip" element={<StradaAgrotradePage />} />
             <Route path="/cte-export" element={<CTeExportPage />} />
             <Route path="/cte-export/importar" element={<ImportarCTePage />} />
             <Route path="/semparar" element={<SemPararPage />} />

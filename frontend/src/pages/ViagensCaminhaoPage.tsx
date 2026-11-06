@@ -43,7 +43,7 @@ export default function ViagensCaminhaoPage() {
   return (
     <div className="space-y-5 max-w-6xl">
       <CabecalhoTela
-        descricao={<>Cada viagem é a aba <b>VIAGEMn</b> do acerto do caminhão: carga de volumes (do controle de carregamento), retornos, abastecimentos e despesas, com total, comissão e a sobra que passa para a próxima viagem do mesmo caminhão. As que o motorista envia pelo celular chegam aqui como <b>lançadas</b>.</>}
+        descricao={<>O acerto é por motorista, com a placa que ele usou em cada viagem. Cada viagem é a aba <b>VIAGEMn</b> do acerto: carga de volumes (do controle de carregamento), retornos, abastecimentos e despesas, com total, comissão e a sobra que passa para a próxima viagem do mesmo motorista. As que o motorista envia pelo celular chegam aqui como <b>lançadas</b>.</>}
         acoes={<Botao variante="primario" icone={Plus} onClick={() => navigate(`/viagens-caminhoes/nova?mes=${mes}&ano=${ano}`)}>Nova viagem</Botao>}
       />
       <Abas id={idAbas} valor={aba} onChange={v => mudar({ aba: v })} rotulo="Partes"
@@ -86,15 +86,19 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
     finally { setImportando(false) }
   }
 
-  const exportar = async (placa: string) => {
-    setExportando(placa)
-    try { await viagensApi.exportar(placa, ano, mes) }
+  const exportar = async (grupo: string, vs: ViagemResumo[]) => {
+    setExportando(grupo)
+    try { await viagensApi.exportar(vs[0].motoristaId != null ? { motoristaId: vs[0].motoristaId } : { placa: vs[0].placa }, ano, mes) }
     catch (e) { toast.error(await erroDaApi(e, 'Não consegui gerar a planilha.')) }
     finally { setExportando(null) }
   }
 
-  const porPlaca = new Map<string, ViagemResumo[]>()
-  for (const v of dados?.viagens ?? []) porPlaca.set(v.placa, [...(porPlaca.get(v.placa) ?? []), v])
+  // Um acerto por motorista (VIA-21); a API já manda em ordem de motorista e viagem
+  const porMotorista = new Map<string, ViagemResumo[]>()
+  for (const v of dados?.viagens ?? []) {
+    const g = v.grupo ?? (v.motoristaId != null ? `M${v.motoristaId}` : `P${v.placa}`)
+    porMotorista.set(g, [...(porMotorista.get(g) ?? []), v])
+  }
 
   return (
     <div className="space-y-4">
@@ -124,21 +128,22 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
 
       {falhou ? <ErroCarga mensagem="Não consegui carregar as viagens." onTentar={carregar} />
         : !dados ? <Carregando linhas={5} rotulo="Carregando as viagens" />
-        : porPlaca.size === 0 ? (
+        : porMotorista.size === 0 ? (
           <Vazio icone={Truck} titulo={`Nenhuma viagem em ${mesExtenso(mes, ano)}`}>
             Lance uma viagem nova, espere o motorista enviar pelo celular ou importe o acerto antigo.
           </Vazio>
-        ) : [...porPlaca.entries()].map(([placa, vs]) => (
-          <section key={placa} className="bg-white border border-gray-200 rounded-xl overflow-hidden" aria-labelledby={`cam-${placa}`}>
+        ) : [...porMotorista.entries()].map(([grupo, vs]) => (
+          <section key={grupo} className="bg-white border border-gray-200 rounded-xl overflow-hidden" aria-labelledby={`acerto-${grupo}`}>
             <div className="px-4 py-3 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center gap-2 justify-between">
               <div>
-                <h2 id={`cam-${placa}`} className="font-display text-xl font-semibold text-gray-900">{placa}</h2>
+                <h2 id={`acerto-${grupo}`} className="font-display text-xl font-semibold text-gray-900">{vs[0].motoristaId != null ? vs[0].motorista : vs[0].placa}</h2>
                 <p className="text-sm text-gray-600 tabular-nums">
+                  {vs[0].motoristaId != null && <>{[...new Set(vs.map(v => v.placa))].join(', ')} · </>}
                   {vs.length} {vs.length === 1 ? 'viagem' : 'viagens'} · frete {brl(vs.reduce((s, v) => s + v.valorTotal, 0))} · comissão {brl(vs.reduce((s, v) => s + v.comissao, 0))} · sobra no fim {brl(vs[vs.length - 1].sobra)}
                 </p>
               </div>
-              <Botao variante="secundario" tamanho="sm" icone={Download} carregando={exportando === placa} textoCarregando="Gerando..."
-                     onClick={() => exportar(placa)}>Exportar Excel</Botao>
+              <Botao variante="secundario" tamanho="sm" icone={Download} carregando={exportando === grupo} textoCarregando="Gerando..."
+                     onClick={() => exportar(grupo, vs)}>Exportar Excel</Botao>
             </div>
             <ul className="divide-y divide-gray-100">
               {vs.map(v => (
@@ -150,7 +155,7 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
                     </div>
                     <div className="flex-1 min-w-0 grid grid-cols-1 lg:grid-cols-[2.2fr_1fr_1fr_1fr_1fr] gap-x-4 gap-y-1">
                       <div className="min-w-0">
-                        <p className="font-semibold text-gray-900 truncate">{v.motorista}</p>
+                        <p className="font-semibold text-gray-900 truncate tabular-nums">{v.placa}{v.placaCarreta ? ` / ${v.placaCarreta}` : ''}</p>
                         <p className="text-sm text-gray-600 truncate">
                           {v.dataSaida ? dataBr(v.dataSaida) : 'sem data'}{v.dataChegada ? ` a ${dataBr(v.dataChegada)}` : ''}{v.destino ? ` · ${v.destino}` : ''}
                         </p>

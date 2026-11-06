@@ -43,3 +43,6 @@ Thumbs.db
 **/settings.local.json
 .idea/
 *.tsbuildinfo
+
+# testes com arquivos reais (dados de clientes)
+testes-reais/

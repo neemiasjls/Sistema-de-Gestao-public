@@ -197,16 +197,29 @@ public class CalculoFreteController(AppDbContext db) : ControllerBase
         return Ok(new { calc.Id, planilhas });
     }
 
-    // Os romaneios da carga não vão junto: a chave estrangeira solta a carga
-    // (ON DELETE SET NULL) e eles continuam em Romaneios guardados.
+    // Os romaneios da carga vão junto (Admin, 02/11/2026, NFE-12): também as cópias
+    // soltas de mesmo nome, para não duplicar; os seguintes do cliente descem um número.
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Excluir(int id)
     {
         var c = await db.CalculosFreteSalvos.FindAsync(id);
         if (c == null) return NotFound(new { erro = "Cálculo não encontrado." });
+
+        var daCarga = await db.PlanilhasCarga.Where(p => p.CalculoId == id).ToListAsync();
+        var nomes = daCarga.Select(p => p.Nome.ToUpper()).Distinct().ToList();
+        List<PlanilhaCarga> soltas = nomes.Count == 0 ? [] : await db.PlanilhasCarga
+            .Where(p => p.CalculoId == null && nomes.Contains(p.Nome.ToUpper()))
+            .ToListAsync();
+        var renomeados = await RomaneiosNumeracao.ExcluirERenumerarAsync(db, [.. daCarga, .. soltas]);
+
         db.CalculosFreteSalvos.Remove(c);
         await db.SaveChangesAsync();
-        return Ok(new { mensagem = "Cálculo excluído." });
+        return Ok(new
+        {
+            mensagem = "Carga excluída.",
+            romaneiosExcluidos = daCarga.Select(p => p.Nome).Distinct().ToList(),
+            renomeados,
+        });
     }
 }
 

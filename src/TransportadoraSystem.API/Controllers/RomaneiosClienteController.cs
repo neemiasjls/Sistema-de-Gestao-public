@@ -159,13 +159,70 @@ public class RomaneiosClienteController(AppDbContext db, ILogger<RomaneiosClient
         return Ok(new { novos, atualizados, recusados });
     }
 
+    // Editar o romaneio guardado (Admin, 02/11/2026: o 183 do Aurora e o 174 da BRZ
+    // de 02/11 eram 181 e 172). O número só existe no nome do arquivo; troca em todas as
+    // versões de mesmo nome. Se era o último número do cliente, o contador acompanha,
+    // para o próximo sair em sequência. Planilha nova (acertada no Excel) troca o conteúdo.
+    [HttpPut("{id:int}")]
+    [RequestSizeLimit(20_000_000)]
+    public async Task<IActionResult> Editar(int id, [FromForm] int? numero, IFormFile? arquivo)
+    {
+        var p = await db.PlanilhasCarga.FirstOrDefaultAsync(x => x.Id == id);
+        if (p == null) return NotFound(new { erro = "Romaneio não encontrado." });
+
+        var ident = RomaneioClienteLeitor.LerNome(p.Nome);
+        var nomeNovo = p.Nome;
+        if (numero != null)
+        {
+            if (numero <= 0) return BadRequest(new { erro = "Número do romaneio inválido." });
+            if (EhTexto(p.Nome) || string.IsNullOrWhiteSpace(ident.Apelido) || ident.Data == null)
+                return BadRequest(new { erro = "Este arquivo não tem número de romaneio no nome." });
+            nomeNovo = $"{numero}--{ident.Apelido}-{ident.Data:dd-MM-yyyy}.xlsx";
+            if (!string.Equals(nomeNovo, p.Nome, StringComparison.OrdinalIgnoreCase)
+                && await db.PlanilhasCarga.AnyAsync(x => x.Nome.ToUpper() == nomeNovo.ToUpper()))
+                return Conflict(new { erro = $"Já existe o romaneio {nomeNovo}." });
+        }
+
+        byte[]? conteudo = null;
+        if (arquivo != null && arquivo.Length > 0)
+        {
+            if (EhTexto(p.Nome) != arquivo.FileName.EndsWith(".txt", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { erro = EhTexto(p.Nome) ? "Envie o arquivo .txt." : "Envie a planilha .xlsx." });
+            using var ms = new MemoryStream();
+            await arquivo.CopyToAsync(ms);
+            conteudo = ms.ToArray();
+            if (!EhTexto(p.Nome))
+            {
+                try { RomaneioClienteLeitor.Ler(conteudo); }
+                catch { return BadRequest(new { erro = $"{arquivo.FileName} não abriu como romaneio." }); }
+            }
+        }
+
+        var nomeAntigo = p.Nome;
+        var mesmoNome = await db.PlanilhasCarga
+            .Where(x => x.Nome.ToUpper() == nomeAntigo.ToUpper())
+            .ToListAsync();
+        foreach (var x in mesmoNome) x.Nome = nomeNovo;
+        if (conteudo != null) { p.Conteudo = conteudo; p.CriadoEm = DateTime.UtcNow; }
+
+        if (numero != null && ident.Numero != null && ident.Numero != numero)
+        {
+            var contador = await db.RomaneioContadores.FirstOrDefaultAsync(c => c.Apelido == ident.Apelido);
+            if (contador != null && contador.Ultimo == ident.Numero) contador.Ultimo = numero.Value;
+        }
+
+        await db.SaveChangesAsync();
+        return Ok(new { p.Id, nome = nomeNovo });
+    }
+
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Excluir(int id)
     {
         var p = await db.PlanilhasCarga.FindAsync(id);
         if (p == null) return NotFound(new { erro = "Romaneio não encontrado." });
-        db.PlanilhasCarga.Remove(p);
+        // Sem outra versão de mesmo nome, os seguintes do cliente descem um número (NFE-12)
+        var renomeados = await RomaneiosNumeracao.ExcluirERenumerarAsync(db, [p]);
         await db.SaveChangesAsync();
-        return Ok(new { mensagem = "Romaneio excluído." });
+        return Ok(new { mensagem = "Romaneio excluído.", renomeados });
     }
 }

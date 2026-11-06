@@ -1,16 +1,18 @@
 import api from './api'
 import { comoLista, comoObjeto } from '../utils/resposta'
 
-// Fechamento mensal por caminhão (VIA-18). As contas moram na API
+// Fechamento mensal por motorista (VIA-18, VIA-21 desde 02/11/2026; era por caminhão). As contas moram na API
 // (FechamentoMensalCalculo); aqui só os tipos e as chamadas.
 
-export const PLACAS_ACERTO = ['XAC-6D57', 'XAA-9457', 'XAB-4C58'] as const
+export interface MotoristaFechamento { id: number; nome: string }
 
 export interface LinhaViagemFechamento {
   id: number
   dataSaida: string | null
   destino: string | null
   motorista: string
+  placa: string
+  placaCarreta: string | null
   resultado: number
   freteComissao: number
   porcentagemComissao: number
@@ -58,7 +60,10 @@ export interface TotaisFechamento {
 }
 
 export interface Fechamento {
-  placa: string
+  motoristaId: number
+  motorista: string
+  /** Placas com que ele viajou no mês */
+  placas: string[]
   ano: number
   mes: number
   salvo: boolean
@@ -78,7 +83,7 @@ export interface Fechamento {
 }
 
 export interface FechamentoEntrada {
-  placa: string
+  motoristaId: number
   ano: number
   mes: number
   saldoAnteriorDigitado: number | null
@@ -102,17 +107,18 @@ export interface Consorcio {
 }
 export type ConsorcioEntrada = Omit<Consorcio, 'id'>
 
-const LISTAS = ['viagens', 'creditos', 'despesas', 'vales', 'avisos'] as const
+const LISTAS = ['viagens', 'creditos', 'despesas', 'vales', 'avisos', 'placas'] as const
 const comoFechamento = (d: unknown) => comoObjeto<Fechamento>(d, LISTAS, 'fechamento')
 
 export const fechamentosApi = {
-  montar: (placa: string, ano: number, mes: number) =>
-    api.get('/api/fechamentos', { params: { placa, ano, mes } }).then(r => comoFechamento(r.data)),
+  motoristas: () => api.get('/api/fechamentos/motoristas').then(r => comoLista<MotoristaFechamento>(r.data, 'motoristas')),
+  montar: (motoristaId: number, ano: number, mes: number) =>
+    api.get('/api/fechamentos', { params: { motoristaId, ano, mes } }).then(r => comoFechamento(r.data)),
   salvar: (e: FechamentoEntrada) => api.put('/api/fechamentos', e).then(r => comoFechamento(r.data)),
-  fechar: (placa: string, ano: number, mes: number) =>
-    api.post('/api/fechamentos/fechar', { placa, ano, mes }).then(r => comoFechamento(r.data)),
-  reabrir: (placa: string, ano: number, mes: number) =>
-    api.post('/api/fechamentos/reabrir', { placa, ano, mes }).then(r => comoFechamento(r.data)),
+  fechar: (motoristaId: number, ano: number, mes: number) =>
+    api.post('/api/fechamentos/fechar', { motoristaId, ano, mes }).then(r => comoFechamento(r.data)),
+  reabrir: (motoristaId: number, ano: number, mes: number) =>
+    api.post('/api/fechamentos/reabrir', { motoristaId, ano, mes }).then(r => comoFechamento(r.data)),
   consorcios: (placa?: string) =>
     api.get('/api/fechamentos/consorcios', { params: { placa: placa || undefined } }).then(r => comoLista<Consorcio>(r.data, 'consórcios')),
   criarConsorcio: (e: ConsorcioEntrada) => api.post<Consorcio>('/api/fechamentos/consorcios', e).then(r => r.data),

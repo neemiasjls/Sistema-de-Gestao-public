@@ -43,7 +43,13 @@ builder.Services.AddDbContext<AppDbContext>(opt =>
 
 // ── Serviços ───────────────────────────────────────────────────────
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddScoped<StradaService>();
 builder.Services.AddHttpClient<EmailService>();
+// Sicoob: o certificado A1 vai na conexão (mTLS), por isso o handler próprio
+builder.Services.AddHttpClient<SicoobService>(c => c.Timeout = TimeSpan.FromSeconds(30))
+    .ConfigurePrimaryHttpMessageHandler(sp => SicoobService.CriarHandler(
+        sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<ILoggerFactory>().CreateLogger("Sicoob")))
+    .SetHandlerLifetime(TimeSpan.FromHours(6));
 builder.Services.AddScoped<CTeImportService>();
 builder.Services.AddScoped<ExcelExportService>();
 builder.Services.AddScoped<NFeImportService>();
@@ -339,6 +345,7 @@ app.MapGet("/health/tabelas", async (AppDbContext db) =>
         "ComissoesBarracao", "DespesasDoBarracao",
         "FechamentosMensais", "FechamentoDespesas", "FechamentoCreditos", "FechamentoVales", "Consorcios",
         "DespesasDivididasLinhas", "DespesasDivididasSocios", "DespesasDivididasPlacas", "PlacasFrota", "MotoristasCnhPdf",
+        "AgrotradeViagens", "StradaFaturas", "StradaContratos", "StradaArquivos",
     ];
 
     try

@@ -2,13 +2,14 @@ import { Carregando, ErroCarga, Vazio } from '../components/ui/Estados'
 import AreaSoltar from '../components/ui/AreaSoltar'
 import { useConfirmar } from '../components/ui/Confirmar'
 import ComparaBoletos from '../components/ComparaBoletos'
+import ExtratoSicoob from '../components/ExtratoSicoob'
 import { Abas, PainelAba, Segmentado, useAbas } from '../components/ui/Abas'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
 import Aviso from '../components/ui/Aviso'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { ArrowDownToLine, ArrowUpFromLine, ChevronRight, Download, FileUp, Inbox, Pencil, Plus, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, ChevronRight, Landmark, Download, FileUp, Inbox, Pencil, Plus, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
 import { boletosApi, clientesApi, formatBRL, type Boleto, type Cliente } from '../services/api'
 import {
   boletosContasApi as api,
@@ -37,7 +38,7 @@ const inputCls = 'w-full min-h-11 sm:min-h-0 text-sm border border-gray-300 roun
 const diasAte = (venc: string, hoje: string) =>
   Math.round((Date.parse(`${venc}T12:00:00`) - Date.parse(`${hoje}T12:00:00`)) / 86_400_000)
 
-type Aba = 'pagar' | 'receber'
+type Aba = 'pagar' | 'receber' | 'extrato'
 
 export default function BoletosPage() {
   const [aba, setAba] = useState<Aba>('pagar')
@@ -47,10 +48,10 @@ export default function BoletosPage() {
       <CabecalhoTela descricao="O que a transportadora tem a pagar (postos e outros) e o que tem a receber dos clientes." />
 
       <Abas id={idAbas} valor={aba} onChange={setAba} rotulo="Tipo de boleto"
-            opcoes={[['pagar', 'A pagar', ArrowUpFromLine], ['receber', 'A receber', ArrowDownToLine]]} />
+            opcoes={[['pagar', 'A pagar', ArrowUpFromLine], ['receber', 'A receber', ArrowDownToLine], ['extrato', 'Extrato', Landmark]]} />
 
       <PainelAba id={idAbas} valor={aba}>
-        {aba === 'pagar' ? <APagar /> : <AReceber />}
+        {aba === 'pagar' ? <APagar /> : aba === 'receber' ? <AReceber /> : <ExtratoSicoob />}
       </PainelAba>
     </div>
   )

@@ -73,11 +73,11 @@ public class ViagensCaminhaoController(ViagensCaminhaoService svc, AuthService a
     }
 
     [HttpGet("excel")]
-    public async Task<IActionResult> Excel([FromQuery] string placa, [FromQuery] int ano, [FromQuery] int mes)
+    public async Task<IActionResult> Excel([FromQuery] int? motoristaId, [FromQuery] string? placa, [FromQuery] int ano, [FromQuery] int mes)
     {
         try
         {
-            var (bytes, nome) = await svc.ExportarAcertoAsync(placa, ano, mes);
+            var (bytes, nome) = await svc.ExportarAcertoAsync(motoristaId, placa, ano, mes);
             return File(bytes, Xlsx, nome);
         }
         catch (ErroViagem ex) { return BadRequest(new { erro = ex.Message }); }

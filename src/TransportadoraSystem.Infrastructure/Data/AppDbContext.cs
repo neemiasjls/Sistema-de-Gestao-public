@@ -114,6 +114,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<DespesaDivididaPlaca> DespesasDivididasPlacas => Set<DespesaDivididaPlaca>();
     public DbSet<PlacaFrota> PlacasFrota => Set<PlacaFrota>();
     public DbSet<MotoristaCnhPdf> MotoristasCnhPdf => Set<MotoristaCnhPdf>();
+    // Fretes Agrotrade pela Strada / TIP Bank (PEN-39); tabelas criadas no Ddl.cs
+    public DbSet<ViagemAgrotrade> AgrotradeViagens => Set<ViagemAgrotrade>();
+    public DbSet<StradaFatura> StradaFaturas => Set<StradaFatura>();
+    public DbSet<StradaContrato> StradaContratos => Set<StradaContrato>();
+    public DbSet<StradaArquivo> StradaArquivos => Set<StradaArquivo>();
 
     // Data fixa para seed — nunca usar DateTime.UtcNow em seed data (gera migrations não-determinísticas)
     private static readonly DateTime _seedDate = new(2025, 5, 5, 0, 0, 0, DateTimeKind.Utc);

@@ -13,13 +13,13 @@ import { CampoNumero, NavegaMes, Selo, mesExtenso } from './ViagensPecas'
 import { brl, dataBr, num } from '../../utils/formato'
 import { erroDaApi } from '../../services/semPararApi'
 import {
-  fechamentosApi, PLACAS_ACERTO,
+  fechamentosApi, type MotoristaFechamento,
   type Consorcio, type ConsorcioEntrada, type CreditoFechamento, type DespesaFechamento, type Fechamento,
   type SalarioFechamento, type ValeFechamento,
 } from '../../services/fechamentosApi'
-import { MESES } from '../../services/viagensCaminhaoApi'
+import { MESES, viagensApi } from '../../services/viagensCaminhaoApi'
 
-// Fechamento mensal por caminhão (VIA-18): as abas FECHAMENTO, DESPESAS DO MES e
+// Fechamento mensal por motorista (VIA-18, VIA-21: era por caminhão; o motorista usa a placa que for): as abas FECHAMENTO, DESPESAS DO MES e
 // COMISSÃO do acerto. Aberto edita; "Fechar o mês" trava (e "Reabrir" destrava).
 
 type Edicao = {
@@ -51,7 +51,8 @@ const despesaVazia = (): DespesaFechamento => ({
 
 export default function FechamentoMes({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: number, a: number) => void }) {
   const confirmar = useConfirmar()
-  const [placa, setPlaca] = useState<string>(PLACAS_ACERTO[0])
+  const [motoristas, setMotoristas] = useState<MotoristaFechamento[] | null>(null)
+  const [motoristaId, setMotoristaId] = useState<number | null>(null)
   const [dados, setDados] = useState<Fechamento | null>(null)
   const [ed, setEd] = useState<Edicao | null>(null)
   const [base, setBase] = useState('')
@@ -64,11 +65,19 @@ export default function FechamentoMes({ mes, ano, onMes }: { mes: number; ano: n
     setDados(f); setEd(e); setBase(JSON.stringify(e))
   }, [])
 
+  useEffect(() => {
+    fechamentosApi.motoristas().then(l => { setMotoristas(l); setMotoristaId(id => id ?? l[0]?.id ?? null) })
+      .catch(() => setFalhou(true))
+  }, [])
+
   const carregar = useCallback(() => {
+    if (motoristaId == null) return
     setFalhou(false); setDados(null); setEd(null)
-    fechamentosApi.montar(placa, ano, mes).then(aplicar).catch(() => setFalhou(true))
-  }, [placa, ano, mes, aplicar])
+    fechamentosApi.montar(motoristaId, ano, mes).then(aplicar).catch(() => setFalhou(true))
+  }, [motoristaId, ano, mes, aplicar])
   useEffect(carregar, [carregar])
+  const nomeMotorista = motoristas?.find(m => m.id === motoristaId)?.nome ?? dados?.motorista ?? ''
+  const primeiroNome = (n: string) => n.split(' ')[0] ?? n
 
   const sujo = ed != null && JSON.stringify(ed) !== base
 
@@ -111,7 +120,7 @@ export default function FechamentoMes({ mes, ano, onMes }: { mes: number; ano: n
   })
 
   const entrada = () => ({
-    placa, ano, mes,
+    motoristaId: motoristaId!, ano, mes,
     saldoAnteriorDigitado: ed!.saldoDigitado,
     salario: ed!.salario,
     observacao: ed!.observacao || null,
@@ -140,14 +149,14 @@ export default function FechamentoMes({ mes, ano, onMes }: { mes: number; ano: n
     if (!dados) return
     const pendencias = dados.avisos.length
     if (!await confirmar({
-      titulo: `Fechar ${mesExtenso(mes, ano)} de ${placa}?`, confirmar: 'Fechar o mês', perigo: false,
+      titulo: `Fechar ${mesExtenso(mes, ano)} de ${primeiroNome(nomeMotorista)}?`, confirmar: 'Fechar o mês', perigo: false,
       texto: <>As linhas automáticas ficam gravadas como estão hoje e nada mais pode ser alterado até reabrir.
         {pendencias > 0 && <> Ainda há {pendencias} aviso(s) na tela.</>}</>,
     })) return
     if (sujo && !await salvar(false)) return
     setSalvando(true)
     try {
-      aplicar(await fechamentosApi.fechar(placa, ano, mes))
+      aplicar(await fechamentosApi.fechar(motoristaId!, ano, mes))
       toast.success('Mês fechado.')
     } catch (e) { toast.error(await erroDaApi(e, 'Não consegui fechar o mês.')) }
     finally { setSalvando(false) }
@@ -155,12 +164,12 @@ export default function FechamentoMes({ mes, ano, onMes }: { mes: number; ano: n
 
   const reabrir = async () => {
     if (!await confirmar({
-      titulo: `Reabrir ${mesExtenso(mes, ano)} de ${placa}?`, confirmar: 'Reabrir', perigo: false,
+      titulo: `Reabrir ${mesExtenso(mes, ano)} de ${primeiroNome(nomeMotorista)}?`, confirmar: 'Reabrir', perigo: false,
       texto: 'As linhas automáticas voltam a ser recalculadas (as que você corrigiu à mão ficam como estão).',
     })) return
     setSalvando(true)
     try {
-      aplicar(await fechamentosApi.reabrir(placa, ano, mes))
+      aplicar(await fechamentosApi.reabrir(motoristaId!, ano, mes))
       toast.success('Mês reaberto.')
     } catch (e) { toast.error(await erroDaApi(e, 'Não consegui reabrir o mês.')) }
     finally { setSalvando(false) }
@@ -171,7 +180,10 @@ export default function FechamentoMes({ mes, ano, onMes }: { mes: number; ano: n
     <div className="flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
         <NavegaMes mes={mes} ano={ano} onChange={onMes} />
-        <Segmentado valor={placa} onChange={setPlaca} rotulo="Caminhão" opcoes={PLACAS_ACERTO.map(p => [p, p] as const)} />
+        {motoristas && motoristaId != null && (
+          <Segmentado valor={String(motoristaId)} onChange={v => setMotoristaId(Number(v))} rotulo="Motorista"
+                      opcoes={motoristas.map(m => [String(m.id), primeiroNome(m.nome)] as const)} />
+        )}
       </div>
       <Botao variante="secundario" icone={Landmark} onClick={() => setConsorcios(true)}>Consórcios</Botao>
     </div>
@@ -183,13 +195,13 @@ export default function FechamentoMes({ mes, ano, onMes }: { mes: number; ano: n
   return (
     <div className="space-y-5">
       {cab}
-      {consorcios && <ConsorciosModal placa={placa} onClose={() => { setConsorcios(false); if (!sujo) carregar() }} />}
+      {consorcios && <ConsorciosModal placa={dados.placas[0] ?? ''} onClose={() => { setConsorcios(false); if (!sujo) carregar() }} />}
 
       <div className="flex flex-wrap items-center gap-2">
         {fechado
           ? <Selo tom="info">Fechado{dados.fechadoEm ? ` em ${dataBr(dados.fechadoEm.slice(0, 10))}` : ''}</Selo>
           : <Selo tom="atencao">Aberto</Selo>}
-        <span className="text-sm text-gray-600">{placa} · {MESES[mes - 1]} de {ano}</span>
+        <span className="text-sm text-gray-600">{nomeMotorista} · {MESES[mes - 1]} de {ano}{dados.placas.length > 0 ? ` · ${dados.placas.join(', ')}` : ''}</span>
       </div>
 
       {dados.avisos.length > 0 && <Aviso tipo="atencao" titulo="Confira antes de fechar" itens={dados.avisos} />}
@@ -203,7 +215,7 @@ export default function FechamentoMes({ mes, ano, onMes }: { mes: number; ano: n
               {dados.viagens.map((v, i) => (
                 <li key={v.id} className="py-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
                   <span className="font-medium text-gray-900 w-24">{i + 1}ª · {v.dataSaida ? dataBr(v.dataSaida) : 'sem data'}</span>
-                  <span className="flex-1 min-w-[8rem] text-gray-600">{v.motorista}{v.destino ? ` · ${v.destino}` : ''}</span>
+                  <span className="flex-1 min-w-[8rem] text-gray-600 tabular-nums">{v.placa}{v.placaCarreta ? ` / ${v.placaCarreta}` : ''}{v.destino ? ` · ${v.destino}` : ''}</span>
                   <span className="tabular-nums font-semibold">{brl(v.resultado)}</span>
                 </li>
               ))}
@@ -383,6 +395,11 @@ function ConsorciosModal({ placa, onClose }: { placa: string; onClose: () => voi
   const [falhou, setFalhou] = useState(false)
   const [form, setForm] = useState<{ id: number | null; e: ConsorcioEntrada } | null>(null)
   const [salvando, setSalvando] = useState(false)
+  // Qualquer cavalo do cadastro (VIA-21): a parcela cai no motorista que viajou com ele no mês
+  const [cavalos, setCavalos] = useState<string[]>([])
+  useEffect(() => {
+    viagensApi.placas().then(l => setCavalos(l.filter(p => p.tipo === 'Cavalo' && p.ativo).map(p => p.placa))).catch(() => setCavalos([]))
+  }, [])
 
   const carregar = useCallback(() => {
     setFalhou(false)
@@ -412,7 +429,7 @@ function ConsorciosModal({ placa, onClose }: { placa: string; onClose: () => voi
 
   return (
     <Modal titulo="Consórcios" onClose={onClose} largura="lg" sujo={form != null}
-           descricao="Cada mês, dentro do prazo, cai uma parcela nas despesas do caminhão.">
+           descricao="Cada mês, dentro do prazo, cai uma parcela nas despesas do motorista que viajou com o caminhão naquele mês.">
       {falhou && <ErroCarga mensagem="Não consegui carregar os consórcios." onTentar={carregar} />}
       {!falhou && lista == null && <Carregando linhas={2} />}
       {lista && !form && (
@@ -439,7 +456,8 @@ function ConsorciosModal({ placa, onClose }: { placa: string; onClose: () => voi
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Campo rotulo="Caminhão">
               <select value={form.e.placa} onChange={e => set({ placa: e.target.value })} className={classeCampo}>
-                {PLACAS_ACERTO.map(p => <option key={p} value={p}>{p}</option>)}
+                {!form.e.placa && <option value="">Escolha o caminhão</option>}
+                {[...new Set([...(form.e.placa ? [form.e.placa] : []), ...cavalos])].map(p => <option key={p} value={p}>{p}</option>)}
               </select>
             </Campo>
             <Campo rotulo="Descrição"><input value={form.e.descricao} onChange={e => set({ descricao: e.target.value })} className={classeCampo} /></Campo>

@@ -96,8 +96,8 @@ public class MotoristaPainelController(ViagensCaminhaoService svc, AppDbContext 
         });
     }
 
-    // Sobra da viagem anterior do caminhão (Admin, 07/10/2026): ele leva para esta
-    // viagem. Muda com a placa que ele escolhe. Ao corrigir, viagemId é o envio que
+    // Sobra da viagem anterior DELE (Admin, 07/10/2026; por motorista desde 02/11/2026, VIA-21):
+    // ele leva para esta viagem, com qualquer placa. Ao corrigir, viagemId é o envio que
     // está corrigindo (só vale se for dele) e ele mesmo sai da conta.
     [HttpGet("sobra-anterior")]
     public async Task<IActionResult> SobraAnterior([FromQuery] string? placa, [FromQuery] DateOnly? dataSaida, [FromQuery] int? viagemId)
@@ -105,7 +105,7 @@ public class MotoristaPainelController(ViagensCaminhaoService svc, AppDbContext 
         int? propria = null;
         if (viagemId is { } vid && await db.ViagensCaminhao.AnyAsync(v => v.Id == vid && v.MotoristaId == _motorista!.Id))
             propria = vid;
-        var r = await svc.SobraAnteriorPainelAsync(placa, dataSaida, propria);
+        var r = await svc.SobraAnteriorPainelAsync(_motorista!.Id, placa, dataSaida, propria);
         return Ok(new { r.TemAnterior, r.Sobra, r.DataViagemAnterior });
     }
 

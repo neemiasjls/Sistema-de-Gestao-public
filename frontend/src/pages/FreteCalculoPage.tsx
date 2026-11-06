@@ -13,6 +13,7 @@ import ProdutosSemTipo, { type ProdutoSemTipo } from '../components/ProdutosSemT
 import { ArrowRight, ArrowUp, Calculator, Check, ChevronDown, ChevronRight, Copy, Download, FileSpreadsheet, FileText, FileUp, MapPin, Pencil, Plus, Save, Trash2, Truck, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import CityAutocomplete from '../components/CityAutocomplete'
+import EditarRomaneio from '../components/EditarRomaneio'
 import api, { ctesApi, calculosFreteApi, downloadBlob, formatBRL, guardarArquivosNFe, nomeDoArquivo, type FreteCalculoResult, type ItemFreteCalculo, type NfDetalhe, type CalculoFreteSalvoResumo, type PlanilhaDaCarga, type ConflitoTipo, type CorrecaoTipo } from '../services/api'
 import ClienteBadge from '../components/ClienteBadge'
 import { recalcularRotasFrete } from '../services/freteRotas'
@@ -164,6 +165,7 @@ export default function FreteCalculoPage() {
   const [planilhasGeradas, setPlanilhasGeradas] = useState<{ nome: string; conteudo: string }[]>([])
   const [planilhasSalvas, setPlanilhasSalvas]   = useState<PlanilhaDaCarga[]>([])
   const [cargaAbertaId, setCargaAbertaId]       = useState<number | null>(null)
+  const [editandoPlanilha, setEditandoPlanilha] = useState<PlanilhaDaCarga | null>(null)
 
   // ── Cargas salvas ─────────────────────────────────────────────
   const [salvos, setSalvos]             = useState<CalculoFreteSalvoResumo[]>([])
@@ -334,14 +336,20 @@ export default function FreteCalculoPage() {
     const dia = new Date(c.criadoEm).toLocaleDateString('pt-BR')
     if (!await confirmar({
       titulo: `Excluir a carga de ${c.placa}?`,
-      texto: <>Carga de <b>{dia}</b>, {formatBRL(c.valorCarga)}. As planilhas guardadas nela também somem. Não dá para desfazer.</>,
+      texto: <>Carga de <b>{dia}</b>, {formatBRL(c.valorCarga)}.
+        {(c.totalPlanilhas ?? 0) > 0 && <> Os romaneios dela também são excluídos, e os romaneios seguintes do mesmo cliente descem um número para não ficar buraco na sequência.</>}
+        {' '}Não dá para desfazer.</>,
       confirmar: 'Excluir carga',
     })) return
     try {
-      await calculosFreteApi.excluir(c.id)
-      toast.success('Cálculo excluído.')
+      const { data } = await calculosFreteApi.excluir(c.id)
+      const excluidos = data?.romaneiosExcluidos?.length ?? 0
+      const renomeados = data?.renomeados?.length ?? 0
+      toast.success(`Carga excluída${excluidos ? ` com ${excluidos} romaneio${excluidos === 1 ? '' : 's'}` : ''}` +
+        `${renomeados ? `. ${renomeados} romaneio${renomeados === 1 ? '' : 's'} renumerado${renomeados === 1 ? '' : 's'}` : ''}.`)
+      if (cargaAbertaId === c.id) { setCargaAbertaId(null); setPlanilhasSalvas([]); ultimaGeracao.current = null }
       await carregarSalvos()
-    } catch { toast.error('Erro ao excluir cálculo.') }
+    } catch { toast.error('Erro ao excluir a carga.') }
   }
 
   // ── Rotas cadastradas ─────────────────────────────────────────
@@ -997,6 +1005,20 @@ export default function FreteCalculoPage() {
             </>
           )}
 
+          {editandoPlanilha && (
+            <EditarRomaneio id={editandoPlanilha.id} nome={editandoPlanilha.nome} onClose={() => setEditandoPlanilha(null)}
+                            onSalvo={nomeNovo => {
+                              const id = editandoPlanilha.id
+                              setPlanilhasSalvas(prev => prev.map(p => p.id === id ? { ...p, nome: nomeNovo } : p))
+                              // Número novo vale para gerar de novo nesta carga
+                              const mm = /^(\d+)--(.+?)-\d{2}-\d{2}-\d{4}\.xlsx$/i.exec(nomeNovo)
+                              if (mm) setNumerosRom(prev => {
+                                const ap = Object.keys(prev).find(k => k.toUpperCase() === mm[2].toUpperCase())
+                                return ap ? { ...prev, [ap]: Number(mm[1]) } : prev
+                              })
+                            }} />
+          )}
+
           {planilhasSalvas.length > 0 && (
             <div className="space-y-2">
               <h3 className="text-sm font-semibold text-gray-800">Guardadas nesta carga</h3>
@@ -1007,7 +1029,10 @@ export default function FreteCalculoPage() {
                       <FileSpreadsheet size={16} className="text-tinta-500 shrink-0" aria-hidden />
                       <span className="text-sm text-gray-800 truncate" title={pl.nome}>{pl.nome}</span>
                     </span>
-                    <BotaoIcone icone={Download} rotulo={`Baixar ${pl.nome}`} onClick={() => baixarPlanilhaSalva(pl)} />
+                    <span className="flex items-center shrink-0">
+                      <BotaoIcone icone={Pencil} rotulo={`Editar ${pl.nome}`} onClick={() => setEditandoPlanilha(pl)} />
+                      <BotaoIcone icone={Download} rotulo={`Baixar ${pl.nome}`} onClick={() => baixarPlanilhaSalva(pl)} />
+                    </span>
                   </li>
                 ))}
               </ul>

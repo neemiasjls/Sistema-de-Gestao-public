@@ -68,6 +68,14 @@ export const romaneiosClienteApi = {
   listar: () => api.get('/api/romaneios-cliente').then(r => comDados(r, d => comoLista<RomaneioGuardado>(d, 'romaneios'))),
   resumo: (id: number) => api.get<ResumoRomaneio>(`/api/romaneios-cliente/${id}/resumo`),
   excluir: (id: number) => api.delete(`/api/romaneios-cliente/${id}`),
+  // Troca o número (só existe no nome do arquivo) e/ou a planilha acertada no Excel
+  editar: (id: number, dados: { numero?: number; arquivo?: File | null }) => {
+    const fd = new FormData()
+    if (dados.numero != null) fd.append('numero', String(dados.numero))
+    if (dados.arquivo) fd.append('arquivo', dados.arquivo)
+    return api.put<{ id: number; nome: string }>(`/api/romaneios-cliente/${id}`, fd,
+      { headers: { 'Content-Type': 'multipart/form-data' } })
+  },
   // Romaneios feitos fora do sistema (os do Drive). Volta o que entrou e o que ficou de fora.
   importar: (arquivos: File[]) => {
     const fd = new FormData()

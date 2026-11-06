@@ -46,14 +46,23 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
 
     // ───────────────────────── Leitura ─────────────────────────
 
-    /// <summary>Sobra anterior das viagens dos caminhões pedidos (cadeia inteira de cada um).</summary>
-    public async Task<Dictionary<int, decimal>> SobrasAsync(IEnumerable<string> placas)
+    /// <summary>
+    /// De quem é a cadeia da sobra e o acerto (VIA-21, Admin, 02/11/2026): do MOTORISTA, com
+    /// qualquer placa que ele usar; viagem sem motorista ligado fica na cadeia da placa.
+    /// </summary>
+    public static string Cadeia(ViagemCaminhao v) => v.MotoristaId is { } m ? $"M{m}" : $"P{v.Placa}";
+
+    /// <summary>Sobra anterior das viagens pedidas (cadeia inteira do motorista de cada uma).</summary>
+    public async Task<Dictionary<int, decimal>> SobrasAsync(IEnumerable<ViagemCaminhao> pedidas)
     {
-        var lista = placas.Distinct().ToList();
-        var viagens = await db.ViagensCaminhao.Where(v => lista.Contains(v.Placa))
+        var ped = pedidas.ToList();
+        var mots = ped.Where(v => v.MotoristaId != null).Select(v => v.MotoristaId!.Value).Distinct().ToList();
+        var placas = ped.Where(v => v.MotoristaId == null).Select(v => v.Placa).Distinct().ToList();
+        var viagens = await db.ViagensCaminhao
+            .Where(v => (v.MotoristaId != null && mots.Contains(v.MotoristaId.Value)) || (v.MotoristaId == null && placas.Contains(v.Placa)))
             .Include(v => v.Abastecimentos).Include(v => v.Despesas).AsSplitQuery().AsNoTracking().ToListAsync();
         var mapa = new Dictionary<int, decimal>();
-        foreach (var g in viagens.GroupBy(v => v.Placa))
+        foreach (var g in viagens.GroupBy(Cadeia))
             foreach (var kv in SobrasAnteriores(g)) mapa[kv.Key] = kv.Value;
         return mapa;
     }
@@ -61,19 +70,18 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
     public record SobraAnteriorPainel(bool TemAnterior, decimal Sobra, DateOnly? DataViagemAnterior);
 
     /// <summary>
-    /// Sobra que a viagem que o motorista está preenchendo recebe da anterior do mesmo
-    /// caminhão (VIA-07), igual à conta do escritório: a folha entra na cadeia como uma
+    /// Sobra que a viagem que o motorista está preenchendo recebe da anterior DELE (VIA-07,
+    /// VIA-21: por motorista, com qualquer placa), igual à conta do escritório: a folha entra na cadeia como uma
     /// viagem a mais (mês da saída, data de saída) e a sobra é a da viagem logo antes
     /// dela, em qualquer situação. Ao corrigir um envio, a própria viagem sai da cadeia
     /// e fica no mês de acerto que já tem. Só devolve sobra e data, nada de frete.
     /// </summary>
-    public async Task<SobraAnteriorPainel> SobraAnteriorPainelAsync(string? placaInformada, DateOnly? dataSaida, int? viagemPropriaId)
+    public async Task<SobraAnteriorPainel> SobraAnteriorPainelAsync(int motoristaId, string? placaInformada, DateOnly? dataSaida, int? viagemPropriaId)
     {
         var placa = NormalizarPlaca(placaInformada);
-        if (placa.Length == 0) return new(false, 0, null);
         var propria = viagemPropriaId is { } pid ? await db.ViagensCaminhao.AsNoTracking().FirstOrDefaultAsync(v => v.Id == pid) : null;
         var excluir = propria?.Id ?? 0;
-        var viagens = await db.ViagensCaminhao.AsNoTracking().Where(v => v.Placa == placa && v.Id != excluir)
+        var viagens = await db.ViagensCaminhao.AsNoTracking().Where(v => v.MotoristaId == motoristaId && v.Id != excluir)
             .Include(v => v.Abastecimentos).Include(v => v.Despesas).AsSplitQuery().ToListAsync();
         if (viagens.Count == 0) return new(false, 0, null);
 
@@ -81,7 +89,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         var refDia = dia ?? DateOnly.FromDateTime(DateTime.Today);
         var folha = new ViagemCaminhao
         {
-            Id = propria?.Id ?? int.MaxValue, Placa = placa, DataSaida = dia,
+            Id = propria?.Id ?? int.MaxValue, Placa = placa, MotoristaId = motoristaId, DataSaida = dia,
             AnoReferencia = propria?.AnoReferencia ?? refDia.Year, MesReferencia = propria?.MesReferencia ?? refDia.Month,
         };
         var ordem = EmOrdem(viagens.Append(folha)).ToList();
@@ -101,17 +109,19 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         var viagens = await q.ToListAsync();
         var ids = viagens.Select(v => v.Id).ToList();
         var rets = await db.RetornosFrete.AsNoTracking().Where(r => r.ViagemId != null && ids.Contains(r.ViagemId.Value)).ToListAsync();
-        var sobras = await SobrasAsync(viagens.Select(v => v.Placa));
+        var sobras = await SobrasAsync(viagens);
         var nomes = await db.MotoristasFrota.AsNoTracking().ToDictionaryAsync(m => m.Id, m => m.Nome);
+        string NomeDe(ViagemCaminhao v) => v.MotoristaId is { } mid && nomes.TryGetValue(mid, out var n) ? n : (v.MotoristaNome ?? "");
 
-        var itens = viagens.GroupBy(v => v.Placa).OrderBy(g => g.Key).SelectMany(g => EmOrdem(g).Select((v, i) =>
+        // Um acerto por motorista (VIA-21); VIAGEMn conta dentro do motorista no mês
+        var itens = viagens.GroupBy(Cadeia).OrderBy(g => NomeDe(g.First())).ThenBy(g => g.Key).SelectMany(g => EmOrdem(g).Select((v, i) =>
         {
             var rv = rets.Where(r => r.ViagemId == v.Id).ToList();
             var c = Calcular(v, rv, sobras.GetValueOrDefault(v.Id));
             return new
             {
                 v.Id, v.Placa, v.PlacaCarreta, Numero = i + 1,
-                Motorista = v.MotoristaId is { } mid && nomes.TryGetValue(mid, out var n) ? n : v.MotoristaNome,
+                Motorista = NomeDe(v), Grupo = Cadeia(v),
                 v.MotoristaId, v.Destino, v.DataSaida, v.DataChegada, v.Status, v.Origem, v.EnviadoEm,
                 c.TotalVolumes, c.TotalRetornos, c.ValorTotal, c.TotalDespesas, c.Comissao, c.Sobra, Resultado = c.Resultado_,
                 SemVolumes = v.Volumes.Count == 0,
@@ -131,12 +141,13 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         var v = await ComTudo().AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
         if (v == null) return null;
         var rets = await db.RetornosFrete.AsNoTracking().Where(r => r.ViagemId == id).OrderBy(r => r.Data).ThenBy(r => r.Id).ToListAsync();
-        var sobras = await SobrasAsync([v.Placa]);
+        var sobras = await SobrasAsync([v]);
         var c = Calcular(v, rets, sobras.GetValueOrDefault(id));
 
-        // Posição na cadeia do mês (VIAGEMn) e vizinhas
-        var doMes = await db.ViagensCaminhao.AsNoTracking()
-            .Where(x => x.Placa == v.Placa && x.AnoReferencia == v.AnoReferencia && x.MesReferencia == v.MesReferencia).ToListAsync();
+        // Posição na cadeia do mês (VIAGEMn, por motorista) e vizinhas
+        var doMes = (await db.ViagensCaminhao.AsNoTracking()
+            .Where(x => x.AnoReferencia == v.AnoReferencia && x.MesReferencia == v.MesReferencia
+                && (v.MotoristaId != null ? x.MotoristaId == v.MotoristaId : x.MotoristaId == null && x.Placa == v.Placa)).ToListAsync());
         var ordem = EmOrdem(doMes).Select(x => x.Id).ToList();
 
         var sugeridos = await RetornosSugeridosAsync(v);
@@ -1123,7 +1134,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
 
         // Confere: o que o sistema calcula contra os totais guardados na planilha
         var viagensMes = await ComTudo().AsNoTracking().Where(v => v.Placa == lido.Placa && v.AnoReferencia == lido.Ano && v.MesReferencia == lido.Mes).ToListAsync();
-        var sobras = await SobrasAsync([lido.Placa]);
+        var sobras = await SobrasAsync(viagensMes);
         var idsMes = viagensMes.Select(x => x.Id).ToList();
         var retsMes = await db.RetornosFrete.AsNoTracking().Where(r => r.ViagemId != null && idsMes.Contains(r.ViagemId.Value)).ToListAsync();
         foreach (var a in lido.Viagens)
@@ -1151,18 +1162,27 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
 
     // ───────────────────────── Excel ─────────────────────────
 
-    public async Task<(byte[] Conteudo, string Nome)> ExportarAcertoAsync(string placa, int ano, int mes)
+    // Acerto do mês por motorista (VIA-21); sem motorista, pela placa (viagens antigas soltas)
+    public async Task<(byte[] Conteudo, string Nome)> ExportarAcertoAsync(int? motoristaId, string? placa, int ano, int mes)
     {
         placa = NormalizarPlaca(placa);
-        var viagens = await ComTudo().AsNoTracking().Where(v => v.Placa == placa && v.AnoReferencia == ano && v.MesReferencia == mes).ToListAsync();
-        if (viagens.Count == 0) throw new ErroViagem("Nenhuma viagem deste caminhão no mês.");
+        var q = ComTudo().AsNoTracking().Where(v => v.AnoReferencia == ano && v.MesReferencia == mes);
+        q = motoristaId is { } mid ? q.Where(v => v.MotoristaId == mid) : q.Where(v => v.MotoristaId == null && v.Placa == placa);
+        var viagens = await q.ToListAsync();
+        if (viagens.Count == 0) throw new ErroViagem("Nenhuma viagem deste motorista no mês.");
+        var quem = placa;
+        if (motoristaId is { } m2)
+        {
+            var nome = await db.MotoristasFrota.AsNoTracking().Where(x => x.Id == m2).Select(x => x.Nome).FirstOrDefaultAsync() ?? "";
+            quem = nome.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? $"motorista {m2}";
+        }
         var ids = viagens.Select(v => v.Id).ToList();
         var rets = await db.RetornosFrete.AsNoTracking().Where(r => r.ViagemId != null && ids.Contains(r.ViagemId.Value)).OrderBy(r => r.Data).ThenBy(r => r.Id).ToListAsync();
-        var sobras = await SobrasAsync([placa]);
+        var sobras = await SobrasAsync(viagens);
         var tabela = await db.PrecosFreteCliente.AsNoTracking().Where(p => p.Ativo).OrderBy(p => p.Ordem).ThenBy(p => p.Cliente).ToListAsync();
         var lista = EmOrdem(viagens).Select(v => (v, rets.Where(r => r.ViagemId == v.Id).ToList(), sobras.GetValueOrDefault(v.Id))).ToList();
         var bytes = AcertoCaminhaoExcel.Gerar(lista, tabela);
-        return (bytes, $"{mes}-V -{NomeMes(mes)}-{ano} {placa}.xlsx");
+        return (bytes, $"{mes}-V -{NomeMes(mes)}-{ano} {quem}.xlsx");
     }
 
     public async Task<(byte[] Conteudo, string Nome)> ExportarRetornosAsync(int ano, int mes)

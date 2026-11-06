@@ -5,7 +5,7 @@ using TransportadoraSystem.Application.Services;
 namespace TransportadoraSystem.API.Controllers;
 
 /// <summary>
-/// Fechamento mensal por caminhão (VIA-18): montar o mês, salvar as anotações,
+/// Fechamento mensal por motorista (VIA-18, VIA-21): montar o mês, salvar as anotações,
 /// fechar e reabrir, e o cadastro de consórcios. O perfil motorista não chega
 /// aqui (Program.cs barra tudo fora do painel dele).
 /// </summary>
@@ -15,9 +15,9 @@ namespace TransportadoraSystem.API.Controllers;
 public class FechamentosController(FechamentoMensalService svc) : ControllerBase
 {
     [HttpGet]
-    public async Task<IActionResult> Montar([FromQuery] string placa, [FromQuery] int ano, [FromQuery] int mes)
+    public async Task<IActionResult> Montar([FromQuery] int motoristaId, [FromQuery] int ano, [FromQuery] int mes)
     {
-        try { return Ok(await svc.MontarAsync(placa, ano, mes)); }
+        try { return Ok(await svc.MontarAsync(motoristaId, ano, mes)); }
         catch (ErroViagem ex) { return BadRequest(new { erro = ex.Message }); }
     }
 
@@ -27,7 +27,7 @@ public class FechamentosController(FechamentoMensalService svc) : ControllerBase
         try
         {
             await svc.SalvarAsync(e);
-            return Ok(await svc.MontarAsync(e.Placa, e.Ano, e.Mes));
+            return Ok(await svc.MontarAsync(e.MotoristaId, e.Ano, e.Mes));
         }
         catch (ErroViagem ex) { return BadRequest(new { erro = ex.Message }); }
     }
@@ -38,7 +38,7 @@ public class FechamentosController(FechamentoMensalService svc) : ControllerBase
         try
         {
             await svc.FecharAsync(e);
-            return Ok(await svc.MontarAsync(e.Placa, e.Ano, e.Mes));
+            return Ok(await svc.MontarAsync(e.MotoristaId, e.Ano, e.Mes));
         }
         catch (ErroViagem ex) { return BadRequest(new { erro = ex.Message }); }
     }
@@ -49,10 +49,14 @@ public class FechamentosController(FechamentoMensalService svc) : ControllerBase
         try
         {
             await svc.ReabrirAsync(e);
-            return Ok(await svc.MontarAsync(e.Placa, e.Ano, e.Mes));
+            return Ok(await svc.MontarAsync(e.MotoristaId, e.Ano, e.Mes));
         }
         catch (ErroViagem ex) { return BadRequest(new { erro = ex.Message }); }
     }
+
+    // Os motoristas do fechamento (VIA-21)
+    [HttpGet("motoristas")]
+    public async Task<IActionResult> Motoristas() => Ok(await svc.MotoristasAsync());
 
     [HttpGet("consorcios")]
     public async Task<IActionResult> Consorcios([FromQuery] string? placa) => Ok(await svc.ConsorciosAsync(placa));

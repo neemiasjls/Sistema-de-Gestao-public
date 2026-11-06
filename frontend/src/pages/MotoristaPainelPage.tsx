@@ -190,9 +190,9 @@ export default function MotoristaPainelPage() {
 
   const apagarRascunho = () => { try { localStorage.removeItem(chave) } catch { /* nada */ } }
 
-  // Sobra da viagem anterior do mesmo caminhão (cadeia pela placa do cavalo). Busca
-  // de novo quando ele troca a placa ou a data de saída; ao corrigir, o próprio
-  // envio sai da conta. Só leitura.
+  // Sobra da viagem anterior DELE (VIA-21, 02/11/2026: cadeia por motorista, com qualquer
+  // placa; era pela placa do cavalo). Busca de novo quando muda a data de saída; ao
+  // corrigir, o próprio envio sai da conta. Só leitura.
   const [sobraAnt, setSobraAnt] = useState<{ estado: 'semPlaca' | 'carregando' | 'erro' } | { estado: 'ok'; dados: SobraAnterior }>({ estado: 'semPlaca' })
   const [tentarSobra, setTentarSobra] = useState(0)
   const placaSobra = form && placaValida(form.placa) ? normalizarPlaca(form.placa) : ''
@@ -200,7 +200,7 @@ export default function MotoristaPainelPage() {
   const idSobra = modo.modo === 'corrigir' ? modo.id : null
   const temIni = !!ini
   useEffect(() => {
-    if (!placaSobra || !temIni) { setSobraAnt({ estado: 'semPlaca' }); return }
+    if (!temIni) { setSobraAnt({ estado: 'semPlaca' }); return }
     setSobraAnt({ estado: 'carregando' })
     const ctrl = new AbortController()
     const t = window.setTimeout(() => {

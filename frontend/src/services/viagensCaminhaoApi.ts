@@ -64,6 +64,8 @@ export type Calculo = {
 
 export type ViagemResumo = {
   id: number; placa: string; placaCarreta: string | null; numero: number; motorista: string; motoristaId: number | null
+  /** Acerto a que a viagem pertence: "M{id}" (motorista, VIA-21) ou "P{placa}" (sem motorista) */
+  grupo?: string
   destino: string | null; dataSaida: string | null; dataChegada: string | null; status: StatusViagem
   origem: 'motorista' | 'escritorio' | 'importacao'; enviadoEm: string | null
   totalVolumes: number; totalRetornos: number; valorTotal: number; totalDespesas: number; comissao: number; sobra: number
@@ -202,9 +204,10 @@ export const viagensApi = {
   status: (id: number, status: StatusViagem) => api.put(`/api/viagens-caminhao/${id}/status`, { status }),
   aplicarCarregamento: (id: number, carregamentoId: number) =>
     api.post<{ avisos: string[] }>(`/api/viagens-caminhao/${id}/carregamento/${carregamentoId}`).then(r => comoObjeto<{ avisos: string[] }>(r.data, ['avisos'])),
-  exportar: async (placa: string, ano: number, mes: number) => {
-    const r = await api.get('/api/viagens-caminhao/excel', { params: { placa, ano, mes }, responseType: 'blob' })
-    downloadBlob(r.data as Blob, nomeDoArquivo(r.headers['content-disposition'] as string | undefined, `${mes}-V-${placa}.xlsx`))
+  // Acerto do motorista no mês (VIA-21); sem motorista, pela placa
+  exportar: async (quem: { motoristaId?: number | null; placa?: string }, ano: number, mes: number) => {
+    const r = await api.get('/api/viagens-caminhao/excel', { params: { motoristaId: quem.motoristaId ?? undefined, placa: quem.placa || undefined, ano, mes }, responseType: 'blob' })
+    downloadBlob(r.data as Blob, nomeDoArquivo(r.headers['content-disposition'] as string | undefined, `${mes}-V-acerto.xlsx`))
   },
   importarAcerto: (lista: File[], placa?: string, substituir = false) =>
     api.post('/api/viagens-caminhao/importar-acerto', arquivos(lista), { ...multipart, params: { placa: placa || undefined, substituir: substituir || undefined } })
@@ -292,7 +295,7 @@ export type InicioMotorista = {
   ultima: { id: number; enviadoEm: string | null; placa: string; destino: string | null; dataSaida: string | null; podeCorrigir: boolean; folha: FolhaMotorista | null } | null
 }
 
-/** Sobra da viagem anterior do mesmo caminhão (só sobra e data) */
+/** Sobra da viagem anterior do mesmo motorista (VIA-21; só sobra e data) */
 export type SobraAnterior = { temAnterior: boolean; sobra: number; dataViagemAnterior: string | null }
 
 export type PlacasPainel = { cavalos: string[]; carretas: string[] }

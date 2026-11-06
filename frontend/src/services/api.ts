@@ -304,7 +304,7 @@ export const calculosFreteApi = {
     api.post<{ guardadas: number }>(`/api/calculo-frete/${id}/planilhas`, planilhas),
   baixarPlanilha: (id: number, planilhaId: number) =>
     api.get(`/api/calculo-frete/${id}/planilha/${planilhaId}`, { responseType: 'blob' }),
-  excluir: (id: number) => api.delete(`/api/calculo-frete/${id}`),
+  excluir: (id: number) => api.delete<{ romaneiosExcluidos?: string[]; renomeados?: string[] }>(`/api/calculo-frete/${id}`),
 }
 
 // ── Viagens ───────────────────────────────────────────────────────

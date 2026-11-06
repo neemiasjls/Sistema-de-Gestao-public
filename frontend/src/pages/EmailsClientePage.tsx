@@ -100,6 +100,15 @@ export default function EmailsClientePage() {
   const [resultados, setResultados] = useState<Record<string, ResultadoEnvioEmail>>({})
   const [encolhido, setEncolhido] = useState<Record<string, boolean>>({})
   const semDadosDe = (e: PreviaEmail) => e.arquivos.length === 0 && !e.frete && e.envios.length === 0
+  const pendentesDe = (e: PreviaEmail) => previa?.faltaEnviar?.find(f => f.cliente === e.cliente)?.dias ?? []
+  // Já enviado e sem outra carga pendente: nasce encolhido (Admin, 04/11/2026)
+  const resolvido = (e: PreviaEmail) => estadoDe(e, escolhidosDe(e).length).tipo === 'enviado' && pendentesDe(e).length === 0
+  const estaEncolhido = (e: PreviaEmail) => encolhido[e.cliente] ?? resolvido(e)
+  // O que falta importar ou enviar vem primeiro; o já enviado vai para o fim
+  const ordem = (e: PreviaEmail) => {
+    const t = estadoDe(e, escolhidosDe(e).length).tipo
+    return t === 'falta' || t === 'pronto' ? 0 : resolvido(e) ? 2 : 1
+  }
   const [subindo, setSubindo] = useState(false)
   // O que o relatório de frete subido avisou: fica até fechar (D-07)
   const [avisosRelatorio, setAvisosRelatorio] = useState<string[]>([])
@@ -272,6 +281,7 @@ export default function EmailsClientePage() {
 
   const datas = previa ? [...new Set([previa.data, ...previa.datas])].sort().reverse() : []
   const escolhidosDe = (e: PreviaEmail) => e.arquivos.filter(a => rascunhos[e.cliente]?.chaves.includes(a.chave))
+  const emailsEmOrdem = previa ? [...previa.emails].sort((a, b) => ordem(a) - ordem(b)) : []
 
   return (
     <div className="space-y-5 max-w-5xl">
@@ -323,7 +333,7 @@ export default function EmailsClientePage() {
         )}
         {previa && previa.emails.some(e => !semDadosDe(e)) && (
           <ul className="flex flex-wrap gap-2 pt-3 border-t border-gray-100">
-            {previa.emails.filter(e => !semDadosDe(e)).map(e => (
+            {emailsEmOrdem.filter(e => !semDadosDe(e)).map(e => (
               <li key={e.cliente}>
                 <a href={`#email-${e.cliente}`}
                    onClick={ev => {
@@ -363,14 +373,14 @@ export default function EmailsClientePage() {
         <ErroCarga mensagem="Não consegui montar a prévia dos e-mails." onTentar={() => carregar(data || undefined)} />
       )}
 
-      {previa?.emails.map(e => {
+      {previa && emailsEmOrdem.map(e => {
         const r = rascunhos[e.cliente]
         if (!r) return null
         const res = resultados[e.cliente]
         const escolhidos = escolhidosDe(e)
         const estado = estadoDe(e, escolhidos.length)
         // Cargas deste cliente ainda sem envio, dentro do próprio card (Admin, 15/10/2026)
-        const pendentes = previa.faltaEnviar?.find(f => f.cliente === e.cliente)?.dias ?? []
+        const pendentes = pendentesDe(e)
         const listaPendentes = pendentes.length > 0 && (
           <div className="flex flex-wrap items-center gap-2" role="group" aria-label={`Cargas de ${e.rotulo} sem envio`}>
             <span className="text-sm text-gray-600">Falta enviar:</span>
@@ -398,7 +408,7 @@ export default function EmailsClientePage() {
             </section>
           )
         }
-        if (encolhido[e.cliente]) {
+        if (estaEncolhido(e)) {
           return (
             <section key={e.cliente} id={`email-${e.cliente}`}
                      className="scroll-mt-4 bg-white border border-gray-200 rounded-xl px-4 py-3 flex flex-wrap items-center gap-2">

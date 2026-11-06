@@ -4,7 +4,7 @@ import { Carregando, ErroCarga } from './ui/Estados'
 import { useConfirmar } from './ui/Confirmar'
 import Botao from './ui/Botao'
 import { Modal } from './ModalBase'
-import { AlertTriangle, Download, Eye, FileText, FileUp, Loader2, Search, Trash2, Truck } from 'lucide-react'
+import { AlertTriangle, Download, Eye, FileText, FileUp, Loader2, Pencil, Search, Trash2, Truck } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { formatBRL } from '../services/api'
 import {
@@ -12,6 +12,7 @@ import {
   type LinhaRomaneio, type ResumoRomaneio, type RomaneioGuardado,
 } from '../services/romaneiosClienteApi'
 import ClienteBadge from './ClienteBadge'
+import EditarRomaneio from './EditarRomaneio'
 
 // Todos os romaneios de cliente que o sistema guardou, por cliente. "Ver" lê a
 // planilha no servidor e monta o romaneio aqui, sem precisar do Excel; o
@@ -44,6 +45,7 @@ export default function RomaneiosGuardados() {
   const [abrindo, setAbrindo] = useState<number | null>(null)
   const [baixando, setBaixando] = useState<number | null>(null)
   const [importando, setImportando] = useState(false)
+  const [editando, setEditando] = useState<RomaneioGuardado | null>(null)
   // Romaneios recusados na importação ficam na tela até ele fechar (D-07)
   const [recusados, setRecusados] = useState<string[]>([])
   const confirmar = useConfirmar()
@@ -132,13 +134,14 @@ export default function RomaneiosGuardados() {
   )
 
   const excluir = async (r: RomaneioGuardado) => {
-    let msg = 'Não dá para desfazer.'
+    let msg = 'Os romaneios seguintes do mesmo cliente descem um número, para não ficar buraco na sequência. Não dá para desfazer.'
     if (r.calculoId) msg += ' Ele também sai da carga em Viagens.'
     if (r.versoes > 1) msg += ` As outras ${r.versoes - 1} versão(ões) com o mesmo nome continuam guardadas.`
     if (!await confirmar({ titulo: 'Excluir o romaneio?', texto: <><b className="break-all">{r.nome}</b>. {msg}</>, confirmar: 'Excluir romaneio' })) return
     try {
-      await romaneiosClienteApi.excluir(r.id)
-      toast.success('Romaneio excluído.')
+      const { data } = await romaneiosClienteApi.excluir(r.id)
+      const n = (data as { renomeados?: string[] } | undefined)?.renomeados?.length ?? 0
+      toast.success(n ? `Romaneio excluído. ${n} renumerado${n === 1 ? '' : 's'}.` : 'Romaneio excluído.')
       if (aberto?.id === r.id) setAberto(null)
       await carregar()
     } catch (e) { toast.error(erroDe(e, 'Não consegui excluir.')) }
@@ -253,6 +256,10 @@ export default function RomaneiosGuardados() {
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 disabled:opacity-50">
                     {baixando === r.id ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Baixar
                   </button>
+                  <button onClick={() => setEditando(r)} title="Editar" aria-label={`Editar ${r.nome}`}
+                          className="p-2 text-gray-500 hover:text-tinta-700 rounded-lg hover:bg-tinta-50">
+                    <Pencil size={15} />
+                  </button>
                   <button onClick={() => excluir(r)} title="Excluir"
                           className="p-2 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50">
                     <Trash2 size={15} />
@@ -263,6 +270,11 @@ export default function RomaneiosGuardados() {
           </div>
         </section>
       ))}
+
+      {editando && (
+        <EditarRomaneio id={editando.id} nome={editando.nome} onClose={() => setEditando(null)}
+                        onSalvo={() => { if (aberto?.id === editando.id) setAberto(null); carregar() }} />
+      )}
 
       {aberto && (
         <VisaoRomaneio resumo={aberto} baixando={baixando === aberto.id}

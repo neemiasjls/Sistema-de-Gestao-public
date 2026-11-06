@@ -75,6 +75,7 @@ export const secoesMenu: SecaoMenu[] = [
       { to: '/financeiro',    label: 'Financeiro',       icon: Landmark },
       { to: '/despesas-divididas', label: 'Despesas divididas', icon: Split },
       { to: '/saldos',        label: 'Saldos a receber', icon: HandCoins },
+      { to: '/agrotrade-tip',   label: 'Agrotrade / TIP Bank', icon: Wallet },
     ],
   },
   {
