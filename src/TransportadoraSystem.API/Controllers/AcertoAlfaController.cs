@@ -164,7 +164,7 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
     /// </summary>
     public record ArquivoIdentificado(string Nome, string Tipo, string? Destino, int? AcertoId, string? Cliente,
         decimal? Valor, DateOnly? Vencimento, string? Numero, DateOnly? Data, int? Caixas, string? Placa, List<string> Avisos,
-        List<RomaneiosEmbalarService.Info>? Embalar = null);
+        List<RomaneiosEmbalarService.Info>? Embalar = null, string? Situacao = null, List<Diferenca>? Diferencas = null);
 
     // Um upload só para tudo o que chega da semana, um arquivo ou vários: boletos e
     // romaneios da fazenda entram no acerto da semana deles (pela data do documento),
@@ -175,7 +175,8 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
     // romaneios se somam.
     [HttpPost("semana/arquivos")]
     [RequestSizeLimit(60_000_000)]
-    public async Task<IActionResult> ArquivosDaSemana(IFormFileCollection arquivos, [FromServices] BoletoReceberImportacao importacao)
+    public async Task<IActionResult> ArquivosDaSemana(IFormFileCollection arquivos, [FromServices] BoletoReceberImportacao importacao,
+        [FromQuery] bool substituir = false)
     {
         try
         {
@@ -203,10 +204,14 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
                 itens.AddRange(r.Itens.Select(ParaItem));
             }
 
-            // Cada PDF da fazenda sozinho, para saber o que é e de que semana
+            // Cada PDF da fazenda sozinho, para saber o que é e de que semana. Documento que
+            // já está num acerto (mesmo número) vai para aquele acerto, para ser comparado lá.
             var porSemana = new Dictionary<DateOnly, List<Arquivo>>();
             var semSemana = new List<Arquivo>();
             var lidos = new Dictionary<Arquivo, Leitura>();
+            var (emRomaneios, emBoletos) = daFazenda.Count > 0
+                ? await OndeEstaoOsDocumentos()
+                : (new Dictionary<int, Onde>(), new Dictionary<string, Onde>());
             foreach (var pdf in daFazenda)
             {
                 Leitura lido;
@@ -219,7 +224,10 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
                 }
                 lidos[pdf] = lido;
                 if (lido.Boletos.Count == 0 && lido.Romaneios.Count == 0) { semSemana.Add(pdf); continue; }
-                var semana = DateOnly.FromDateTime(Semana(lido.Boletos, lido.Romaneios));
+                var existente = lido.Romaneios.Select(r => emRomaneios.GetValueOrDefault(r.Numero))
+                    .Concat(lido.Boletos.Select(b => emBoletos.GetValueOrDefault(ChaveBoleto(b.Numero))))
+                    .FirstOrDefault(o => o != null);
+                var semana = existente?.Semana ?? DateOnly.FromDateTime(Semana(lido.Boletos, lido.Romaneios));
                 if (!porSemana.TryGetValue(semana, out var lista)) porSemana[semana] = lista = [];
                 lista.Add(pdf);
             }
@@ -257,25 +265,28 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
                     await GuardarContador(numero);
                 }
 
-                var r = await AcrescentarPdfs(acerto, grupo);
+                var r = await AcrescentarPdfs(acerto, grupo, substituir, lidos);
                 resultados.Add(new ResultadoSemana(acerto.Id, acerto.Numero, acerto.Semana, criado,
                     r.ArquivosNovos, r.BoletosNovos, r.RomaneiosNovos, r.Avisos));
 
                 var destino = $"Acerto {acerto.Numero} (semana de {acerto.Semana:dd/MM/yyyy})";
                 foreach (var a in grupo)
                 {
-                    var jaTinha = r.JaGuardados.Contains(a.Nome);
+                    var res = r.PorArquivo.GetValueOrDefault(a);
+                    var situacao = res?.Situacao;
+                    // Só tem destino o que foi gravado agora
+                    var gravado = situacao is "NOVO" or "SUBSTITUIDO" or "SO_ARQUIVO";
                     var lido = lidos[a];
                     if (semLeituraGuardados.Contains(a))
                     {
-                        itens.Add(new ArquivoIdentificado(a.Nome, "NAO_RECONHECIDO", jaTinha ? null : destino, acerto.Id,
+                        itens.Add(new ArquivoIdentificado(a.Nome, "NAO_RECONHECIDO", gravado ? destino : null, acerto.Id,
                             null, null, null, null, null, null, null,
-                            [jaTinha ? "Já estava guardado neste acerto." : "Não reconheci boleto nem romaneio: ficou guardado no acerto só como arquivo, sem lançar nada.",
-                             .. lido.Avisos]));
+                            [gravado ? "Não reconheci boleto nem romaneio: ficou guardado no acerto só como arquivo, sem lançar nada." : "Já estava guardado neste acerto.",
+                             .. lido.Avisos], Situacao: situacao));
                         continue;
                     }
-                    itens.Add(Identificado(a.Nome, lido, jaTinha ? null : destino, acerto.Id,
-                        jaTinha ? ["Já estava guardado neste acerto e ficou de fora."] : []));
+                    itens.Add(Identificado(a.Nome, lido, gravado ? destino : null, acerto.Id, (res?.Avisos ?? []).Except(lido.Avisos).ToList())
+                        with { Situacao = situacao, Diferencas = res?.Diferencas });
                 }
             }
 
@@ -475,7 +486,40 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
     {
         var acerto = await db.AcertosAlfa.FirstOrDefaultAsync(a => a.Id == id);
         if (acerto == null) return NotFound(new { erro = "Acerto não encontrado." });
+        // Acerto gravado antes da marca de origem: decide uma vez e guarda (sem mexer em AtualizadoEm)
+        if (await CompletarOrigem(acerto)) await db.SaveChangesAsync();
         return Ok(await Detalhar(acerto));
+    }
+
+    // ACE-11: linhas gravadas antes da marca DoArquivo ganham a origem pelos PDFs guardados no
+    // acerto (romaneio ou boleto cujo número está num deles veio do arquivo). Só lê os PDFs se
+    // alguma linha ainda está sem marca; não salva (quem chama salva). Devolve se mudou.
+    private async Task<bool> CompletarOrigem(AcertoAlfa acerto)
+    {
+        var dados = Desserializar(acerto.DadosJson, acerto.Semana);
+        if (!OrigemPendente(dados)) return false;
+
+        var romaneios = new HashSet<int>();
+        var boletos = new HashSet<string>();
+        if (acerto.Id != 0)
+        {
+            var pdfs = await db.AcertoAlfaArquivos.AsNoTracking()
+                .Where(x => x.AcertoId == acerto.Id && (x.Tipo == "BOLETO" || x.Tipo == "ROMANEIO"))
+                .Select(x => x.Conteudo)
+                .ToListAsync();
+            foreach (var pdf in pdfs)
+            {
+                try
+                {
+                    var l = svc.Ler([pdf]);
+                    romaneios.UnionWith(l.Romaneios.Select(r => r.Numero));
+                    boletos.UnionWith(l.Boletos.Select(b => ChaveBoleto(b.Numero)));
+                }
+                catch (Exception ex) { logger.LogWarning(ex, "PDF ilegível ao marcar a origem do acerto {Id}", acerto.Id); }
+            }
+        }
+        acerto.DadosJson = Serializar(MarcarOrigem(dados, romaneios, boletos));
+        return true;
     }
 
     public record RomaneioEdicao(int Numero, string? Rotulo, string? Data, double Valor, int Caixas, double? DescontoCaixa);
@@ -505,7 +549,16 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
         if (LerData(req.Semana) is not { } semanaDia)
             return BadRequest(new { erro = "Semana com data inválida." });
 
+        await CompletarOrigem(acerto);
         var guardado = Desserializar(acerto.DadosJson, acerto.Semana);
+
+        // ACE-11: romaneio e boleto que vieram de arquivo não se editam, só saem. Linha da
+        // tela com o número de um deles fica como está guardada (no romaneio, só o desconto
+        // por caixa muda: ele não está no documento). Vale também para quem chamar a API direto.
+        var romaneiosDoArquivo = guardado.Romaneios.Where(r => r.DoArquivo == true && r.Numero > 0)
+            .GroupBy(r => r.Numero).ToDictionary(g => g.Key, g => g.First());
+        var boletosDoArquivo = guardado.Pagamentos.Where(p => p.DoArquivo == true && BoletoComNumero(p))
+            .GroupBy(p => ChaveBoleto(p.Numero)).ToDictionary(g => g.Key, g => g.First());
 
         var romaneios = guardado.Romaneios;
         if (req.Romaneios != null)
@@ -515,6 +568,13 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
             foreach (var r in req.Romaneios)
             {
                 i++;
+                if (r.Numero > 0 && romaneiosDoArquivo.TryGetValue(r.Numero, out var doArquivo))
+                {
+                    if (r.DescontoCaixa is { } dca && (!double.IsFinite(dca) || dca < 0 || dca > 1000))
+                        return BadRequest(new { erro = $"Romaneio {r.Numero}: desconto por caixa inválido." });
+                    romaneios.Add(doArquivo with { DescontoCaixa = r.DescontoCaixa is { } x ? Math.Round(x, 2) : null });
+                    continue;
+                }
                 var rotulo = string.IsNullOrWhiteSpace(r.Rotulo) ? null : r.Rotulo.Trim().ToUpperInvariant();
                 var nome = r.Numero > 0 ? $"Romaneio {r.Numero}" : rotulo != null ? $"Linha {i} ({rotulo})" : $"Romaneio {i}";
                 if (r.Numero < 0 || (r.Numero == 0 && rotulo == null))
@@ -530,7 +590,7 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
                 if (r.DescontoCaixa is { } dc && (!double.IsFinite(dc) || dc < 0 || dc > 1000))
                     return BadRequest(new { erro = $"{nome}: desconto por caixa inválido." });
                 romaneios.Add(new RomaneioDados(r.Numero > 0 ? r.Numero : 0, data, Math.Round(r.Valor, 2), r.Caixas,
-                    r.DescontoCaixa is { } d ? Math.Round(d, 2) : null, r.Numero > 0 ? null : rotulo));
+                    r.DescontoCaixa is { } d ? Math.Round(d, 2) : null, r.Numero > 0 ? null : rotulo, false));
             }
             var romaneioRepetido = romaneios.Where(r => r.Numero > 0).GroupBy(r => r.Numero).FirstOrDefault(g => g.Count() > 1);
             if (romaneioRepetido != null)
@@ -545,6 +605,11 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
             foreach (var p in req.Pagamentos)
             {
                 i++;
+                if (boletosDoArquivo.TryGetValue(ChaveBoleto(p.Numero), out var boletoDoArquivo))
+                {
+                    pagamentos.Add(boletoDoArquivo);
+                    continue;
+                }
                 var condicao = (p.Condicao ?? "").Trim().ToUpperInvariant();
                 var observacao = (p.Observacao ?? "").Trim();
                 var numero = (p.Numero ?? "").Trim();
@@ -562,7 +627,8 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
                 }
                 if (p.Valor is { } v && !double.IsFinite(v))
                     return BadRequest(new { erro = $"Pagamento {i}: valor inválido." });
-                pagamentos.Add(new PagamentoDados(data, condicao, p.Valor is { } vv ? Math.Round(vv, 2) : null, observacao, numero));
+                // Lançada à mão: SALDO ANT., PIX, depósito, boleto sem PDF
+                pagamentos.Add(new PagamentoDados(data, condicao, p.Valor is { } vv ? Math.Round(vv, 2) : null, observacao, numero, false));
             }
             var boletoRepetido = pagamentos.Where(p => EhBoleto(p) && p.Numero != "")
                 .GroupBy(p => p.Numero, StringComparer.OrdinalIgnoreCase).FirstOrDefault(g => g.Count() > 1);
@@ -659,7 +725,8 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
     // está (e às edições feitas na tela). Boleto e romaneio de número que o
     // acerto já tem ficam de fora, e o PDF igual a um guardado nem é lido.
     [HttpPost("acertos/{id:int}/arquivos")]
-    public async Task<IActionResult> AcrescentarArquivos(int id, IFormFileCollection arquivos, [FromServices] BoletoReceberImportacao importacao)
+    public async Task<IActionResult> AcrescentarArquivos(int id, IFormFileCollection arquivos, [FromServices] BoletoReceberImportacao importacao,
+        [FromQuery] bool substituir = false)
     {
         try
         {
@@ -681,10 +748,13 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
                     avisosReceber.Add($"{i.Arquivo}: é boleto da transportadora; foi para Boletos a receber ({BoletoReceberLeitor.RotuloCliente(i.Boleto!.Cliente)}), não para o acerto.");
                 avisosReceber.AddRange(ri.Avisos);
             }
-            var r = await AcrescentarPdfs(acerto, daFazenda);
+            var r = await AcrescentarPdfs(acerto, daFazenda, substituir);
             if (r.ArquivosNovos > 0) await embalar.AtualizarAsync();
             r.Avisos.InsertRange(0, avisosReceber);
             if (foraPdf.Count > 0) r.Avisos.Insert(0, $"Só PDF entra aqui; ficou de fora: {string.Join(", ", foraPdf)}.");
+            // Os avisos de cada PDF que não pede escolha (os que pedem aparecem na janela)
+            foreach (var p in r.PorArquivo.Values.Where(p => p.Situacao != "CONFIRMAR"))
+                r.Avisos.AddRange(p.Avisos.Select(x => $"{p.Arquivo}: {x}"));
 
             return Ok(new
             {
@@ -692,7 +762,9 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
                 r.BoletosNovos,
                 r.RomaneiosNovos,
                 r.ArquivosNovos,
+                r.Substituidos,
                 r.Avisos,
+                Arquivos = r.PorArquivo.Values.ToList(),
             });
         }
         catch (Exception ex)
@@ -702,37 +774,156 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
         }
     }
 
-    private record Acrescimo(int ArquivosNovos, int BoletosNovos, int RomaneiosNovos, List<string> Avisos, HashSet<string> JaGuardados);
+    /// <summary>
+    /// O que aconteceu com um PDF da fazenda (ACE-11). Situacao: NOVO (entrou algo), IGUAL (o
+    /// arquivo ou os documentos dele já estavam, iguais), CONFIRMAR (documento de mesmo número
+    /// com diferença: nada deste arquivo foi gravado, espera "Substituir"), SUBSTITUIDO,
+    /// SO_ARQUIVO (sem boleto nem romaneio: guardado só como arquivo), FORA (os documentos estão
+    /// em outro acerto) ou ILEGIVEL.
+    /// </summary>
+    public record ResultadoPdf(string Arquivo, string Situacao, List<Diferenca> Diferencas, List<string> Avisos);
+
+    private record Acrescimo(int ArquivosNovos, int BoletosNovos, int RomaneiosNovos, int Substituidos, List<string> Avisos,
+        Dictionary<Arquivo, ResultadoPdf> PorArquivo);
+
+    // Onde está cada documento (romaneio pelo número de controle, boleto pelo nosso número),
+    // em todos os acertos: é a chave do "mesmo documento" (ACE-11).
+    private record Onde(int AcertoId, int Numero, DateOnly Semana);
+    private async Task<(Dictionary<int, Onde> Romaneios, Dictionary<string, Onde> Boletos)> OndeEstaoOsDocumentos()
+    {
+        var romaneios = new Dictionary<int, Onde>();
+        var boletos = new Dictionary<string, Onde>();
+        var acertos = await db.AcertosAlfa.AsNoTracking().OrderBy(a => a.Numero)
+            .Select(a => new { a.Id, a.Numero, a.Semana, a.DadosJson }).ToListAsync();
+        foreach (var a in acertos)
+        {
+            Dados d;
+            try { d = Desserializar(a.DadosJson, a.Semana); } catch (JsonException) { continue; }
+            var onde = new Onde(a.Id, a.Numero, a.Semana);
+            foreach (var r in d.Romaneios.Where(r => r.Numero > 0)) romaneios.TryAdd(r.Numero, onde);
+            foreach (var p in d.Pagamentos.Where(BoletoComNumero)) boletos.TryAdd(ChaveBoleto(p.Numero), onde);
+        }
+        return (romaneios, boletos);
+    }
 
     // Lê os PDFs que o acerto ainda não tem e soma o que vier ao que está guardado,
-    // sem mexer em linha preenchida (ver AcertoAlfaService.Acrescentar). Grava
-    // tudo de uma vez só, inclusive o acerto se ele for novo.
-    private async Task<Acrescimo> AcrescentarPdfs(AcertoAlfa acerto, List<Arquivo> todos)
+    // sem mexer em linha preenchida (ver AcertoAlfaService.Acrescentar). Documento de
+    // número que já está no acerto é comparado campo a campo: igual, avisa e não grava;
+    // diferente, o arquivo inteiro espera a escolha (CONFIRMAR) e só entra com substituir,
+    // que troca o documento inteiro e tira o PDF antigo dele. Nunca troca nem ignora calado.
+    // Grava tudo de uma vez só, inclusive o acerto se ele for novo; repetir não duplica.
+    private async Task<Acrescimo> AcrescentarPdfs(AcertoAlfa acerto, List<Arquivo> todos, bool substituir,
+        IReadOnlyDictionary<Arquivo, Leitura>? jaLidos = null)
     {
-        var jaTem = acerto.Id == 0
-            ? []
-            : (await db.AcertoAlfaArquivos
-                    .Where(x => x.AcertoId == acerto.Id)
-                    .Select(x => new { x.Nome, Tamanho = x.Conteudo.Length })
-                    .ToListAsync())
-                .Select(x => (x.Nome, x.Tamanho)).ToHashSet();
-        // Também tira repetidos dentro do próprio envio
-        var novos = todos.Where(a => jaTem.Add((a.Nome, a.Bytes.Length))).ToList();
-        var jaGuardados = todos.Except(novos).Select(a => a.Nome).ToHashSet();
+        var porArquivo = new Dictionary<Arquivo, ResultadoPdf>();
         var avisos = new List<string>();
-        if (novos.Count < todos.Count)
-            avisos.Add($"{todos.Count - novos.Count} PDF(s) já estavam guardados e ficaram de fora.");
 
-        int boletosNovos = 0, romaneiosNovos = 0;
-        if (novos.Count > 0)
+        // O mesmo arquivo (byte a byte) já guardado no acerto, ou repetido no envio
+        var tamanhos = todos.Select(a => a.Bytes.Length).Distinct().ToList();
+        var vistos = acerto.Id == 0
+            ? []
+            : await db.AcertoAlfaArquivos.AsNoTracking()
+                .Where(x => x.AcertoId == acerto.Id && tamanhos.Contains(x.Conteudo.Length))
+                .Select(x => x.Conteudo)
+                .ToListAsync();
+        var guardadosAntes = vistos.Count;
+        var novos = new List<Arquivo>();
+        foreach (var a in todos)
         {
-            var lido = svc.Ler(novos.Select(a => a.Bytes));
-            avisos.AddRange(lido.Avisos);
+            var i = vistos.FindIndex(b => b.AsSpan().SequenceEqual(a.Bytes));
+            if (i >= 0)
+            {
+                porArquivo[a] = new(a.Nome, "IGUAL", [],
+                    [i < guardadosAntes ? "Já estava guardado neste acerto, igual." : "Arquivo repetido neste envio; entrou uma vez só."]);
+                continue;
+            }
+            vistos.Add(a.Bytes);
+            novos.Add(a);
+        }
+        if (novos.Count < todos.Count)
+            avisos.Add($"{todos.Count - novos.Count} PDF(s) já estavam guardados, iguais, e ficaram de fora.");
 
-            var dados = Desserializar(acerto.DadosJson, acerto.Semana);
+        var origemMudou = await CompletarOrigem(acerto);
+        var dados = Desserializar(acerto.DadosJson, acerto.Semana);
+        var (emRomaneios, emBoletos) = novos.Count > 0
+            ? await OndeEstaoOsDocumentos()
+            : (new Dictionary<int, Onde>(), new Dictionary<string, Onde>());
+        bool EmOutro(Onde? o) => o != null && o.AcertoId != acerto.Id;
+
+        int boletosNovos = 0, romaneiosNovos = 0, substituidos = 0;
+        var anexar = new List<(Arquivo Arquivo, string Tipo, Leitura Lido)>();
+        var trocadosRomaneio = new HashSet<int>();
+        var trocadosBoleto = new HashSet<string>();
+        foreach (var a in novos)
+        {
+            Leitura lido;
+            if (jaLidos != null && jaLidos.TryGetValue(a, out var jl)) lido = jl;
+            else
+            {
+                try { lido = svc.Ler([a.Bytes]); }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "PDF ilegível no acerto {Numero}: {Nome}", acerto.Numero, a.Nome);
+                    porArquivo[a] = new(a.Nome, "ILEGIVEL", [], ["Não consegui ler o PDF; ficou de fora."]);
+                    continue;
+                }
+            }
+            var tipo = lido.Tipos.FirstOrDefault() ?? "OUTRO";
+            var av = new List<string>(lido.Avisos);
+            if (lido.Boletos.Count == 0 && lido.Romaneios.Count == 0)
+            {
+                anexar.Add((a, tipo, lido));
+                porArquivo[a] = new(a.Nome, "SO_ARQUIVO", [], av);
+                continue;
+            }
+
+            // Separa o que é novo, o que já está igual e o que está com diferença
+            var difs = new List<Diferenca>();
+            var romNovos = new List<AcertoAlfaService.Romaneio>();
+            var romTrocar = new List<AcertoAlfaService.Romaneio>();
+            var bolNovos = new List<AcertoAlfaService.Boleto>();
+            var bolTrocar = new List<AcertoAlfaService.Boleto>();
+            int iguais = 0, fora = 0;
+            foreach (var r in lido.Romaneios)
+            {
+                if (EmOutro(emRomaneios.GetValueOrDefault(r.Numero)))
+                {
+                    av.Add($"O romaneio {r.Numero} já está no acerto {emRomaneios[r.Numero].Numero}; ficou de fora aqui.");
+                    fora++;
+                    continue;
+                }
+                var atual = dados.Romaneios.FirstOrDefault(x => x.Numero == r.Numero);
+                if (atual == null) { romNovos.Add(r); continue; }
+                var d = CompararRomaneio(atual, r);
+                if (d.Count == 0) iguais++;
+                else { difs.AddRange(d); romTrocar.Add(r); }
+            }
+            foreach (var b in lido.Boletos)
+            {
+                var chave = ChaveBoleto(b.Numero);
+                if (chave != "" && EmOutro(emBoletos.GetValueOrDefault(chave)))
+                {
+                    av.Add($"O boleto {b.Numero} já está no acerto {emBoletos[chave].Numero}; ficou de fora aqui.");
+                    fora++;
+                    continue;
+                }
+                var atual = chave == "" ? null : dados.Pagamentos.FirstOrDefault(p => ChaveBoleto(p.Numero) == chave);
+                if (atual == null) { bolNovos.Add(b); continue; }
+                var d = CompararBoleto(atual, b);
+                if (d.Count == 0) iguais++;
+                else { difs.AddRange(d); bolTrocar.Add(b); }
+            }
+
+            if (difs.Count > 0 && !substituir)
+            {
+                porArquivo[a] = new(a.Nome, "CONFIRMAR", difs, av);
+                continue;
+            }
+
+            var entrou = romNovos.Count + bolNovos.Count + romTrocar.Count + bolTrocar.Count;
             // Acerto que estava vazio ainda não tinha semana de verdade (era a de
             // quando foi criado): passa a valer a dos documentos, e o SALDO ANT. anda junto
-            if (Vazio(dados) && (lido.Boletos.Count > 0 || lido.Romaneios.Count > 0))
+            if (entrou > 0 && Vazio(dados))
             {
                 var semana = DateOnly.FromDateTime(Semana(lido.Boletos, lido.Romaneios));
                 if (semana != acerto.Semana)
@@ -748,26 +939,71 @@ public class AcertoAlfaController(AcertoAlfaService svc, AppDbContext db, Romane
                 }
             }
 
-            var (somado, bn, rn, repetidos) = AcertoAlfaService.Acrescentar(dados, lido.Boletos, lido.Romaneios);
-            boletosNovos = bn;
-            romaneiosNovos = rn;
-            avisos.AddRange(repetidos);
-            acerto.DadosJson = Serializar(somado);
+            var (somado, bn, rn, repetidos) = AcertoAlfaService.Acrescentar(dados, bolNovos, romNovos);
+            av.AddRange(repetidos);
+            foreach (var r in romTrocar) { somado = SubstituirRomaneio(somado, r); trocadosRomaneio.Add(r.Numero); }
+            foreach (var b in bolTrocar) { somado = SubstituirBoleto(somado, b); trocadosBoleto.Add(ChaveBoleto(b.Numero)); }
+            dados = somado;
+            boletosNovos += bn;
+            romaneiosNovos += rn;
+            substituidos += romTrocar.Count + bolTrocar.Count;
 
-            acerto.AvisosJson = JsonSerializer.Serialize(
-                LerAvisos(acerto.AvisosJson).Concat(lido.Avisos).Distinct().ToList(), AcertoAlfaService.Json);
-
-            var agora = DateTime.UtcNow;
-            await AnexarArquivos(acerto, novos, lido.Tipos, agora);
-            acerto.AtualizadoEm = agora;
-            await db.SaveChangesAsync();
+            string situacao;
+            if (romTrocar.Count + bolTrocar.Count > 0) situacao = "SUBSTITUIDO";
+            else if (entrou > 0) situacao = "NOVO";
+            else if (iguais > 0) { situacao = "IGUAL"; av.Insert(0, "Já estava no sistema, igual; nada mudou."); }
+            else situacao = "FORA";
+            if (entrou > 0) anexar.Add((a, tipo, lido));
+            porArquivo[a] = new(a.Nome, situacao, difs, av);
         }
-        else if (acerto.Id == 0)
+
+        var agora = DateTime.UtcNow;
+        if (anexar.Count > 0)
         {
-            await db.SaveChangesAsync();
+            acerto.DadosJson = Serializar(dados);
+            acerto.AvisosJson = JsonSerializer.Serialize(
+                LerAvisos(acerto.AvisosJson).Concat(anexar.SelectMany(x => x.Lido.Avisos)).Distinct().ToList(), AcertoAlfaService.Json);
+            // Substituído: o PDF antigo com documento trocado sai quando tudo o que ele traz
+            // veio nos PDFs novos (trocado ou igual); senão a conferência da semana leria
+            // os dois e ficaria com o antigo
+            if (trocadosRomaneio.Count + trocadosBoleto.Count > 0)
+                await TirarPdfsSubstituidos(acerto, trocadosRomaneio, trocadosBoleto,
+                    anexar.SelectMany(x => x.Lido.Romaneios.Select(r => r.Numero)).ToHashSet(),
+                    anexar.SelectMany(x => x.Lido.Boletos.Select(b => ChaveBoleto(b.Numero))).ToHashSet(), avisos);
+            foreach (var (a, tipo, _) in anexar)
+                acerto.Arquivos.Add(new AcertoAlfaArquivo { Nome = a.Nome, Tipo = tipo, Conteudo = a.Bytes, CriadoEm = agora });
+            acerto.AtualizadoEm = agora;
         }
+        if (anexar.Count > 0 || origemMudou || acerto.Id == 0)
+            await db.SaveChangesAsync();
 
-        return new Acrescimo(novos.Count, boletosNovos, romaneiosNovos, avisos, jaGuardados);
+        return new Acrescimo(anexar.Count, boletosNovos, romaneiosNovos, substituidos, avisos, porArquivo);
+    }
+
+    private async Task TirarPdfsSubstituidos(AcertoAlfa acerto, HashSet<int> romaneios, HashSet<string> boletos,
+        HashSet<int> romaneiosNovos, HashSet<string> boletosNovos, List<string> avisos)
+    {
+        if (acerto.Id == 0) return;
+        var guardados = await db.AcertoAlfaArquivos
+            .Where(x => x.AcertoId == acerto.Id && (x.Tipo == "BOLETO" || x.Tipo == "ROMANEIO"))
+            .ToListAsync();
+        foreach (var g in guardados)
+        {
+            Leitura l;
+            try { l = svc.Ler([g.Conteudo]); } catch (Exception) { continue; }
+            var rs = l.Romaneios.Select(r => r.Numero).ToList();
+            var bs = l.Boletos.Select(b => ChaveBoleto(b.Numero)).ToList();
+            // Só o PDF que traz algum documento trocado
+            if (!rs.Any(romaneios.Contains) && !bs.Any(boletos.Contains)) continue;
+            if (rs.All(romaneiosNovos.Contains) && bs.All(boletosNovos.Contains))
+            {
+                db.AcertoAlfaArquivos.Remove(g);
+                avisos.Add($"O PDF antigo {g.Nome} foi trocado pelo novo.");
+            }
+            else
+                avisos.Add($"O PDF antigo {g.Nome} ficou guardado porque traz documentos que não vieram no novo; " +
+                    "ele ainda tem os valores antigos do que foi substituído.");
+        }
     }
 
     // Tira só o arquivo: o que foi lido dele continua nos dados, que se editam à parte

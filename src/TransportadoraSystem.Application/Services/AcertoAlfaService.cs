@@ -152,13 +152,18 @@ public class AcertoAlfaService
     /// lugar do número ("BOLETO", "CH DEV"), e aí Numero fica 0. DescontoCaixa nulo é a
     /// coluna E vazia (sem desconto).
     /// </summary>
-    public record RomaneioDados(int Numero, DateOnly? Data, double Valor, int Caixas, double? DescontoCaixa = null, string? Rotulo = null);
+    /// DoArquivo (ACE-11): true = veio do PDF do romaneio e não se edita na tela (só o
+    /// desconto por caixa, que não está no documento); false = lançada à mão; null =
+    /// gravada antes desta marca (MarcarOrigem decide pelos PDFs guardados no acerto).
+    public record RomaneioDados(int Numero, DateOnly? Data, double Valor, int Caixas, double? DescontoCaixa = null, string? Rotulo = null,
+        bool? DoArquivo = null);
 
     /// <summary>
     /// Uma linha de PAGAMENTOS E DEPÓSITOS. Data é o vencimento no boleto; Valor nulo
-    /// é a linha lançada antes do dinheiro (ou do boleto) chegar.
+    /// é a linha lançada antes do dinheiro (ou do boleto) chegar. DoArquivo como no romaneio:
+    /// true só no boleto que veio do PDF.
     /// </summary>
-    public record PagamentoDados(DateOnly? Data, string Condicao, double? Valor, string Observacao, string Numero);
+    public record PagamentoDados(DateOnly? Data, string Condicao, double? Valor, string Observacao, string Numero, bool? DoArquivo = null);
 
     public record Dados(List<RomaneioDados> Romaneios, List<PagamentoDados> Pagamentos, List<string> Notas);
 
@@ -307,7 +312,7 @@ public class AcertoAlfaService
             var antes = linhas.FindLastIndex(x => x.Numero > 0 && x.Numero < r.Numero);
             var depois = linhas.FindIndex(x => x.Numero > r.Numero);
             var pos = antes >= 0 ? antes + 1 : depois >= 0 ? depois : linhas.FindIndex(x => x.Numero == 0) is var t and >= 0 ? t : linhas.Count;
-            linhas.Insert(pos, new RomaneioDados(r.Numero, DateOnly.FromDateTime(r.Data), r.Valor, r.Caixas, null));
+            linhas.Insert(pos, new RomaneioDados(r.Numero, DateOnly.FromDateTime(r.Data), r.Valor, r.Caixas, null, null, true));
             romaneiosNovos++;
         }
 
@@ -329,14 +334,104 @@ public class AcertoAlfaService
         {
             var p = pagamentos[i];
             pagamentos[i] = new PagamentoDados(p.Data ?? vencimento, "BOLETO", valor,
-                string.IsNullOrWhiteSpace(p.Observacao) ? cliente : p.Observacao, numero);
+                string.IsNullOrWhiteSpace(p.Observacao) ? cliente : p.Observacao, numero, true);
             return true;
         }
 
         var ultima = pagamentos.FindLastIndex(p => EhBoleto(p) && Igual(p.Observacao, cliente));
-        pagamentos.Insert(ultima >= 0 ? ultima + 1 : pagamentos.Count, new PagamentoDados(vencimento, "BOLETO", valor, cliente, numero));
+        pagamentos.Insert(ultima >= 0 ? ultima + 1 : pagamentos.Count, new PagamentoDados(vencimento, "BOLETO", valor, cliente, numero, true));
         return true;
     }
+
+    // ───────────────────── Origem e documento repetido (ACE-11) ─────────────────────
+
+    /// <summary>Uma diferença entre o documento guardado e o do arquivo novo, campo a campo.</summary>
+    public record Diferenca(string Documento, string Campo, string Atual, string Novo);
+
+    private static readonly CultureInfo PtBrDif = CultureInfo.GetCultureInfo("pt-BR");
+    private static string TextoValor(double? v) => v is { } x ? x.ToString("N2", PtBrDif) : "vazio";
+    private static string TextoData(DateOnly? d) => d is { } x ? x.ToString("dd/MM/yyyy") : "vazio";
+    private static string TextoLivre(string? s) => string.IsNullOrWhiteSpace(s) ? "vazio" : s.Trim();
+    private static bool ValorIgual(double? a, double? b) => a is { } x && b is { } y ? Math.Abs(x - y) < 0.005 : a == null && b == null;
+
+    /// <summary>Chave do boleto (nosso número) para achar o mesmo documento.</summary>
+    public static string ChaveBoleto(string? numero) => (numero ?? "").Trim().ToUpperInvariant();
+
+    /// <summary>Linha de boleto com número: a que pode ter vindo de um PDF.</summary>
+    public static bool BoletoComNumero(PagamentoDados p) => EhBoleto(p) && !string.IsNullOrWhiteSpace(p.Numero);
+
+    /// <summary>
+    /// O romaneio guardado × o do arquivo: data, valor e caixas (o número é a chave; o
+    /// desconto por caixa não está no documento).
+    /// </summary>
+    public static List<Diferenca> CompararRomaneio(RomaneioDados atual, Romaneio novo)
+    {
+        var doc = $"Romaneio {novo.Numero}";
+        var dif = new List<Diferenca>();
+        var data = DateOnly.FromDateTime(novo.Data);
+        if (atual.Data != data) dif.Add(new(doc, "Data", TextoData(atual.Data), TextoData(data)));
+        if (!ValorIgual(atual.Valor, novo.Valor)) dif.Add(new(doc, "Valor", TextoValor(atual.Valor), TextoValor(novo.Valor)));
+        if (atual.Caixas != novo.Caixas) dif.Add(new(doc, "Caixas", atual.Caixas.ToString("N0", PtBrDif), novo.Caixas.ToString("N0", PtBrDif)));
+        return dif;
+    }
+
+    /// <summary>O boleto guardado × o do arquivo: vencimento, valor, pagador (e a condição, se não era BOLETO).</summary>
+    public static List<Diferenca> CompararBoleto(PagamentoDados atual, Boleto novo)
+    {
+        var doc = $"Boleto {novo.Numero}";
+        var dif = new List<Diferenca>();
+        var venc = DateOnly.FromDateTime(novo.Vencimento);
+        if (!EhBoleto(atual)) dif.Add(new(doc, "Condição", TextoLivre(atual.Condicao), "BOLETO"));
+        if (atual.Data != venc) dif.Add(new(doc, "Vencimento", TextoData(atual.Data), TextoData(venc)));
+        if (!ValorIgual(atual.Valor, novo.Valor)) dif.Add(new(doc, "Valor", TextoValor(atual.Valor), TextoValor(novo.Valor)));
+        if (!Igual(atual.Observacao, novo.Cliente)) dif.Add(new(doc, "Pagador", TextoLivre(atual.Observacao), TextoLivre(novo.Cliente)));
+        return dif;
+    }
+
+    /// <summary>
+    /// Troca o romaneio de mesmo número pelo do arquivo, no mesmo lugar. O desconto por
+    /// caixa digitado na tela fica (não faz parte do documento).
+    /// </summary>
+    public static Dados SubstituirRomaneio(Dados d, Romaneio novo)
+    {
+        var linhas = d.Romaneios
+            .Select(r => r.Numero == novo.Numero
+                ? new RomaneioDados(novo.Numero, DateOnly.FromDateTime(novo.Data), novo.Valor, novo.Caixas, r.DescontoCaixa, null, true)
+                : r)
+            .ToList();
+        return d with { Romaneios = linhas };
+    }
+
+    /// <summary>Troca o boleto de mesmo número pelo do arquivo, no mesmo lugar, inteiro.</summary>
+    public static Dados SubstituirBoleto(Dados d, Boleto novo)
+    {
+        var chave = ChaveBoleto(novo.Numero);
+        var linhas = d.Pagamentos
+            .Select(p => ChaveBoleto(p.Numero) == chave && chave != ""
+                ? new PagamentoDados(DateOnly.FromDateTime(novo.Vencimento), "BOLETO", novo.Valor, novo.Cliente, novo.Numero, true)
+                : p)
+            .ToList();
+        return d with { Pagamentos = linhas };
+    }
+
+    /// <summary>Falta decidir a origem de alguma linha gravada antes da marca DoArquivo?</summary>
+    public static bool OrigemPendente(Dados d) =>
+        d.Romaneios.Any(r => r.Numero > 0 && r.DoArquivo == null) || d.Pagamentos.Any(p => BoletoComNumero(p) && p.DoArquivo == null);
+
+    /// <summary>
+    /// Dados gravados antes da marca: romaneio ou boleto cujo número está num PDF guardado
+    /// no acerto veio do arquivo; o resto foi lançado à mão (ou por planilha do Excel).
+    /// Só mexe no que ainda está sem marca.
+    /// </summary>
+    public static Dados MarcarOrigem(Dados d, ISet<int> romaneiosDosPdfs, ISet<string> boletosDosPdfs) => d with
+    {
+        Romaneios = d.Romaneios
+            .Select(r => r.DoArquivo != null ? r : r with { DoArquivo = r.Numero > 0 && romaneiosDosPdfs.Contains(r.Numero) })
+            .ToList(),
+        Pagamentos = d.Pagamentos
+            .Select(p => p.DoArquivo != null ? p : p with { DoArquivo = BoletoComNumero(p) && boletosDosPdfs.Contains(ChaveBoleto(p.Numero)) })
+            .ToList(),
+    };
 
     public static string Serializar(Dados d) => JsonSerializer.Serialize(d, Json);
 
@@ -362,7 +457,7 @@ public class AcertoAlfaService
     }
 
     private static PagamentoDados Limpar(PagamentoDados p) =>
-        new(p.Data, p.Condicao ?? "", p.Valor, p.Observacao ?? "", p.Numero ?? "");
+        new(p.Data, p.Condicao ?? "", p.Valor, p.Observacao ?? "", p.Numero ?? "", p.DoArquivo);
 
     // ───────────────────────── PDF do boleto ─────────────────────────
 

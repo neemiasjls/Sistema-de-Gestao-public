@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  ArrowLeft, Download, FileSpreadsheet, FileText, Plus, RotateCcw, Save, TriangleAlert, Trash2, Upload,
+  ArrowLeft, Download, FileSpreadsheet, FileText, Lock, Plus, RotateCcw, Save, TriangleAlert, Trash2, Upload, X,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { formatBRL } from '../services/api'
 import {
-  acertoAlfaApi, erroAcerto, CONDICOES_SUGERIDAS, OBSERVACOES_SUGERIDAS,
-  type AcertoDetalhe, type AcertoEdicao, type ArquivoAcerto, type PagamentoAcerto, type RomaneioAcerto,
+  acertoAlfaApi, erroAcerto, CONDICOES_SUGERIDAS, OBSERVACOES_SUGERIDAS, ROTULO_CANCELADO, ROTULO_SITUACAO,
+  type AcertoDetalhe, type AcertoEdicao, type ArquivoAcerto, type DiferencaDocumento, type PagamentoAcerto,
+  type ResultadoPdf, type RomaneioAcerto, type SituacaoArquivo,
 } from '../services/acertoAlfaApi'
+import { Modal } from './ModalBase'
 import { dataBr, lerNum, num } from '../utils/formato'
 import ConferenciaSemana, { type Conferencia } from './ConferenciaSemana'
 import Botao, { BotaoIcone } from './ui/Botao'
@@ -30,8 +32,10 @@ import { LinhaRomaneio, SituacaoRomaneio } from './RomaneiosEmbalar'
 
 // Na tela os números ficam como texto enquanto se digita ("1.234,5" no meio do
 // caminho não pode virar número e voltar formatado a cada tecla).
-type LinhaRomaneio = { chave: number; data: string; numero: string; valor: string; caixas: string; desconto: string }
-type LinhaPagamento = { chave: number; data: string; condicao: string; valor: string; observacao: string; numero: string }
+// doArquivo (ACE-11): a linha veio do PDF e não se edita, só se exclui (no romaneio, o
+// desconto por caixa continua editável: ele não está no documento, ACE-04).
+type LinhaRomaneio = { chave: number; data: string; numero: string; valor: string; caixas: string; desconto: string; doArquivo: boolean }
+type LinhaPagamento = { chave: number; data: string; condicao: string; valor: string; observacao: string; numero: string; doArquivo: boolean }
 type Rascunho = { numero: string; semana: string; romaneios: LinhaRomaneio[]; pagamentos: LinhaPagamento[]; notas: string[] }
 
 let proximaChave = 1
@@ -48,6 +52,7 @@ const paraRascunho = (a: AcertoDetalhe): Rascunho => ({
     valor: num(r.valor),
     caixas: String(r.caixas),
     desconto: r.descontoCaixa == null ? '' : num(r.descontoCaixa),
+    doArquivo: r.doArquivo === true,
   })),
   pagamentos: a.pagamentos.map(p => ({
     chave: chave(),
@@ -56,6 +61,7 @@ const paraRascunho = (a: AcertoDetalhe): Rascunho => ({
     valor: p.valor == null ? '' : num(p.valor),
     observacao: p.observacao,
     numero: p.numero,
+    doArquivo: p.doArquivo === true,
   })),
   notas: [...a.notas],
 })
@@ -104,6 +110,7 @@ const paraEdicao = (r: Rascunho): AcertoEdicao => ({
   notas: r.notas.map(n => n.trim()).filter(Boolean),
 })
 
+// Só os campos que a tela edita: doArquivo fica de fora da comparação de "alterado"
 const doServidor = (a: AcertoDetalhe): AcertoEdicao => ({
   numero: a.numero, semana: a.semana,
   romaneios: a.romaneios.map(r => ({ numero: r.numero, rotulo: r.rotulo, data: r.data, valor: r.valor, caixas: r.caixas, descontoCaixa: r.descontoCaixa })),
@@ -175,6 +182,9 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
   const [conferindo, setConferindo] = useState(false)
   // Avisos da planilha baixada e dos PDFs subidos: ficam até ele fechar (D-07)
   const [avisosAgora, setAvisosAgora] = useState<string[]>([])
+  // Último envio de PDFs: o que aconteceu com cada um, e os que esperam Cancelar ou Substituir
+  const [lidosAgora, setLidosAgora] = useState<ResultadoPdf[]>([])
+  const [pendentes, setPendentes] = useState<{ arquivos: File[]; itens: ResultadoPdf[] } | null>(null)
   const confirmar = useConfirmar()
 
   const aplicar = (a: AcertoDetalhe) => { setAcerto(a); setRascunho(paraRascunho(a)) }
@@ -267,13 +277,32 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
   const incluirRomaneio = () => mudar(r => ({
     ...r,
     romaneios: [...r.romaneios, {
-      chave: chave(), data: r.romaneios[r.romaneios.length - 1]?.data || r.semana, numero: '', valor: '', caixas: '', desconto: '',
+      chave: chave(), data: r.romaneios[r.romaneios.length - 1]?.data || r.semana, numero: '', valor: '', caixas: '', desconto: '', doArquivo: false,
     }],
   }))
   const incluirPagamento = () => mudar(r => ({
     ...r,
-    pagamentos: [...r.pagamentos, { chave: chave(), data: '', condicao: '', valor: '', observacao: '', numero: '' }],
+    pagamentos: [...r.pagamentos, { chave: chave(), data: '', condicao: '', valor: '', observacao: '', numero: '', doArquivo: false }],
   }))
+
+  // Linha que veio do arquivo não se edita: o único jeito de mudar é excluir (ACE-11).
+  // Linha lançada à mão sai direto, como sempre (volta com "Descartar").
+  const excluirRomaneio = async (x: LinhaRomaneio, nome: string) => {
+    if (x.doArquivo && !await confirmar({
+      titulo: `Excluir o romaneio ${nome}?`,
+      texto: 'Ele veio do arquivo e não se edita. Sai do acerto quando você salvar; até lá, "Descartar" traz de volta.',
+      confirmar: 'Excluir',
+    })) return
+    tirarRomaneio(x.chave)
+  }
+  const excluirPagamento = async (p: LinhaPagamento, nome: string) => {
+    if (p.doArquivo && !await confirmar({
+      titulo: `Excluir o ${nome}?`,
+      texto: 'Ele veio do arquivo e não se edita. Sai do acerto quando você salvar; até lá, "Descartar" traz de volta.',
+      confirmar: 'Excluir',
+    })) return
+    tirarPagamento(p.chave)
+  }
 
   // SALDO ANT. = o crédito ou débito com que o acerto anterior fechou. Vazio é
   // automático (corrigir o anterior corrige este); com valor, foi digitado à mão.
@@ -286,7 +315,7 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
   const voltarSaldoAutomatico = () => { if (linhaSaldo) mudarPagamento(linhaSaldo.chave, { valor: '' }) }
   const incluirSaldoAnterior = () => mudar(r => ({
     ...r,
-    pagamentos: [{ chave: chave(), data: saldoAnterior.semana ?? '', condicao: SALDO_ANT, valor: '', observacao: '', numero: '' }, ...r.pagamentos],
+    pagamentos: [{ chave: chave(), data: saldoAnterior.semana ?? '', condicao: SALDO_ANT, valor: '', observacao: '', numero: '', doArquivo: false }, ...r.pagamentos],
   }))
 
   const salvar = async () => {
@@ -343,20 +372,37 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
   }
 
   // Os PDFs novos se somam ao que está SALVO; com edição pendente ela se perderia
-  const subir = async (files: File[]) => {
+  // Documento que já está no sistema e veio diferente não entra sozinho: abre a janela
+  // de Cancelar ou Substituir (ACE-11, UI-21); "Substituir" reenvia só esses arquivos.
+  const subir = async (files: File[], substituir = false) => {
     const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'))
     if (!pdfs.length) { toast.error('Selecione os PDFs.'); return }
     if (alterado) { toast.error('Salve ou descarte as alterações antes de subir mais PDFs.'); return }
     setSubindo(true)
     try {
-      const { data } = await acertoAlfaApi.acrescentarArquivos(id, pdfs)
+      const { data } = await acertoAlfaApi.acrescentarArquivos(id, pdfs, substituir)
       aplicar(data.acerto)
+      const porArquivo = data.arquivos ?? []
+      const esperando = porArquivo.filter(a => a.situacao === 'CONFIRMAR')
+      setPendentes(esperando.length
+        ? { arquivos: pdfs.filter(f => esperando.some(c => c.arquivo === f.name)), itens: esperando }
+        : null)
+      // Reenvio: troca só a linha dos arquivos reenviados; o resto do envio anterior fica
+      setLidosAgora(antes => substituir
+        ? [...antes.filter(a => !porArquivo.some(p => p.arquivo === a.arquivo)), ...porArquivo]
+        : porArquivo)
       const partes = [
-        data.boletosNovos && `${data.boletosNovos} boleto(s)`,
-        data.romaneiosNovos && `${data.romaneiosNovos} romaneio(s)`,
+        data.boletosNovos > 0 && `${data.boletosNovos} ${data.boletosNovos === 1 ? 'boleto' : 'boletos'}`,
+        data.romaneiosNovos > 0 && `${data.romaneiosNovos} ${data.romaneiosNovos === 1 ? 'romaneio' : 'romaneios'}`,
+        data.substituidos > 0 && `${data.substituidos} ${data.substituidos === 1 ? 'documento substituído' : 'documentos substituídos'}`,
       ].filter(Boolean)
-      toast.success(partes.length ? `Entraram ${partes.join(' e ')}.` : `${data.arquivosNovos} PDF(s) guardado(s), sem boleto ou romaneio novo.`)
-      if (data.avisos.length) setAvisosAgora(data.avisos)
+      if (partes.length) toast.success(`Entrou: ${partes.join(', ')}.`)
+      else if (esperando.length) toastConfira('Documento repetido com diferença. Escolha na janela.')
+      else if (data.arquivosNovos > 0) toast.success('PDF guardado, sem boleto ou romaneio novo.')
+      else toast.success('Nada novo: já estava tudo no acerto.')
+      // Os avisos de cada arquivo aparecem na lista dos arquivos lidos; aqui só os gerais
+      const nomes = porArquivo.map(a => `${a.arquivo}: `)
+      setAvisosAgora((data.avisos ?? []).filter(x => !nomes.some(n => x.startsWith(n)) && !/já estavam guardados, iguais/.test(x)))
       onMudou()
       conferir()
     } catch (e) { toast.error(await erroAcerto(e, 'Não consegui ler os PDFs.')) }
@@ -456,6 +502,35 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
                 {rascunho.romaneios.map((x, i) => {
                   const r = romaneioDaLinha(x)
                   const nome = x.numero.trim() || `da linha ${i + 1}`
+                  if (x.doArquivo) {
+                    return (
+                      <li key={x.chave} className="px-4 py-3.5 space-y-3">
+                        <div className="flex items-baseline justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-semibold text-gray-900 tabular-nums">Romaneio {x.numero}</p>
+                            <p className="text-sm text-gray-600 tabular-nums">
+                              {x.data ? dataBr(x.data) : <span className="text-amber-800 font-medium">sem data</span>} · {faltou(x.caixas, 'sem caixas')} caixas
+                            </p>
+                          </div>
+                          <p className="font-semibold text-gray-900 tabular-nums whitespace-nowrap">{faltou(x.valor, 'sem valor')}</p>
+                        </div>
+                        <SeloDoArquivo detalhe="só o desconto por caixa muda" />
+                        <div className="grid grid-cols-2 gap-3 items-end">
+                          <CampoCartao rotulo="Desconto por caixa"><input value={x.desconto} inputMode="decimal" placeholder="sem"
+                                 onChange={e => mudarRomaneio(x.chave, { desconto: e.target.value })}
+                                 onBlur={() => x.desconto.trim() && mudarRomaneio(x.chave, { desconto: num(lerNum(x.desconto)) })}
+                                 className={`${classeNumero} text-right`} /></CampoCartao>
+                          <div className="flex items-center justify-end gap-3">
+                            <dl className="text-sm tabular-nums text-right">
+                              <div className="flex gap-1 justify-end"><dt className="text-gray-500">Desconto</dt><dd className="text-gray-700">{num(descontoDe(r))}</dd></div>
+                              <div className="flex gap-1 justify-end"><dt className="text-gray-500">A pagar</dt><dd className="font-semibold text-gray-900">{num(aPagarDe(r))}</dd></div>
+                            </dl>
+                            <BotaoIcone icone={Trash2} perigo rotulo={`Excluir o romaneio ${nome}`} onClick={() => excluirRomaneio(x, nome)} />
+                          </div>
+                        </div>
+                      </li>
+                    )
+                  }
                   return (
                     <li key={x.chave} className="px-4 py-3.5 space-y-3">
                       <div className="grid grid-cols-2 gap-3">
@@ -479,7 +554,7 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
                           <div className="flex gap-1"><dt className="text-gray-500">Desconto</dt><dd className="text-gray-700">{num(descontoDe(r))}</dd></div>
                           <div className="flex gap-1"><dt className="text-gray-500">A pagar</dt><dd className="font-semibold text-gray-900">{num(aPagarDe(r))}</dd></div>
                         </dl>
-                        <BotaoIcone icone={Trash2} perigo rotulo={`Tirar o romaneio ${nome}`} onClick={() => tirarRomaneio(x.chave)} />
+                        <BotaoIcone icone={Trash2} perigo rotulo={`Tirar o romaneio ${nome}`} onClick={() => excluirRomaneio(x, nome)} />
                       </div>
                     </li>
                   )
@@ -507,24 +582,43 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
                       const nome = x.numero.trim() || `da linha ${i + 1}`
                       return (
                         <tr key={x.chave} className="hover:bg-gray-50/70">
-                          <td className="px-1 py-0.5">
-                            <input type="date" value={x.data} aria-label={`Data do romaneio ${nome}`} onChange={e => mudarRomaneio(x.chave, { data: e.target.value })} className={celula} />
-                          </td>
-                          <td className="px-1 py-0.5">
-                            <input value={x.numero} placeholder="número" aria-label={`Número do romaneio ${nome}`} title="Número do romaneio, ou um texto como BOLETO ou CH DEV"
-                                   onChange={e => mudarRomaneio(x.chave, { numero: e.target.value })} className={`${celula} tabular-nums`} />
-                          </td>
-                          <td className="px-1 py-0.5">
-                            <input value={x.valor} inputMode="decimal" placeholder="0,00" aria-label={`Valor do romaneio ${nome}`}
-                                   onChange={e => mudarRomaneio(x.chave, { valor: e.target.value })}
-                                   onBlur={() => x.valor.trim() && mudarRomaneio(x.chave, { valor: num(lerNum(x.valor)) })}
-                                   className={`${celula} text-right tabular-nums`} />
-                          </td>
-                          <td className="px-1 py-0.5">
-                            <input value={x.caixas} inputMode="numeric" placeholder="0" aria-label={`Caixas do romaneio ${nome}`}
-                                   onChange={e => mudarRomaneio(x.chave, { caixas: e.target.value })}
-                                   className={`${celula} text-right tabular-nums`} />
-                          </td>
+                          {x.doArquivo ? (
+                            <>
+                              <td className="px-1 py-0.5"><Fixo>{x.data ? dataBr(x.data) : faltou('', 'sem data')}</Fixo></td>
+                              <td className="px-1 py-0.5">
+                                <Fixo className="inline-flex items-center gap-1.5">
+                                  {x.numero}
+                                  <span title="Veio do arquivo: não se edita, só se exclui (o desconto por caixa muda)">
+                                    <Lock size={12} className="text-gray-400" aria-hidden />
+                                    <span className="sr-only">, veio do arquivo</span>
+                                  </span>
+                                </Fixo>
+                              </td>
+                              <td className="px-1 py-0.5"><Fixo className="text-right">{faltou(x.valor, 'sem valor')}</Fixo></td>
+                              <td className="px-1 py-0.5"><Fixo className="text-right">{faltou(x.caixas, 'sem caixas')}</Fixo></td>
+                            </>
+                          ) : (
+                            <>
+                              <td className="px-1 py-0.5">
+                                <input type="date" value={x.data} aria-label={`Data do romaneio ${nome}`} onChange={e => mudarRomaneio(x.chave, { data: e.target.value })} className={celula} />
+                              </td>
+                              <td className="px-1 py-0.5">
+                                <input value={x.numero} placeholder="número" aria-label={`Número do romaneio ${nome}`} title="Número do romaneio, ou um texto como BOLETO ou CH DEV"
+                                       onChange={e => mudarRomaneio(x.chave, { numero: e.target.value })} className={`${celula} tabular-nums`} />
+                              </td>
+                              <td className="px-1 py-0.5">
+                                <input value={x.valor} inputMode="decimal" placeholder="0,00" aria-label={`Valor do romaneio ${nome}`}
+                                       onChange={e => mudarRomaneio(x.chave, { valor: e.target.value })}
+                                       onBlur={() => x.valor.trim() && mudarRomaneio(x.chave, { valor: num(lerNum(x.valor)) })}
+                                       className={`${celula} text-right tabular-nums`} />
+                              </td>
+                              <td className="px-1 py-0.5">
+                                <input value={x.caixas} inputMode="numeric" placeholder="0" aria-label={`Caixas do romaneio ${nome}`}
+                                       onChange={e => mudarRomaneio(x.chave, { caixas: e.target.value })}
+                                       className={`${celula} text-right tabular-nums`} />
+                              </td>
+                            </>
+                          )}
                           <td className="px-1 py-0.5">
                             <input value={x.desconto} inputMode="decimal" placeholder="sem" aria-label={`Desconto por caixa do romaneio ${nome}`}
                                    onChange={e => mudarRomaneio(x.chave, { desconto: e.target.value })}
@@ -534,7 +628,7 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
                           <td className="px-2 py-0.5 text-right tabular-nums text-gray-500 whitespace-nowrap">{num(descontoDe(r))}</td>
                           <td className="px-2 py-0.5 text-right tabular-nums font-medium text-gray-900 whitespace-nowrap">{num(aPagarDe(r))}</td>
                           <td className="px-0.5 py-0.5 text-center">
-                            <BotaoIcone icone={Trash2} perigo rotulo={`Tirar o romaneio ${nome}`} onClick={() => tirarRomaneio(x.chave)} />
+                            <BotaoIcone icone={Trash2} perigo rotulo={`${x.doArquivo ? 'Excluir' : 'Tirar'} o romaneio ${nome}`} onClick={() => excluirRomaneio(x, nome)} />
                           </td>
                         </tr>
                       )
@@ -614,6 +708,19 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
                             {saldoAnterior.saldo == null ? 'sem valor' : num(saldoAnterior.saldo)}
                           </p>
                         </div>
+                      ) : p.doArquivo ? (
+                        <div className="space-y-1">
+                          <div className="flex items-baseline justify-between gap-3">
+                            <div className="min-w-0">
+                              <p className="font-semibold text-gray-900">{p.condicao} <span className="font-normal tabular-nums break-all">{p.numero}</span></p>
+                              <p className="text-sm text-gray-600 tabular-nums">
+                                {p.observacao.trim() || <span className="text-amber-800 font-medium">sem pagador</span>} · vence {p.data ? dataBr(p.data) : <span className="text-amber-800 font-medium">sem data</span>}
+                              </p>
+                            </div>
+                            <p className="font-semibold text-gray-900 tabular-nums whitespace-nowrap">{faltou(p.valor, 'sem valor')}</p>
+                          </div>
+                          <SeloDoArquivo />
+                        </div>
                       ) : (
                         <>
                           <div className="grid grid-cols-2 gap-3">
@@ -646,7 +753,7 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
                       )}
                       <div className="flex items-center justify-between gap-3">
                         <p className="text-sm text-gema-900 font-medium">{esperando ? 'Boleto esperando o valor' : ''}</p>
-                        <BotaoIcone icone={Trash2} perigo rotulo={`Tirar o pagamento ${nome}`} onClick={() => tirarPagamento(p.chave)} />
+                        <BotaoIcone icone={Trash2} perigo rotulo={`${p.doArquivo ? 'Excluir' : 'Tirar'} o pagamento ${nome}`} onClick={() => excluirPagamento(p, `boleto ${p.numero.trim()}`)} />
                       </div>
                     </li>
                   )
@@ -674,6 +781,23 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
                       const nome = `${p.condicao.trim() || 'da linha'} ${p.numero.trim() || i + 1}`
                       return (
                         <tr key={p.chave} className={esperando ? 'bg-gema-50' : auto ? 'bg-tinta-50/70' : 'hover:bg-gray-50/70'}>
+                          {p.doArquivo ? (
+                            <>
+                              <td className="px-1 py-0.5"><Fixo>{p.data ? dataBr(p.data) : faltou('', 'sem data')}</Fixo></td>
+                              <td className="px-1 py-0.5"><Fixo>{p.condicao}</Fixo></td>
+                              <td className="px-1 py-0.5"><Fixo className="text-right">{faltou(p.valor, 'sem valor')}</Fixo></td>
+                              <td className="px-1 py-0.5"><Fixo>{faltou(p.observacao, 'sem pagador')}</Fixo></td>
+                              <td className="px-1 py-0.5">
+                                <Fixo className="inline-flex items-center gap-1.5">
+                                  <span className="break-all">{p.numero}</span>
+                                  <span title="Veio do arquivo: não se edita, só se exclui">
+                                    <Lock size={12} className="text-gray-400" aria-hidden />
+                                    <span className="sr-only">, veio do arquivo</span>
+                                  </span>
+                                </Fixo>
+                              </td>
+                            </>
+                          ) : (<>
                           <td className="px-1 py-0.5">
                             {auto ? (
                               <span className="block px-2 py-1 text-sm text-gray-700 tabular-nums" title="Segunda-feira do acerto anterior">
@@ -716,8 +840,9 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
                           <td className="px-1 py-0.5">
                             <input value={p.numero} aria-label={`Número do pagamento ${i + 1}`} onChange={e => mudarPagamento(p.chave, { numero: e.target.value })} className={`${celula} tabular-nums`} />
                           </td>
+                          </>)}
                           <td className="px-0.5 py-0.5 text-center">
-                            <BotaoIcone icone={Trash2} perigo rotulo={`Tirar o pagamento ${nome}`} onClick={() => tirarPagamento(p.chave)} />
+                            <BotaoIcone icone={Trash2} perigo rotulo={`${p.doArquivo ? 'Excluir' : 'Tirar'} o pagamento ${nome}`} onClick={() => excluirPagamento(p, `boleto ${p.numero.trim()}`)} />
                           </td>
                         </tr>
                       )
@@ -784,6 +909,16 @@ export default function AcertoAlfaDetalhe({ id, onVoltar, onMudou }: {
                       dica={alterado ? 'Salve ou descarte as alterações antes de subir mais PDFs.' : undefined}
                       desabilitado={alterado} carregando={subindo} textoCarregando="Lendo os PDFs..." />
         </div>
+        {lidosAgora.length > 0 && (
+          <div className="px-4 pt-3">
+            <ArquivosLidos itens={lidosAgora} esperando={pendentes?.itens.map(i => i.arquivo) ?? []} onFechar={() => setLidosAgora([])} />
+          </div>
+        )}
+        {pendentes && (
+          <JanelaSubstituir itens={pendentes.itens} enviando={subindo}
+                            onCancelar={() => setPendentes(null)}
+                            onSubstituir={() => subir(pendentes.arquivos, true)} />
+        )}
         {acerto.arquivos.length === 0 ? (
           <Vazio compacto titulo="Nenhum arquivo guardado" />
         ) : (
@@ -843,6 +978,114 @@ function CampoCartao({ rotulo, children }: { rotulo: string; children: ReactNode
       <span className="block text-sm font-medium text-gray-700 mb-1 truncate">{rotulo}</span>
       {children}
     </label>
+  )
+}
+
+// Célula só de leitura (linha que veio do arquivo), com a mesma altura do campo
+function Fixo({ children, className = '' }: { children: ReactNode; className?: string }) {
+  return <span className={`block px-2 py-1 min-h-9 leading-7 text-sm text-gray-800 tabular-nums ${className}`}>{children}</span>
+}
+// Dado que o arquivo não trouxe: avisa em vez de deixar em branco (UI-04)
+const faltou = (t: string, texto: string) => (t.trim() ? t : <span className="text-amber-800 font-medium">{texto}</span>)
+
+// Selo da linha que veio do arquivo: não se edita, só se exclui
+function SeloDoArquivo({ detalhe }: { detalhe?: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-gray-500" title="Veio do arquivo: não se edita, só se exclui">
+      <Lock size={12} aria-hidden /> Veio do arquivo{detalhe ? `; ${detalhe}` : ''}
+    </span>
+  )
+}
+
+/**
+ * O que aconteceu com cada PDF do último envio. Situação CONFIRMAR: "esperando sua
+ * escolha" enquanto a janela está aberta; fechada sem substituir, "cancelado".
+ */
+export function ArquivosLidos({ itens, esperando, onFechar }: {
+  itens: { arquivo: string; situacao: SituacaoArquivo; avisos: string[] }[]
+  esperando: string[]
+  onFechar: () => void
+}) {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-gray-50 pl-3 pr-1 py-2 flex items-start gap-2 animate-entrada">
+      <ul className="flex-1 min-w-0 space-y-1.5 py-1">
+        {itens.map(i => {
+          const cancelado = i.situacao === 'CONFIRMAR' && !esperando.includes(i.arquivo)
+          const atencao = i.situacao === 'CONFIRMAR' || i.situacao === 'FORA' || i.situacao === 'ILEGIVEL'
+          // A situação já diz "já estava": não repete o aviso igual
+          const avisos = i.situacao === 'IGUAL' ? i.avisos.filter(a => !a.startsWith('Já estava')) : i.avisos
+          return (
+            <li key={i.arquivo} className="text-sm">
+              <span className="font-medium text-gray-900 break-all">{i.arquivo}</span>:{' '}
+              <span className={atencao && !cancelado ? 'font-medium text-amber-800' : 'text-gray-700'}>
+                {cancelado ? ROTULO_CANCELADO : ROTULO_SITUACAO[i.situacao] ?? i.situacao}
+              </span>
+              {avisos.map(a => <span key={a} className="block text-amber-800">{a}</span>)}
+            </li>
+          )
+        })}
+      </ul>
+      <BotaoIcone icone={X} rotulo="Fechar a lista" onClick={onFechar} />
+    </div>
+  )
+}
+
+/**
+ * Documento que já está no sistema (mesmo número de romaneio ou nosso número do boleto)
+ * e veio diferente no arquivo novo: mostra o que muda e pergunta Cancelar ou Substituir
+ * (ACE-11, UI-21). Nada destes arquivos foi gravado até ele escolher Substituir.
+ */
+export function JanelaSubstituir({ itens, enviando, onCancelar, onSubstituir }: {
+  itens: { arquivo: string; diferencas: DiferencaDocumento[] }[]
+  enviando: boolean
+  onCancelar: () => void
+  onSubstituir: () => void
+}) {
+  const varios = itens.length > 1
+  return (
+    <Modal titulo={varios ? 'Documentos que já estão no sistema' : 'Documento que já está no sistema'} onClose={onCancelar} largura="lg"
+           descricao={varios
+             ? 'Estes arquivos trazem documentos com o mesmo número de outros já lançados, mas com diferenças. Veja o que muda e escolha.'
+             : 'Este arquivo traz um documento com o mesmo número de outro já lançado, mas com diferenças. Veja o que muda e escolha.'}
+           rodape={
+             <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+               <Botao variante="secundario" onClick={onCancelar} disabled={enviando} data-foco-inicial>Cancelar</Botao>
+               <Botao variante="primario" onClick={onSubstituir} carregando={enviando} textoCarregando="Substituindo...">Substituir</Botao>
+             </div>
+           }>
+      <div className="space-y-3">
+        {itens.map(i => {
+          // Resumo: cada documento com os campos que mudam
+          const porDocumento = new Map<string, DiferencaDocumento[]>()
+          i.diferencas.forEach(d => porDocumento.set(d.documento, [...(porDocumento.get(d.documento) ?? []), d]))
+          return (
+            <div key={i.arquivo} className="border border-gray-200 rounded-lg p-3 space-y-1.5">
+              <p className="font-medium text-gray-900 break-all">{i.arquivo}</p>
+              <ul className="text-sm text-gray-800 space-y-0.5">
+                {[...porDocumento].map(([doc, difs]) => (
+                  <li key={doc}><span className="font-medium">{doc}</span>: muda {difs.map(d => d.campo.toLowerCase()).join(', ')}</li>
+                ))}
+              </ul>
+              <details className="text-sm">
+                <summary className="cursor-pointer text-tinta-700 font-medium py-2 -my-2 sm:py-0 sm:my-0">Ver detalhes</summary>
+                <ul className="mt-2 space-y-2">
+                  {i.diferencas.map((d, k) => (
+                    <li key={k} className="grid grid-cols-1 sm:grid-cols-[minmax(8rem,auto)_1fr_1fr] gap-x-3 gap-y-0.5 tabular-nums">
+                      <span className="font-medium text-gray-900">{d.documento} · {d.campo}</span>
+                      <span className="text-gray-700"><span className="text-gray-500">No sistema:</span> {d.atual}</span>
+                      <span className="text-gray-900"><span className="text-gray-500">No arquivo:</span> {d.novo}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </div>
+          )
+        })}
+        <p className="text-sm text-gray-600">
+          Substituir troca o documento inteiro pelo do arquivo, no mesmo lugar. O desconto por caixa digitado continua.
+        </p>
+      </div>
+    </Modal>
   )
 }
 

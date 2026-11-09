@@ -12,12 +12,12 @@ import {
 import toast from 'react-hot-toast'
 import { formatBRL } from '../services/api'
 import {
-  acertoAlfaApi, erroAcerto, segundaDaSemana,
+  acertoAlfaApi, erroAcerto, segundaDaSemana, ROTULO_CANCELADO, ROTULO_SITUACAO,
   type AcertoResumo, type ArquivoIdentificado, type ResultadoImportacao,
 } from '../services/acertoAlfaApi'
 import { brl, dataBr } from '../utils/formato'
 import type { Conferencia } from '../components/ConferenciaSemana'
-import AcertoAlfaDetalhe from '../components/AcertoAlfaDetalhe'
+import AcertoAlfaDetalhe, { JanelaSubstituir } from '../components/AcertoAlfaDetalhe'
 import { SituacaoRomaneio } from '../components/RomaneiosEmbalar'
 
 // O acerto com a Fazenda Alfa vai sendo montado ao longo da semana: cada PDF
@@ -69,6 +69,8 @@ export default function AcertoAlfaPage() {
   const [importando, setImportando] = useState(false)
   const [importados, setImportados] = useState<ResultadoImportacao[] | null>(null)
   const [identificados, setIdentificados] = useState<ArquivoIdentificado[] | null>(null)
+  // PDFs com documento repetido e diferente, esperando Cancelar ou Substituir
+  const [pendentes, setPendentes] = useState<{ arquivos: File[]; itens: ArquivoIdentificado[] } | null>(null)
   // Avisos do envio que a lista por arquivo não mostra: ficam até fechar (D-07)
   const [avisos, setAvisos] = useState<string[]>([])
   const [falhou, setFalhou] = useState(false)
@@ -103,20 +105,33 @@ export default function AcertoAlfaPage() {
     if (planilhas.length) await importar(planilhas)
   }
 
-  const enviarPdfs = async (pdfs: File[]) => {
+  // Documento que já está num acerto e veio diferente espera Cancelar ou Substituir
+  // (ACE-11, UI-21); "Substituir" reenvia só esses arquivos.
+  const enviarPdfs = async (pdfs: File[], substituir = false) => {
     setEnviando(true)
-    setIdentificados(null)
-    setAvisos([])
+    if (!substituir) { setIdentificados(null); setAvisos([]) }
     try {
-      const { data } = await acertoAlfaApi.enviarDaSemana(pdfs)
+      const { data } = await acertoAlfaApi.enviarDaSemana(pdfs, substituir)
       const itens = data.arquivos ?? []
-      setIdentificados(itens)
+      // Reenvio: troca só a linha dos arquivos reenviados
+      setIdentificados(antes => substituir && antes
+        ? [...antes.filter(a => !itens.some(i => i.nome === a.nome)), ...itens]
+        : itens)
+      const esperando = itens.filter(a => a.situacao === 'CONFIRMAR')
+      setPendentes(esperando.length
+        ? { arquivos: pdfs.filter(f => esperando.some(c => c.nome === f.name)), itens: esperando }
+        : null)
       const guardados = itens.filter(a => a.destino).length
-      toast.success(`${guardados} de ${pdfs.length} arquivo(s) guardado(s)${guardados < itens.length ? '; confira a lista' : ''}.`, { duration: 6000 })
+      const iguais = itens.filter(a => a.situacao === 'IGUAL').length
+      if (substituir) toast.success(`${guardados} ${guardados === 1 ? 'arquivo substituído' : 'arquivos substituídos'}.`)
+      else toast.success(`${guardados} de ${pdfs.length} arquivo(s) guardado(s)`
+        + (iguais ? `, ${iguais} já ${iguais === 1 ? 'estava, igual' : 'estavam, iguais'}` : '')
+        + (esperando.length ? '; escolha na janela o que fazer com o repetido' : guardados + iguais < itens.length ? '; confira a lista' : '')
+        + '.', { duration: 6000 })
       // O que a lista por arquivo não mostra: boleto ou romaneio que o acerto já tinha
       const doAcerto = data.acertos.flatMap(a => a.avisos)
         .filter(x => !/já estavam guardados/.test(x) && !itens.some(i => i.avisos.includes(x)))
-      setAvisos(doAcerto)
+      setAvisos(antes => [...(substituir ? antes : []), ...doAcerto])
       await carregar()
     } catch (e) {
       const dados = (e as { response?: { data?: { arquivos?: ArquivoIdentificado[] } } })?.response?.data
@@ -185,7 +200,14 @@ export default function AcertoAlfaPage() {
       )}
 
       {identificados && identificados.length > 0 && (
-        <ArquivosIdentificados itens={identificados} onAbrir={abrir} onFechar={() => setIdentificados(null)} />
+        <ArquivosIdentificados itens={identificados} esperando={pendentes?.itens.map(i => i.nome) ?? []}
+                               onAbrir={abrir} onFechar={() => setIdentificados(null)} />
+      )}
+
+      {pendentes && (
+        <JanelaSubstituir itens={pendentes.itens.map(i => ({ arquivo: i.nome, diferencas: i.diferencas ?? [] }))}
+                          enviando={enviando} onCancelar={() => setPendentes(null)}
+                          onSubstituir={() => enviarPdfs(pendentes.arquivos, true)} />
       )}
 
       {importados && <ResultadoImportacaoLista itens={importados} onAbrir={abrir} onFechar={() => setImportados(null)} />}
@@ -501,8 +523,9 @@ function detalhes(a: ArquivoIdentificado): string[] {
   return d
 }
 
-function ArquivosIdentificados({ itens, onAbrir, onFechar }: {
+function ArquivosIdentificados({ itens, esperando, onAbrir, onFechar }: {
   itens: ArquivoIdentificado[]
+  esperando: string[]
   onAbrir: (id: number) => void
   onFechar: () => void
 }) {
@@ -525,9 +548,11 @@ function ArquivosIdentificados({ itens, onAbrir, onFechar }: {
           const info = detalhes(a)
           return (
             <li key={a.nome} className={`px-4 py-3 flex items-start gap-3 ${ok ? '' : 'bg-red-50/60'}`}>
-              {ok
-                ? <CheckCircle2 size={17} className="mt-0.5 shrink-0 text-emerald-700" aria-hidden />
-                : <FileQuestion size={17} className="mt-0.5 shrink-0 text-red-700" aria-hidden />}
+              {!ok
+                ? <FileQuestion size={17} className="mt-0.5 shrink-0 text-red-700" aria-hidden />
+                : a.situacao === 'CONFIRMAR'
+                  ? <TriangleAlert size={17} className="mt-0.5 shrink-0 text-amber-700" aria-hidden />
+                  : <CheckCircle2 size={17} className="mt-0.5 shrink-0 text-emerald-700" aria-hidden />}
               <div className="min-w-0 flex-1 space-y-0.5">
                 <p className="text-sm font-medium text-gray-900 break-all">{a.nome}</p>
                 <p className="text-sm tabular-nums">
@@ -535,13 +560,19 @@ function ArquivosIdentificados({ itens, onAbrir, onFechar }: {
                   {info.length > 0 && <span className="text-gray-600">: {info.join(' · ')}</span>}
                 </p>
                 <p className="text-sm text-gray-600">
-                  {a.destino
-                    ? <>Guardado em {a.acertoId != null
-                        ? <button onClick={() => onAbrir(a.acertoId!)} className="font-medium text-tinta-700 underline underline-offset-2 hover:text-tinta-900 py-2 -my-2 sm:py-0 sm:my-0">{a.destino}</button>
-                        : a.destino}</>
-                    : 'Não guardado agora'}
+                  {a.situacao === 'CONFIRMAR'
+                    ? <span className="font-medium text-amber-800">{esperando.includes(a.nome) ? ROTULO_SITUACAO.CONFIRMAR : ROTULO_CANCELADO}</span>
+                    : a.situacao === 'IGUAL' && !a.destino
+                      ? <>{ROTULO_SITUACAO.IGUAL}{a.acertoId != null && <>{' · '}
+                          <button onClick={() => onAbrir(a.acertoId!)} className="font-medium text-tinta-700 underline underline-offset-2 hover:text-tinta-900 py-2 -my-2 sm:py-0 sm:my-0">Abrir o acerto</button></>}</>
+                      : a.destino
+                        ? <>{a.situacao === 'SUBSTITUIDO' ? 'Substituído em' : 'Guardado em'} {a.acertoId != null
+                            ? <button onClick={() => onAbrir(a.acertoId!)} className="font-medium text-tinta-700 underline underline-offset-2 hover:text-tinta-900 py-2 -my-2 sm:py-0 sm:my-0">{a.destino}</button>
+                            : a.destino}</>
+                        : 'Não guardado agora'}
                 </p>
-                {a.avisos.map(x => <p key={x} className="text-sm text-amber-800">{x}</p>)}
+                {(a.situacao === 'IGUAL' ? a.avisos.filter(x => !x.startsWith('Já estava')) : a.avisos)
+                  .map(x => <p key={x} className="text-sm text-amber-800">{x}</p>)}
                 {/* Romaneio sem funrural: volumes para embalar, com o controle de volumes para onde foi */}
                 {a.embalar?.map(r => (
                   <p key={r.numero} className="text-sm">

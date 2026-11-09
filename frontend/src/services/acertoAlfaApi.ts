@@ -20,6 +20,9 @@ export type RomaneioAcerto = {
   valor: number
   caixas: number
   descontoCaixa: number | null // vazio = sem desconto (coluna E vazia)
+  // ACE-11: true = veio do PDF; não se edita na tela (só o desconto por caixa), só se exclui.
+  // Só vem da API; não vai no salvar (a API decide pelo número).
+  doArquivo?: boolean | null
 }
 
 export type PagamentoAcerto = {
@@ -28,6 +31,7 @@ export type PagamentoAcerto = {
   valor: number | null        // vazio = lançado antes de o dinheiro (ou o boleto) chegar
   observacao: string          // cliente ou texto livre
   numero: string              // número do boleto (ou o que ela escrever)
+  doArquivo?: boolean | null  // ACE-11: boleto que veio do PDF; não se edita, só se exclui
 }
 
 // O pé da planilha: total dos romaneios, depósitos e pagamentos, créditos e débitos com Livia
@@ -100,12 +104,47 @@ export type AcertoEdicao = {
   atualizadoEm?: string      // de quando a tela abriu; a API recusa se o acerto mudou depois
 }
 
+// ACE-11: o mesmo documento (romaneio pelo número de controle, boleto pelo nosso número)
+// já está num acerto. Campo a campo, o que está no sistema (atual) e o que veio no arquivo (novo).
+export type DiferencaDocumento = {
+  documento: string           // "Romaneio 133733", "Boleto 123456"
+  campo: string               // Data, Valor, Caixas, Vencimento, Pagador, Condição
+  atual: string
+  novo: string
+}
+
+// NOVO: entrou algo · IGUAL: já estava, igual · CONFIRMAR: mesmo documento com diferença,
+// nada gravado, espera "Substituir" · SUBSTITUIDO · SO_ARQUIVO: guardado só como arquivo ·
+// FORA: documentos já estão em outro acerto · ILEGIVEL
+export type SituacaoArquivo = 'NOVO' | 'IGUAL' | 'CONFIRMAR' | 'SUBSTITUIDO' | 'SO_ARQUIVO' | 'FORA' | 'ILEGIVEL'
+
+// Como cada situação aparece na tela (CONFIRMAR muda para "cancelado" quando ele fecha a janela)
+export const ROTULO_SITUACAO: Record<SituacaoArquivo, string> = {
+  NOVO: 'Entrou',
+  IGUAL: 'Já estava, igual',
+  CONFIRMAR: 'Esperando sua escolha',
+  SUBSTITUIDO: 'Substituído',
+  SO_ARQUIVO: 'Guardado só como arquivo',
+  FORA: 'Ficou de fora',
+  ILEGIVEL: 'Não consegui ler',
+}
+export const ROTULO_CANCELADO = 'Cancelado: ficou como estava no sistema'
+
+export type ResultadoPdf = {
+  arquivo: string
+  situacao: SituacaoArquivo
+  diferencas: DiferencaDocumento[]
+  avisos: string[]
+}
+
 export type ResultadoAcrescentar = {
   acerto: AcertoDetalhe
   boletosNovos: number
   romaneiosNovos: number
   arquivosNovos: number
+  substituidos: number
   avisos: string[]
+  arquivos: ResultadoPdf[]
 }
 
 export type ResultadoSemana = {
@@ -141,6 +180,8 @@ export type ArquivoIdentificado = {
   placa: string | null
   avisos: string[]
   embalar?: RomaneioFazenda[] | null  // romaneio sem funrural: para qual controle de volumes foi
+  situacao?: SituacaoArquivo | null  // só nos PDFs da fazenda (ACE-11)
+  diferencas?: DiferencaDocumento[] | null
 }
 
 export type ResultadoImportacao = {
@@ -191,15 +232,16 @@ export const acertoAlfaApi = {
   proximoNumero: () => api.get<{ proximo: number }>(`${raiz}/proximo-numero`),
 
   // PDFs soltos ao longo da semana: cada um vai para o acerto da semana dele
-  enviarDaSemana: (arquivos: File[]) =>
-    api.post<ResultadoSemana>(`${raiz}/semana/arquivos`, formulario(arquivos), multipart),
+  // substituir: troca no lugar o documento de mesmo número que veio diferente (ACE-11)
+  enviarDaSemana: (arquivos: File[], substituir = false) =>
+    api.post<ResultadoSemana>(`${raiz}/semana/arquivos`, formulario(arquivos), { ...multipart, params: substituir ? { substituir: true } : undefined }),
 
   // Planilhas de acerto feitas no Excel ("194-ACERTO G. ALFA-21-09-2026.xlsx")
   importarPlanilhas: (arquivos: File[]) =>
     api.post<ResultadoImportacao[]>(`${raiz}/importar-planilhas`, formulario(arquivos), multipart),
 
-  acrescentarArquivos: (id: number, arquivos: File[]) =>
-    api.post<ResultadoAcrescentar>(`${base}/${id}/arquivos`, formulario(arquivos), multipart),
+  acrescentarArquivos: (id: number, arquivos: File[], substituir = false) =>
+    api.post<ResultadoAcrescentar>(`${base}/${id}/arquivos`, formulario(arquivos), { ...multipart, params: substituir ? { substituir: true } : undefined }),
   excluirArquivo: (id: number, arquivoId: number) => api.delete(`${base}/${id}/arquivos/${arquivoId}`),
 
   // Baixa e devolve os avisos da geração (cabeçalho X-Avisos), se houver
