@@ -26,7 +26,8 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
     private const string Escopos = "cco_consulta";
     private const string UrlCobranca = "https://api.sicoob.com.br/cobranca-bancaria/v3";
     // Só consulta de boleto (nunca emitir, alterar ou baixar por aqui)
-    private const string EscoposCobranca = "boletos_consulta";
+    // Todas as da Cobrança do aplicativo: o Sicoob recusou ("Not registered to plan") com só a de consulta
+    private const string EscoposCobranca = "boletos_consulta boletos_inclusao boletos_alteracao webhooks_inclusao webhooks_consulta webhooks_alteracao";
     private string? NumeroCliente => new string((config["Sicoob:NumeroCliente"] ?? "").Where(char.IsDigit).ToArray()) is { Length: > 0 } n ? n : null;
     private string Modalidade => config["Sicoob:CodigoModalidade"] ?? "1";
 

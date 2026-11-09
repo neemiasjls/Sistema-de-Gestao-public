@@ -9,26 +9,19 @@ namespace TransportadoraSystem.Application.Services;
 /// <summary>
 /// Gera a planilha de controle de abastecimentos a partir dos PDFs (Faturas de Vendas dos postos).
 /// Cada abastecimento (Data, Placa, Motorista, Valor) é alocado na seção do PAGADOR dono do caminhão.
+/// O dono vem do cadastro de veículos (DonosDasPlacas, ABA-06); placa fora do cadastro não
+/// gera planilha: volta para a tela perguntar o dono.
 /// Preenche o template embutido ABASTECIMENTO.xlsx (mantém as fórmulas de total).
 /// </summary>
 public class AbastecimentoFechamentoService
 {
-    // Placa (sem traço) → pagador (dono do caminhão)
-    private static readonly Dictionary<string, string> PlacaPagador = new()
-    {
-        ["XAA9457"] = "BENTO", ["XAB4C58"] = "BENTO", ["XAC6D57"] = "BENTO",
-        ["XAD5H46"] = "CAIO", ["XAE4D55"] = "CAIO", ["XAF2J52"] = "CAIO",
-        ["XAG2G58"] = "CAIO", ["XAH2I15"] = "CAIO", ["XAI0F06"] = "CAIO",
-        ["XAJ2B10"] = "DAVI", ["XAK3B51"] = "DAVI", ["XAL5A77"] = "DAVI",
-    };
-
     // Seção do pagador: linha inicial dos dados e linha do TOTAL (nº de vagas = TotalRow - StartRow)
     private record Secao(int StartRow, int TotalRow);
     private static readonly Dictionary<string, Secao> Secoes = new()
     {
-        ["BENTO"]  = new Secao(4, 14),
-        ["CAIO"]    = new Secao(17, 28),
-        ["DAVI"] = new Secao(33, 43),
+        [DonosDasPlacas.Bento]  = new Secao(4, 14),
+        [DonosDasPlacas.Caio]    = new Secao(17, 28),
+        [DonosDasPlacas.Davi] = new Secao(33, 43),
     };
 
     private static readonly Regex Money = new(@"^\d{1,3}(\.\d{3})*,\d{2}$", RegexOptions.Compiled);
@@ -55,21 +48,36 @@ public class AbastecimentoFechamentoService
         List<Abast> Abastecimentos, List<string> Cnpjs)
     {
         public double Soma => Math.Round(Abastecimentos.Sum(a => a.Valor), 2);
-        // O que vai para a planilha de divisão: placa sem dono fica de fora
-        public double SomaNaPlanilha => Math.Round(Abastecimentos.Where(a => Dono(a.Placa) != null).Sum(a => a.Valor), 2);
-        public List<Abast> DoBento => Abastecimentos.Where(a => Dono(a.Placa) == "BENTO").ToList();
-        public double ValorBento => Math.Round(DoBento.Sum(a => a.Valor), 2);
-        public List<string> PlacasSemDono => Abastecimentos.Select(a => a.Placa).Where(p => Dono(p) == null).Distinct().ToList();
+        // O que vai para a planilha de divisão: só placa com dono no cadastro
+        public double SomaNaPlanilha(DonosDasPlacas donos) =>
+            Math.Round(Abastecimentos.Where(a => donos.Tem(a.Placa)).Sum(a => a.Valor), 2);
+        public List<Abast> DoBento(DonosDasPlacas donos) =>
+            Abastecimentos.Where(a => donos.Dono(a.Placa) == DonosDasPlacas.Bento).ToList();
+        public double ValorBento(DonosDasPlacas donos) => Math.Round(DoBento(donos).Sum(a => a.Valor), 2);
     }
 
-    /// <summary>Dono do caminhão pela placa (BENTO, CAIO, DAVI) ou null.</summary>
-    public static string? Dono(string placa) =>
-        PlacaPagador.TryGetValue(Regex.Replace(placa ?? "", "[^A-Za-z0-9]", "").ToUpperInvariant(), out var d) ? d : null;
+    /// <summary>
+    /// Placas dos abastecimentos que não estão no cadastro de veículos, com o que
+    /// ajuda a reconhecer o caminhão (quantos abastecimentos, valor, motoristas).
+    /// Placa escrita como no cadastro (XAY-4I52).
+    /// </summary>
+    public static List<PlacaSemCadastro> SemCadastro(IEnumerable<Abast> abastecimentos, DonosDasPlacas donos) =>
+        abastecimentos
+            .Where(a => !donos.Tem(a.Placa))
+            .GroupBy(a => DonosDasPlacas.Chave(a.Placa))
+            .Where(g => g.Key != "")
+            .Select(g => new PlacaSemCadastro(
+                ViagemCaminhaoCalculo.NormalizarPlaca(g.Key),
+                g.Count(),
+                Math.Round(g.Sum(a => a.Valor), 2),
+                g.Select(a => a.Motorista.Trim()).Where(m => m != "").Distinct().ToList()))
+            .ToList();
 
     // Recebe uma ou várias faturas: o mês pode ter abastecimento no Posto 7 e no
     // Estrada, e a divisão por dono do caminhão é a mesma nos dois. Tudo cai numa
-    // planilha só, cada dono com a sua seção.
-    public FechamentoResult Gerar(IEnumerable<byte[]> pdfs)
+    // planilha só, cada dono com a sua seção. Placa fora do cadastro: não gera
+    // (PlacasSemCadastroException), para nenhum abastecimento ficar de fora.
+    public FechamentoResult Gerar(IEnumerable<byte[]> pdfs, DonosDasPlacas donos)
     {
         var avisos = new List<string>();
         var todos = new List<Abast>();
@@ -100,14 +108,12 @@ public class AbastecimentoFechamentoService
             if (total.HasValue) totalFaturas = (totalFaturas ?? 0) + total.Value;
         }
 
-        var semDono = todos.Where(a => !PlacaPagador.ContainsKey(a.Placa))
-                           .Select(a => a.Placa).Distinct().ToList();
-        if (semDono.Count > 0)
-            avisos.Add($"Placas sem dono na divisão (não entraram): {string.Join(", ", semDono)}.");
+        var semCadastro = SemCadastro(todos, donos);
+        if (semCadastro.Count > 0) throw new PlacasSemCadastroException(semCadastro);
 
         double soma = todos.Sum(a => a.Valor);
         var titulo = postos.Count > 0 ? string.Join(" + ", postos) : "ABASTECIMENTOS";
-        var bytes = Preencher(todos, titulo);
+        var bytes = Preencher(todos, titulo, donos);
 
         // Com um arquivo só, o nome continua sendo nº da fatura + posto, como sempre
         // foi; com mais de um, vira a lista dos postos.
@@ -348,7 +354,7 @@ public class AbastecimentoFechamentoService
     }
 
     // ───────────────────────── Template ─────────────────────────
-    private static byte[] Preencher(List<Abast> abastecimentos, string posto)
+    private static byte[] Preencher(List<Abast> abastecimentos, string posto, DonosDasPlacas donos)
     {
         var asm = typeof(AbastecimentoFechamentoService).Assembly;
         using var stream = asm.GetManifestResourceStream("TransportadoraSystem.Application.Templates.ABASTECIMENTO.xlsx")
@@ -363,12 +369,11 @@ public class AbastecimentoFechamentoService
         // Agrupa por pagador, em ordem de data. Com duas faturas na mesma planilha a
         // ordem dos PDFs deixaria as datas embaralhadas (uma fatura depois da outra).
         var porPagador = abastecimentos
-            .Where(a => PlacaPagador.ContainsKey(a.Placa))
-            .GroupBy(a => PlacaPagador[a.Placa])
+            .GroupBy(a => donos.Dono(a.Placa) ?? throw new PlacasSemCadastroException(SemCadastro([a], donos)))
             .ToDictionary(g => g.Key, g => g.OrderBy(a => a.Data).ToList());
 
         // Preenche de baixo pra cima (pra inserção de linhas não bagunçar as seções acima)
-        foreach (var pagador in new[] { "DAVI", "CAIO", "BENTO" })
+        foreach (var pagador in new[] { DonosDasPlacas.Davi, DonosDasPlacas.Caio, DonosDasPlacas.Bento })
         {
             if (!porPagador.TryGetValue(pagador, out var itens) || itens.Count == 0) continue;
             var sec = Secoes[pagador];

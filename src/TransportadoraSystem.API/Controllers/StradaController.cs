@@ -39,20 +39,21 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
     public async Task<IActionResult> ImportarFaturas(IFormFileCollection arquivos, [FromQuery] string? modo, CancellationToken ct)
     {
         if (arquivos == null || arquivos.Count == 0)
-            return BadRequest(new { erro = "Envie os arquivos de repasse da Strada (.txt)." });
+            return BadRequest(new { erro = "Envie os arquivos de repasse da Strada (.txt) ou o \"Exportar detalhamento\" (.xlsx)." });
         var lidos = new List<(string, byte[])>();
         var recusados = new List<StradaService.ResultadoArquivo>();
+        var detalhes = new List<(string, byte[])>();
         foreach (var a in arquivos)
         {
             if (a.FileName.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)) lidos.Add((a.FileName, await Bytes(a)));
-            else recusados.Add(new(a.FileName, "erro", null,
-                a.FileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)
-                    ? "O \"Exportar detalhamento\" (.xlsx) ainda não é aceito aqui: suba o arquivo de repasse (.txt)."
-                    : "Não é arquivo de repasse (.txt).", 0, 0, 0, [], []));
+            else if (a.FileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) detalhes.Add((a.FileName, await Bytes(a)));
+            else recusados.Add(new(a.FileName, "erro", null, "Não é arquivo de repasse (.txt) nem \"Exportar detalhamento\" (.xlsx).", 0, 0, 0, [], []));
         }
         try
         {
+            // Primeiro os .txt (criam a fatura incompleta), depois o detalhamento que a completa
             var resultado = await strada.ImportarFaturasAsync(lidos, modo, ct);
+            foreach (var (nome, bytes) in detalhes) resultado.Add(await strada.ImportarDetalhamentoAsync(nome, bytes, modo, ct));
             return Ok(recusados.Concat(resultado));
         }
         catch (Exception ex)

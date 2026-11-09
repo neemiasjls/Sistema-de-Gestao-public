@@ -3,9 +3,10 @@ import { Copy, FileSpreadsheet, FileText, Fuel, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { formatBRL } from '../services/api'
 import {
-  cobrancasAbastecimentoApi as cobApi, erroCobranca, linhaBancoBento,
-  type ConferenciaPlanilha, type ListaCobrancas, type ResultadoImportacao,
+  cobrancasAbastecimentoApi as cobApi, erroCobranca, linhaBancoBento, placasSemCadastro,
+  type ConferenciaPlanilha, type ListaCobrancas, type PlacaSemCadastro, type ResultadoImportacao,
 } from '../services/cobrancasAbastecimentoApi'
+import DonosDasPlacas from '../components/DonosDasPlacas'
 import { ListaCobrancasPostos, PainelCobrancas, PlanilhasGuardadas } from '../components/CobrancasPostos'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
@@ -21,6 +22,8 @@ export default function AbastecimentoPage() {
   const [gerando, setGerando] = useState(false)
   const [conf, setConf]       = useState<ConferenciaPlanilha | null>(null)
   const [importado, setImportado] = useState<ResultadoImportacao | null>(null)
+  // Placa fora do cadastro de veículos: pergunta o dono e depois refaz (ABA-06)
+  const [pedirDonos, setPedirDonos] = useState<{ placas: PlacaSemCadastro[]; refazer: () => Promise<void> } | null>(null)
 
   // Faturas, boletos e planilhas guardados, com a conferência e o painel prontos
   const [dados, setDados] = useState<ListaCobrancas | null>(null)
@@ -65,7 +68,9 @@ export default function AbastecimentoPage() {
         ? `${porPosto.size} planilhas geradas e baixadas, uma por posto.`
         : 'Planilha gerada e baixada!')
     } catch (e) {
-      toast.error(await erroCobranca(e, 'Erro ao gerar planilha.'))
+      const placas = await placasSemCadastro(e)
+      if (placas) setPedirDonos({ placas, refazer: () => gerarPlanilha(faturas) })
+      else toast.error(await erroCobranca(e, 'Erro ao gerar planilha.'))
     } finally {
       await carregar()
     }
@@ -73,7 +78,7 @@ export default function AbastecimentoPage() {
 
   // Faturas e boletos vão juntos: a API separa pelo conteúdo, guarda tudo e
   // liga cada boleto à sua fatura. Com fatura no envio, a planilha sai na hora.
-  const importar = async () => {
+  const importar = async (): Promise<void> => {
     if (!pdfs.length) { toast.error('Selecione os PDFs das faturas e dos boletos.'); return }
     setGerando(true)
     setConf(null)
@@ -88,7 +93,9 @@ export default function AbastecimentoPage() {
         await carregar()
       }
     } catch (e) {
-      toast.error(await erroCobranca(e, 'Erro ao importar os PDFs.'))
+      const placas = await placasSemCadastro(e)
+      if (placas) setPedirDonos({ placas, refazer: importar })
+      else toast.error(await erroCobranca(e, 'Erro ao importar os PDFs.'))
     } finally {
       setGerando(false)
     }
@@ -290,6 +297,10 @@ export default function AbastecimentoPage() {
           </Aviso>
         )
       })()}
+
+      {pedirDonos && (
+        <DonosDasPlacas placas={pedirDonos.placas} onPronto={pedirDonos.refazer} onClose={() => setPedirDonos(null)} />
+      )}
 
       {!falhou && <>
         <ListaCobrancasPostos dados={dados} recarregar={carregar} onGerarPlanilha={gerarPlanilha} />

@@ -125,10 +125,13 @@ export interface Painel {
   contratosSemFatura: { id: number; contrato: string; valor: number; placa: string | null; nf: string | null; situacao: string; nfSugerida: string | null }[]
 }
 
+// Envio de arquivo: o padrão do api é JSON, que o servidor recusa (415)
+const multipart = { headers: { 'Content-Type': 'multipart/form-data' } }
+
 const enviar = (rota: string, arquivos: File[], modo?: Modo) => {
   const fd = new FormData()
   arquivos.forEach(a => fd.append('arquivos', a))
-  return api.post(rota, fd, { params: { modo } })
+  return api.post(rota, fd, { params: { modo }, ...multipart })
     .then(r => comDados(r, d => comoLista<ResultadoArquivo>(d, 'resultado da importação')))
 }
 
@@ -147,7 +150,7 @@ export const stradaApi = {
   importarBase: (arquivo: File, modo?: Modo) => {
     const fd = new FormData()
     fd.append('arquivo', arquivo)
-    return api.post('/api/strada/base/importar', fd, { params: { modo } })
+    return api.post('/api/strada/base/importar', fd, { params: { modo }, ...multipart })
       .then(r => comDados(r, d => comoObjeto<ResultadoArquivo>(d, ['mudancas', 'avisos'], 'resultado da importação')))
   },
   importarFaturas: (arquivos: File[], modo?: Modo) => enviar('/api/strada/faturas/importar', arquivos, modo),

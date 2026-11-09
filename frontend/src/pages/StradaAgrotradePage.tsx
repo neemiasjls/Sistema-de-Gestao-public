@@ -289,7 +289,7 @@ function AbaFaturas({ ano, mes, versao, mudou, abrir }: { ano: number; mes: numb
   )
 }
 
-// Sobe .txt (faturas) e .pdf (contratos) juntos; arquivo que já existe e mudou pede Manter ou Substituir (UI-21).
+// Sobe .txt e .xlsx (faturas) e .pdf (contratos) juntos; arquivo que já existe e mudou pede Manter ou Substituir (UI-21).
 function Envio({ mudou }: { mudou: () => void }) {
   const [enviando, setEnviando] = useState(false)
   const [resultado, setResultado] = useState<ResultadoArquivo[]>([])
@@ -317,9 +317,9 @@ function Envio({ mudou }: { mudou: () => void }) {
 
   return (
     <section aria-label="Subir arquivos da Strada" className="space-y-3">
-      <AreaSoltar aceita={['.txt', '.pdf']} onArquivos={a => subir(a)} carregando={enviando} textoCarregando="Lendo os arquivos..."
+      <AreaSoltar aceita={['.txt', '.xlsx', '.pdf']} onArquivos={a => subir(a)} carregando={enviando} textoCarregando="Lendo os arquivos..."
                   titulo="Arraste os arquivos da Strada"
-                  dica='Arquivo de repasse de cada fatura (.txt) e o PDF "Baixar contrato" dos reembolsos de descarga e diária. Pode subir vários de uma vez.' />
+                  dica='Arquivo de repasse de cada fatura (.txt), o "Exportar detalhamento" (.xlsx) da fatura que veio só com o total e o PDF "Baixar contrato" dos reembolsos. Pode subir vários de uma vez.' />
       {resultado.length > 0 && <ResultadoEnvio itens={resultado} onFechar={() => setResultado([])} />}
       {pendentes && (
         <ModalManterSubstituir itens={pendentes.itens} enviando={enviando} onClose={() => setPendentes(null)}

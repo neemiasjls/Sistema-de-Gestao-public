@@ -170,6 +170,14 @@ public class CobrancasAbastecimentoController(
                 docs = docs.Select(d => d.Doc.Boleto is { Lido: false } ? (d.Nome, d.Bytes, Doc: Ler(d.Bytes, d.Nome, senhas)) : d).ToList();
             }
 
+            // Nenhuma placa fica fora da divisão (ABA-06): placa fora do cadastro de
+            // veículos volta para a tela pedir o dono, antes de guardar qualquer coisa
+            // (repetir o envio depois de cadastrar é seguro).
+            var donos = await DonosDasPlacas.CarregarAsync(db);
+            var semCadastro = SemCadastro(
+                docs.Where(d => d.Doc.Fatura != null).SelectMany(d => d.Doc.Fatura!.Abastecimentos), donos);
+            if (semCadastro.Count > 0) return CobrancasAbastecimentoGuarda.PedirDonos(semCadastro);
+
             await using var tx = await db.Database.BeginTransactionAsync();
             var agora = DateTime.UtcNow;
             var hoje = CobrancasAbastecimentoGuarda.Hoje();
@@ -186,7 +194,7 @@ public class CobrancasAbastecimentoController(
                 if (f.ValorFatura == null)
                     avisos.Add($"{nome}: não achei o valor total da fatura.");
 
-                var (fatura, atualizada) = await guarda.GuardarFatura(f, nome, bytes, agora);
+                var (fatura, atualizada) = await guarda.GuardarFatura(f, nome, bytes, agora, donos);
                 await db.SaveChangesAsync();
                 if (atualizada) avisos.Add($"A fatura {fatura.Posto} {fatura.Numero} já estava guardada e foi atualizada.");
                 avisos.AddRange(CobrancasAbastecimentoGuarda.LerLista(fatura.AvisosJson)
@@ -197,8 +205,7 @@ public class CobrancasAbastecimentoController(
                     fatura.Id, fatura.Posto, fatura.Numero, fatura.Emissao, fatura.Vencimento, fatura.ValorFatura,
                     Soma = fatura.SomaAbastecimentos, fatura.SomaNaPlanilha, fatura.Quantidade,
                     fatura.ValorBento, fatura.QuantidadeBento, Atualizada = atualizada,
-                    DescricaoBento = LinhaBento(fatura.Posto, f.DoBento.Select(a => a.Placa)),
-                    PlacasSemDono = f.PlacasSemDono,
+                    DescricaoBento = LinhaBento(fatura.Posto, f.DoBento(donos).Select(a => a.Placa)),
                 });
             }
 
@@ -228,8 +235,8 @@ public class CobrancasAbastecimentoController(
                 }),
                 Bento = new
                 {
-                    Valor = Math.Round(bento.Sum(f => f.ValorBento), 2),
-                    Quantidade = bento.Sum(f => f.DoBento.Count),
+                    Valor = Math.Round(bento.Sum(f => f.ValorBento(donos)), 2),
+                    Quantidade = bento.Sum(f => f.DoBento(donos).Count),
                 },
                 Avisos = avisos,
             });
@@ -268,7 +275,10 @@ public class CobrancasAbastecimentoController(
             if (postos.Count > 1)
                 return BadRequest(new { erro = $"A planilha é de um posto só. Essas faturas são de {string.Join(" e ", postos)}: gere uma para cada." });
 
-            var res = svc.Gerar(faturas.Select(f => f.Pdf));
+            var donos = await DonosDasPlacas.CarregarAsync(db);
+            FechamentoResult res;
+            try { res = svc.Gerar(faturas.Select(f => f.Pdf), donos); }
+            catch (PlacasSemCadastroException ex) { return CobrancasAbastecimentoGuarda.PedirDonos(ex.Placas); }
             var avisos = new List<string>(res.Avisos);
             try
             {
@@ -498,7 +508,21 @@ public class CobrancasAbastecimentoGuarda(AppDbContext db)
     /// Guarda a fatura. Com número, a do mesmo posto e número é atualizada (o
     /// PDF novo substitui o velho); sem número, o mesmo arquivo não entra duas vezes.
     /// </summary>
-    public async Task<(FaturaPosto Fatura, bool Atualizada)> GuardarFatura(FaturaLida f, string nome, byte[] pdf, DateTime agora)
+    /// <summary>
+    /// 409 com as placas fora do cadastro: a tela pergunta o dono de cada uma,
+    /// cadastra (POST api/veiculo/donos) e manda de novo.
+    /// </summary>
+    public static ObjectResult PedirDonos(List<PlacaSemCadastro> placas) =>
+        new(new
+        {
+            erro = placas.Count == 1
+                ? $"A placa {placas[0].Placa} não está no cadastro de veículos: diga de quem é o caminhão."
+                : $"As placas {string.Join(", ", placas.Select(p => p.Placa))} não estão no cadastro de veículos: diga de quem é cada caminhão.",
+            placasSemCadastro = placas,
+        })
+        { StatusCode = StatusCodes.Status409Conflict };
+
+    public async Task<(FaturaPosto Fatura, bool Atualizada)> GuardarFatura(FaturaLida f, string nome, byte[] pdf, DateTime agora, DonosDasPlacas donos)
     {
         FaturaPosto? fatura = f.Numero != ""
             ? await db.FaturasPosto.FirstOrDefaultAsync(x => x.Posto == f.Posto && x.Numero == f.Numero)
@@ -513,8 +537,6 @@ public class CobrancasAbastecimentoGuarda(AppDbContext db)
         var avisos = new List<string>();
         if (f.ValorFatura is double vf && Math.Abs(f.Soma - vf) > 0.05)
             avisos.Add($"Os abastecimentos somaram R$ {f.Soma:N2} mas a fatura diz R$ {vf:N2}.");
-        if (f.PlacasSemDono.Count > 0)
-            avisos.Add($"Placas sem dono na divisão (não entraram): {string.Join(", ", f.PlacasSemDono)}.");
 
         fatura.Posto = f.Posto;
         fatura.Numero = f.Numero;
@@ -522,12 +544,12 @@ public class CobrancasAbastecimentoGuarda(AppDbContext db)
         fatura.Vencimento = f.Vencimento;
         fatura.ValorFatura = f.ValorFatura is double v ? Math.Round((decimal)v, 2) : null;
         fatura.SomaAbastecimentos = Math.Round((decimal)f.Soma, 2);
-        fatura.SomaNaPlanilha = Math.Round((decimal)f.SomaNaPlanilha, 2);
+        fatura.SomaNaPlanilha = Math.Round((decimal)f.SomaNaPlanilha(donos), 2);
         fatura.Quantidade = f.Abastecimentos.Count;
-        fatura.ValorBento = Math.Round((decimal)f.ValorBento, 2);
-        fatura.QuantidadeBento = f.DoBento.Count;
+        fatura.ValorBento = Math.Round((decimal)f.ValorBento(donos), 2);
+        fatura.QuantidadeBento = f.DoBento(donos).Count;
         fatura.AbastecimentosJson = JsonSerializer.Serialize(
-            f.Abastecimentos.Select(a => new AbastecimentoGuardado(DateOnly.FromDateTime(a.Data), a.Placa, a.Motorista, a.Valor, Dono(a.Placa))),
+            f.Abastecimentos.Select(a => new AbastecimentoGuardado(DateOnly.FromDateTime(a.Data), a.Placa, a.Motorista, a.Valor, donos.Dono(a.Placa))),
             Json);
         fatura.AvisosJson = JsonSerializer.Serialize(avisos, Json);
         fatura.NomeArquivo = nome;

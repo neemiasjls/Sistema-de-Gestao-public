@@ -15,7 +15,7 @@ export type FaturaPosto = {
   vencimento: string | null
   valorFatura: number | null   // null quando o PDF não trouxe
   soma: number                 // soma dos abastecimentos lidos
-  somaNaPlanilha: number       // só as placas com dono (o que vai para a planilha)
+  somaNaPlanilha: number       // o que foi para a planilha (todas as placas têm dono no cadastro)
   quantidade: number
   valorBento: number
   quantidadeBento: number
@@ -119,7 +119,7 @@ export type FaturaDetalhe = Omit<FaturaPosto, 'criadoEm'> & {
 }
 
 export type ResultadoImportacao = {
-  faturas: (Omit<FaturaPosto, 'nomeArquivo' | 'criadoEm'> & { atualizada: boolean; placasSemDono: string[] })[]
+  faturas: (Omit<FaturaPosto, 'nomeArquivo' | 'criadoEm'> & { atualizada: boolean })[]
   idsFaturas: number[]
   boletos: Pick<BoletoPosto, 'id' | 'posto' | 'numeroDocumento' | 'nossoNumero' | 'valor' | 'vencimento' | 'lidoDoPdf' | 'faturaId'>[]
   bento: { valor: number; quantidade: number }
@@ -162,6 +162,31 @@ export const erroCobranca = async (e: unknown, padrao: string): Promise<string> 
   }
   return (dados as { erro?: string } | undefined)?.erro ?? padrao
 }
+
+// Placa da fatura que não está no cadastro de veículos (ABA-06): a API não
+// guarda nem gera nada e devolve 409 com a lista, para a tela pedir o dono.
+export type PlacaSemCadastro = {
+  placa: string
+  abastecimentos: number
+  valor: number
+  motoristas: string[]
+}
+
+export const placasSemCadastro = async (e: unknown): Promise<PlacaSemCadastro[] | null> => {
+  const r = (e as { response?: { status?: number; data?: unknown } })?.response
+  if (r?.status !== 409) return null
+  let dados = r.data
+  if (dados instanceof Blob) {
+    try { dados = JSON.parse(await dados.text()) } catch { return null }
+  }
+  const lista = (dados as { placasSemCadastro?: unknown } | undefined)?.placasSemCadastro
+  return Array.isArray(lista) && lista.length ? lista as PlacaSemCadastro[] : null
+}
+
+// Dono no cadastro de veículos: 1 = Bento, 2 = Caio, 3 = Davi (Dudu)
+export type SocioDono = 1 | 2 | 3
+export const cadastrarDonos = (lista: { placa: string; socio: SocioDono }[]) =>
+  api.post('/api/veiculo/donos', lista)
 
 const base = '/api/abastecimento/cobrancas'
 const comObjetoCobrancas = (d: unknown) => comoObjeto<ListaCobrancas>(d, ['cobrancas', 'planilhas'], 'cobranças dos postos')

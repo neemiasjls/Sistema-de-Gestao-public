@@ -149,7 +149,7 @@ public partial class BuscaController(AppDbContext db) : ControllerBase
                 .OrderBy(v => v.Placa).Take(PorGrupo + 1)
                 .Select(v => new { v.Placa, v.Socio, v.Ativo })
                 .ToListAsync();
-            Add("placas", "Caminhões", veiculos.Select(v => new Item(v.Placa, $"Caminhão do {NomeDono(v.Socio)}{(v.Ativo ? "" : " · fora da frota")}",
+            Add("placas", "Caminhões", veiculos.Select(v => new Item(v.Placa, $"Caminhão do {DonosDasPlacas.Nome(v.Socio)}{(v.Ativo ? "" : " · fora da frota")}",
                 "/frete", Marca: v.Socio.ToString())).ToList());
 
             var cargas = await db.CalculosFreteSalvos.AsNoTracking()
@@ -278,13 +278,6 @@ public partial class BuscaController(AppDbContext db) : ControllerBase
 
     private static string? Pago(DateOnly? em, string verbo) => em is { } d ? $"{verbo} em {d:dd/MM}" : null;
 
-    private static string NomeDono(Socio s) => s switch
-    {
-        Socio.Bento => "Bento",
-        Socio.Caio => "Caio",
-        Socio.Dudu => "Davi",
-        _ => s.ToString(),
-    };
 
     private static string NomeCliente(string apelido) => apelido switch
     {

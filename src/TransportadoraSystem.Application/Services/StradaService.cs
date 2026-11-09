@@ -197,6 +197,15 @@ public sealed class StradaService(AppDbContext db)
             }
 
             var atual = await db.StradaFaturas.Include(x => x.Contratos).FirstOrDefaultAsync(x => x.Numero == f.Numero, ct);
+            // .txt só com o cabeçalho de uma fatura que o detalhamento já completou: nada a trocar
+            if (atual is { Origem: "detalhamento" } && f.Incompleta && f.Contratos.Count == 0
+                && Math.Abs(atual.Total - f.TotalCabecalho) <= 0.01m && atual.DataPagamento == f.DataPagamento)
+            {
+                await GuardarArquivoAsync("txt", nome, bytes, f.Numero, ct);
+                await db.SaveChangesAsync(ct);
+                resultado.Add(new(nome, "igual", f.Numero, "Fatura já completada pelo detalhamento.", 0, 0, atual.Contratos.Count, [], f.Avisos));
+                continue;
+            }
             if (atual != null)
             {
                 var mudancas = DiferencasFatura(atual, f);
@@ -273,6 +282,85 @@ public sealed class StradaService(AppDbContext db)
         return resultado;
     }
 
+    // ─────────────── "Exportar detalhamento" (.xlsx): completa a fatura que veio só com o cabeçalho ───────────────
+
+    public async Task<ResultadoArquivo> ImportarDetalhamentoAsync(string nome, byte[] bytes, string? modo, CancellationToken ct = default)
+    {
+        var lido = StradaDetalhamentoLeitor.Ler(bytes);
+        if (lido.Detalhamento == null) return new(nome, "erro", null, $"Não é o \"Exportar detalhamento\" da Strada: {lido.Erro}", 0, 0, 0, [], []);
+        var d = lido.Detalhamento;
+        var avisos = new List<string>();
+        var taxaCerta = StradaRepasseLeitor.CalcularTaxa(d.Total);
+        if (Math.Abs(d.Taxa - taxaCerta) > 0.02m) avisos.Add($"Taxa no arquivo {Dinheiro(d.Taxa)}, esperado 1% = {Dinheiro(taxaCerta)}.");
+
+        // O arquivo não traz o número da fatura: acha pelo total (a incompleta) ou pelos mesmos contratos (já completa)
+        var numeros = d.Contratos.Select(c => c.Numero).ToHashSet();
+        var candidatas = await db.StradaFaturas.Include(f => f.Contratos)
+            .Where(f => f.Total >= d.Total - 0.01m && f.Total <= d.Total + 0.01m).ToListAsync(ct);
+        var completa = candidatas.FirstOrDefault(f => f.Contratos.Count > 0 && f.Contratos.Select(c => c.Contrato).ToHashSet().SetEquals(numeros));
+        if (completa != null)
+        {
+            var mudancas = new List<Mudanca>();
+            var valores = completa.Contratos.ToDictionary(c => c.Contrato, c => c.Valor);
+            foreach (var c in d.Contratos.Where(c => valores[c.Numero] != c.Valor))
+                mudancas.Add(new($"Contrato {c.Numero}", $"{Dinheiro(valores[c.Numero])} → {Dinheiro(c.Valor)}"));
+            if (d.Taxa > 0 && completa.Taxa != d.Taxa) mudancas.Add(new("Taxa", $"{Dinheiro(completa.Taxa)} → {Dinheiro(d.Taxa)}"));
+            if (d.Repasse > 0 && completa.Repasse != d.Repasse) mudancas.Add(new("Repasse", $"{Dinheiro(completa.Repasse)} → {Dinheiro(d.Repasse)}"));
+            if (mudancas.Count == 0)
+            {
+                await GuardarArquivoAsync("xlsx", nome, bytes, completa.Numero, ct);
+                await db.SaveChangesAsync(ct);
+                return new(nome, "igual", completa.Numero, $"A fatura {completa.Numero} já tem estes contratos.", 0, 0, d.Contratos.Count, [], avisos);
+            }
+            if (modo == "manter") return new(nome, "mantido", completa.Numero, "Mantida como estava.", 0, 0, 0, mudancas, avisos);
+            if (modo != "substituir")
+                return new(nome, "confirmar", completa.Numero,
+                    $"A fatura {completa.Numero} já está no sistema e o detalhamento traz mudanças. Manter como está ou substituir?",
+                    0, mudancas.Count, 0, mudancas, avisos);
+            var agoraS = DateTime.UtcNow;
+            foreach (var c in completa.Contratos) { c.Valor = d.Contratos.First(x => x.Numero == c.Contrato).Valor; c.AtualizadoEm = agoraS; }
+            if (d.Taxa > 0) completa.Taxa = d.Taxa;
+            if (d.Repasse > 0) completa.Repasse = d.Repasse;
+            completa.AtualizadoEm = agoraS;
+            await GuardarArquivoAsync("xlsx", nome, bytes, completa.Numero, ct);
+            await db.SaveChangesAsync(ct);
+            await ReconciliarAsync(ct);
+            return new(nome, "substituido", completa.Numero, null, 0, mudancas.Count, 0, [], avisos);
+        }
+        var incompletas = candidatas.Where(f => f.Incompleta && f.Contratos.Count == 0).ToList();
+        if (incompletas.Count == 0)
+            return new(nome, "erro", null, $"Não achei fatura só com o cabeçalho de {Dinheiro(d.Total)}. Suba antes o .txt de repasse dela.", 0, 0, 0, [], avisos);
+        if (incompletas.Count > 1)
+            return new(nome, "erro", null, $"Mais de uma fatura incompleta de {Dinheiro(d.Total)} ({string.Join(", ", incompletas.Select(f => f.Numero))}): não sei qual completar.", 0, 0, 0, [], avisos);
+
+        var fatura = incompletas[0];
+        var agora = DateTime.UtcNow;
+        foreach (var c in d.Contratos)
+        {
+            var contrato = new StradaContrato { Contrato = c.Numero, Origem = "fatura", CriadoEm = agora };
+            fatura.Contratos.Add(contrato);
+            var soPdf = await db.StradaContratos.FirstOrDefaultAsync(x => x.FaturaId == null && x.Origem == "pdf" && x.Contrato == c.Numero, ct);
+            if (soPdf != null)
+            {
+                CopiarPdf(soPdf, contrato);
+                db.StradaContratos.Remove(soPdf);
+            }
+            contrato.Valor = c.Valor;
+            contrato.DataTransferencia = fatura.DataPagamento;
+            contrato.AtualizadoEm = agora;
+        }
+        fatura.Total = d.Total;
+        fatura.Taxa = d.Taxa > 0 ? d.Taxa : taxaCerta;
+        fatura.Repasse = d.Repasse > 0 ? d.Repasse : d.Total - fatura.Taxa;
+        fatura.Incompleta = false; fatura.Origem = "detalhamento";
+        fatura.Avisos = avisos.Count == 0 ? null : string.Join("\n", avisos);
+        fatura.AtualizadoEm = agora;
+        await GuardarArquivoAsync("xlsx", nome, bytes, fatura.Numero, ct);
+        await db.SaveChangesAsync(ct);
+        await ReconciliarAsync(ct);
+        return new(nome, "atualizado", fatura.Numero, $"Fatura {fatura.Numero} completada com {d.Contratos.Count} contrato(s).", d.Contratos.Count, 0, 0, [], avisos);
+    }
+
     private static decimal? Soma(IEnumerable<StradaRepasseLeitor.Linha> linhas)
     {
         var l = linhas.ToList();
@@ -288,7 +376,9 @@ public sealed class StradaService(AppDbContext db)
     private static List<Mudanca> DiferencasFatura(StradaFatura e, StradaRepasseLeitor.Fatura f)
     {
         var d = new List<Mudanca>();
-        if (e.Total != f.Total) d.Add(new("Total", $"{Dinheiro(e.Total)} → {Dinheiro(f.Total)}"));
+        // Fatura só com o cabeçalho guarda o total dele (o Total lido vem 0, sem contratos)
+        var total = f.Incompleta && f.Contratos.Count == 0 ? f.TotalCabecalho : f.Total;
+        if (e.Total != total) d.Add(new("Total", $"{Dinheiro(e.Total)} → {Dinheiro(total)}"));
         if (e.DataPagamento != f.DataPagamento) d.Add(new("Data de pagamento", $"{Data(e.DataPagamento)} → {Data(f.DataPagamento)}"));
         var antes = e.Contratos.ToDictionary(c => c.Contrato, c => c.Valor);
         var depois = f.Contratos.ToDictionary(c => c.Numero, c => c.Valor);

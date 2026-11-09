@@ -32,14 +32,17 @@ public class AbastecimentoController(
                 nomes.Add(Path.GetFileName(arq.FileName));
             }
 
-            var res = svc.Gerar(pdfs);
+            var donos = await DonosDasPlacas.CarregarAsync(db);
+            AbastecimentoFechamentoService.FechamentoResult res;
+            try { res = svc.Gerar(pdfs, donos); }
+            catch (PlacasSemCadastroException ex) { return CobrancasAbastecimentoGuarda.PedirDonos(ex.Placas); }
 
             // Guarda as faturas e a planilha. É um passo a mais: se falhar, a
             // planilha sai do mesmo jeito e o aviso conta que não ficou guardada.
             var avisos = new List<string>(res.Avisos);
             try
             {
-                await Guardar(res, nomes, pdfs);
+                await Guardar(res, nomes, pdfs, donos);
             }
             catch (Exception ex)
             {
@@ -74,7 +77,7 @@ public class AbastecimentoController(
 
     // PDF sem nenhum abastecimento e sem número de fatura não é fatura (um boleto
     // solto no campo errado, por exemplo): fica fora do que é guardado.
-    private async Task Guardar(AbastecimentoFechamentoService.FechamentoResult res, List<string> nomes, List<byte[]> pdfs)
+    private async Task Guardar(AbastecimentoFechamentoService.FechamentoResult res, List<string> nomes, List<byte[]> pdfs, DonosDasPlacas donos)
     {
         await using var tx = await db.Database.BeginTransactionAsync();
         var agora = DateTime.UtcNow;
@@ -83,7 +86,7 @@ public class AbastecimentoController(
         {
             var f = res.Faturas[i];
             if (f.Abastecimentos.Count == 0 && f.Numero == "") continue;
-            var (fatura, _) = await guarda.GuardarFatura(f, nomes[i], pdfs[i], agora);
+            var (fatura, _) = await guarda.GuardarFatura(f, nomes[i], pdfs[i], agora, donos);
             await db.SaveChangesAsync();
             guardadas.Add(fatura);
         }
