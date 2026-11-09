@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { ArrowLeftRight, Download, Pencil, Plus, Trash2, Upload } from 'lucide-react'
+import { ArrowLeftRight, Download, Link2, Pencil, Plus, Trash2, Upload } from 'lucide-react'
 import toast from 'react-hot-toast'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
@@ -12,15 +12,16 @@ import { useConfirmar } from '../components/ui/Confirmar'
 import { Card } from '../components/ModalBase'
 import { brl, dataBr, num } from '../utils/formato'
 import { erroDaApi } from '../services/semPararApi'
-import { retornosApi, type RetornosMes, type ResultadoRetornos, type RetornoEntrada } from '../services/viagensCaminhaoApi'
+import { retornosApi, type RetornosMes, type ResultadoRetornos, type RetornoEntrada, type AnotacaoPendente } from '../services/viagensCaminhaoApi'
 import {
   NavegaMes, RetornoModal, Selo, ListaResultado, retornoVazio, entradaDoRetorno, mesExtenso,
 } from '../components/viagens/ViagensPecas'
 
 // Retornos: a planilha "CONTROLE MENSAL DE RETORNOS" como tela. Cada frete de
 // retorno com o cálculo da coluna J (frete total), por mês. O que o motorista
-// lança como "outra carga" chega aqui para conferir; cada retorno pode ficar
-// ligado à viagem do caminhão. A planilha sai em Exportar Excel.
+// anota como "outra carga" não vira retorno (VIA-22): o sistema liga a anotação ao
+// retorno importado pela placa e pela data; aqui aparece o que ficou sem par ou em
+// dúvida, para ligar à mão. A planilha sai em Exportar Excel.
 
 type Filtro = 'todos' | 'conferir' | 'semViagem'
 
@@ -75,13 +76,18 @@ export default function RetornosPage() {
     catch (e) { toast.error(await erroDaApi(e, 'Não consegui apagar.')) }
   }
 
+  const ligarAnotacao = async (a: AnotacaoPendente, retornoId: number) => {
+    try { await retornosApi.ligarAnotacao(a.id, retornoId); toast.success('Anotação ligada ao retorno.'); carregar() }
+    catch (e) { toast.error(await erroDaApi(e, 'Não consegui ligar.')) }
+  }
+
   const lista = (dados?.retornos ?? []).filter(x =>
     filtro === 'conferir' ? !x.retorno.conferido : filtro === 'semViagem' ? !x.retorno.viagemId && !x.retorno.foraDoControle : true)
 
   return (
     <div className="space-y-5 max-w-[96rem]">
       <CabecalhoTela
-        descricao={<>Os fretes de retorno do mês, como na planilha <b>CONTROLE MENSAL DE RETORNOS</b>: frete total = valor do frete + adicional − pedágio − desconto − desconto do seguro. A outra carga que o motorista lança no painel dele chega aqui para conferir.</>}
+        descricao={<>Os fretes de retorno do mês, como na planilha <b>CONTROLE MENSAL DE RETORNOS</b>: frete total = valor do frete + adicional − pedágio − desconto − desconto do seguro. O retorno vem só da planilha importada; a outra carga que o motorista anota no painel é ligada a ele pela placa e pela data.</>}
         acoes={<>
           <Botao variante="secundario" icone={Upload} onClick={() => setMostrarImportar(v => !v)}>Importar planilhas</Botao>
           <Botao variante="secundario" icone={Download} onClick={exportar} carregando={exportando} textoCarregando="Gerando...">Exportar Excel</Botao>
@@ -100,6 +106,8 @@ export default function RetornosPage() {
           linha: r.erro ? null : <>
             {r.mes && r.ano ? mesExtenso(r.mes, r.ano) : ''} · {r.linhas} linhas · {r.novos} novas · {r.jaExistiam} já estavam
             {(r.vinculados ?? 0) > 0 && <> · {r.vinculados} ligadas à viagem</>}
+            {(r.anotacoesLigadas ?? 0) > 0 && <> · {r.anotacoesLigadas} anotações do motorista ligadas</>}
+            {(r.anotacoesPendentes ?? 0) > 0 && <> · <span className="text-amber-800 font-medium">{r.anotacoesPendentes} anotações sem par ou em dúvida</span></>}
             <br />Frete total {brl(r.total ?? 0)}
             {r.totalPlanilha != null && <> · na planilha {brl(r.totalPlanilha)} {r.confere ? <span className="text-emerald-800 font-medium">confere</span> : <span className="text-red-800 font-medium">não confere</span>}</>}
           </>,
@@ -129,6 +137,36 @@ export default function RetornosPage() {
               {dados.aConferir} {dados.aConferir === 1 ? 'retorno lançado pelo motorista falta' : 'retornos lançados pelos motoristas faltam'} conferir.
             </Aviso>
           )}
+          {dados.anotacoesPendentes.length > 0 && (
+            <section className="bg-white border border-amber-200 rounded-xl p-3 space-y-2" aria-labelledby="anotacoes-pendentes">
+              <h2 id="anotacoes-pendentes" className="font-semibold text-gray-900">Anotações dos motoristas sem retorno ligado ({dados.anotacoesPendentes.length})</h2>
+              <p className="text-sm text-gray-600">O sistema não achou um retorno importado só para cada uma destas. Ligue à mão ou importe a planilha que falta.</p>
+              <ul className="divide-y divide-gray-100">
+                {dados.anotacoesPendentes.map(a => (
+                  <li key={a.id} className="py-2 space-y-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                      <Selo tom="atencao">{a.situacao === 'conferir' ? 'Para conferir' : a.situacao === 'solto' ? 'Solto no escritório' : 'Sem par'}</Selo>
+                      <span className="font-medium text-gray-900">{a.data ? dataBr(a.data) : 'Sem data'} · {a.placa} · {a.motorista}</span>
+                      <span className="text-gray-600 break-words">{a.transportadora ?? 'Sem transportadora'} · {[a.origem, a.destino].filter(Boolean).join(' / ') || 'sem origem e destino'} · anotou {brl(a.valor)}</span>
+                      <Link to={`/viagens-caminhoes/${a.viagemId}`} className="text-xs font-medium text-tinta-700 underline">Viagem de {a.viagemSaida ? dataBr(a.viagemSaida) : 'data não informada'}</Link>
+                    </div>
+                    {a.aviso && <p className="text-xs text-gray-600">{a.aviso}</p>}
+                    {a.candidatos.length === 0 ? <p className="text-xs text-gray-600">Nenhum retorno livre desta placa até 3 dias da data.</p> : (
+                      <ul className="space-y-1">
+                        {a.candidatos.map(r => (
+                          <li key={r.id} className="flex flex-col sm:flex-row sm:items-center gap-2 text-sm bg-gray-50 rounded-lg px-3 py-1.5">
+                            <span className="flex-1 min-w-0 break-words">{dataBr(r.data)} · {r.transportadora ?? 'Sem transportadora'} · {[r.observacoes, r.destino].filter(Boolean).join(' / ')} · frete {brl(r.valorFrete)}</span>
+                            <span className="tabular-nums font-semibold">{brl(r.freteTotal)}</span>
+                            <Botao variante="secundario" tamanho="sm" icone={Link2} onClick={() => ligarAnotacao(a, r.id)}>Ligar a este retorno</Botao>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           {lista.length === 0 ? (
             <Vazio icone={ArrowLeftRight} titulo={filtro === 'todos' ? `Nenhum retorno em ${mesExtenso(mes, ano)}` : 'Nada aqui'}>
               {filtro === 'todos' ? 'Lance um retorno novo ou importe a planilha do mês.' : 'Troque o filtro para ver os outros.'}
@@ -137,7 +175,7 @@ export default function RetornosPage() {
             <>
               {/* Celular: cartões */}
               <ul className="sm:hidden space-y-2">
-                {lista.map(({ retorno: r, viagem }) => (
+                {lista.map(({ retorno: r, viagem, anotacao }) => (
                   <li key={r.id} className="bg-white border border-gray-200 rounded-xl p-3 space-y-1">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
@@ -151,6 +189,7 @@ export default function RetornosPage() {
                       {!r.conferido && <Selo tom="atencao">A conferir</Selo>}
                       {r.foraDoControle && <Selo>Fora do controle</Selo>}
                       {r.origem === 'motorista' && <Selo tom="info">Do motorista</Selo>}
+                      {anotacao && <Selo tom="info">Ligado à anotação do motorista ({brl(anotacao.valor)})</Selo>}
                       {viagem ? <Link to={`/viagens-caminhoes/${viagem.id}`} className="text-xs font-medium text-tinta-700 underline">Viagem de {viagem.dataSaida ? dataBr(viagem.dataSaida) : '?'}</Link>
                         : !r.foraDoControle && <Selo>Sem viagem</Selo>}
                     </div>
@@ -183,7 +222,7 @@ export default function RetornosPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {lista.map(({ retorno: r, viagem }) => (
+                    {lista.map(({ retorno: r, viagem, anotacao }) => (
                       <tr key={r.id} className={!r.conferido ? 'bg-amber-50/60' : r.foraDoControle ? 'text-gray-500' : ''}>
                         <td className="px-3 py-2 whitespace-nowrap tabular-nums">{dataBr(r.data)}</td>
                         <td className="px-3 py-2">{r.destino}</td>
@@ -203,6 +242,7 @@ export default function RetornosPage() {
                               : !r.foraDoControle && <span className="text-gray-500">Sem viagem</span>}
                             {!r.conferido && <Selo tom="atencao">A conferir</Selo>}
                             {r.foraDoControle && <Selo>Fora do controle</Selo>}
+                            {anotacao && <Selo tom="info">Anotação do motorista: {brl(anotacao.valor)}</Selo>}
                           </div>
                         </td>
                         <td className="px-1 py-1 whitespace-nowrap">

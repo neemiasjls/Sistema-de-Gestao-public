@@ -43,6 +43,16 @@ export type Despesa = { tipo: string; descricao: string | null; valor: number; o
 export type Carga = {
   tipo: 'VOLUMES' | 'RETORNO'; transportadora: string | null; data: string | null; origem: string | null
   destino: string | null; valor: number; retornoId: number | null
+  /** Anotação do motorista × retorno importado (VIA-22): ligado, manual, conferir, sem_par, solto */
+  id?: number; ligacao?: SituacaoLigacao | null; ligacaoAviso?: string | null
+  retornoLigado?: { id: number; data: string; transportadora: string | null; freteTotal: number; viagemId: number | null } | null
+}
+export type SituacaoLigacao = 'ligado' | 'manual' | 'conferir' | 'sem_par' | 'solto'
+/** Anotação "outra carga" do motorista que ficou sem retorno ligado no mês, com os retornos livres perto da data */
+export type AnotacaoPendente = {
+  id: number; viagemId: number; transportadora: string | null; data: string | null; origem: string | null; destino: string | null
+  valor: number; situacao: SituacaoLigacao; aviso: string | null; placa: string; placaCarreta: string | null
+  viagemSaida: string | null; viagemStatus: StatusViagem; motorista: string; candidatos: Retorno[]
 }
 
 export type Retorno = {
@@ -156,8 +166,14 @@ export type ResultadoReler = {
   volumes: number; produtoE: number; produtoD: number; amarelas: number; brancas: number; produtosC: number; avisos: string[]
 }
 
+/** Situação de cada aba na importação (VIA-23): CONFIRMAR espera Cancelar ou Substituir. */
+export type ViagemDoAcerto = {
+  aba: string; situacao: 'NOVA' | 'IGUAL' | 'CONFIRMAR' | 'SUBSTITUIDA'; viagemId: number; origem: string; status: StatusViagem; saida: string | null
+  diferencas: { campo: string; sistema: string; arquivo: string }[]
+}
 export type ResultadoAcerto = {
   arquivo: string; erro?: string; placa?: string; mes?: number; ano?: number; criadas?: number; puladas?: number
+  iguais?: number; substituidas?: number; viagens?: ViagemDoAcerto[]
   avisos?: string[]; conferencia?: { aba: string; viagemId: number; confere: boolean; diferencas: string[]; comissao: number; comissaoPlanilha: number | null; sobra: number }[]
 }
 export type ResultadoCarregamento = {
@@ -169,12 +185,16 @@ export type ResultadoCarregamento = {
 }
 export type ResultadoRetornos = {
   arquivo: string; erro?: string; mes?: number; ano?: number; linhas?: number; novos?: number; jaExistiam?: number
-  vinculados?: number; total?: number; totalPlanilha?: number | null; confere?: boolean; avisos?: string[]
+  vinculados?: number; anotacoesLigadas?: number; anotacoesPendentes?: number; total?: number; totalPlanilha?: number | null; confere?: boolean; avisos?: string[]
 }
 
 export type RetornosMes = {
   ano: number; mes: number
-  retornos: { retorno: Retorno; viagem: { id: number; placa: string; dataSaida: string | null; destino: string | null; status: StatusViagem } | null }[]
+  retornos: {
+    retorno: Retorno; viagem: { id: number; placa: string; dataSaida: string | null; destino: string | null; status: StatusViagem } | null
+    anotacao: { id: number; viagemId: number; data: string | null; valor: number; ligacao: SituacaoLigacao | null; ligacaoAviso: string | null } | null
+  }[]
+  anotacoesPendentes: AnotacaoPendente[]; comAnotacao: number
   total: number; totalFrete: number; quantidade: number; aConferir: number; semViagem: number
 }
 
@@ -209,8 +229,9 @@ export const viagensApi = {
     const r = await api.get('/api/viagens-caminhao/excel', { params: { motoristaId: quem.motoristaId ?? undefined, placa: quem.placa || undefined, ano, mes }, responseType: 'blob' })
     downloadBlob(r.data as Blob, nomeDoArquivo(r.headers['content-disposition'] as string | undefined, `${mes}-V-acerto.xlsx`))
   },
-  importarAcerto: (lista: File[], placa?: string, substituir = false) =>
-    api.post('/api/viagens-caminhao/importar-acerto', arquivos(lista), { ...multipart, params: { placa: placa || undefined, substituir: substituir || undefined } })
+  /** abas = as viagens já no sistema que devem ser trocadas pelo arquivo (VIA-23); sem abas, nenhuma é trocada */
+  importarAcerto: (lista: File[], placa?: string, abas?: string[]) =>
+    api.post('/api/viagens-caminhao/importar-acerto', arquivos(lista), { ...multipart, params: { placa: placa || undefined, abas: abas?.length ? abas.join(',') : undefined } })
       .then(r => comoLista<ResultadoAcerto>(r.data, 'importação')),
   importarCarregamento: (lista: File[]) =>
     api.post('/api/viagens-caminhao/importar-carregamento', arquivos(lista), multipart).then(r => comoLista<ResultadoCarregamento>(r.data, 'importação')),
@@ -270,7 +291,8 @@ export const viagensApi = {
 
 export const retornosApi = {
   listar: (ano: number, mes: number) => api.get('/api/retornos', { params: { ano, mes } })
-    .then(r => comoObjeto<RetornosMes>(r.data, ['retornos'], 'retornos')),
+    .then(r => comoObjeto<RetornosMes>(r.data, ['retornos', 'anotacoesPendentes'], 'retornos')),
+  ligarAnotacao: (cargaId: number, retornoId: number | null) => api.put(`/api/retornos/anotacoes/${cargaId}`, { retornoId }),
   criar: (e: RetornoEntrada) => api.post<{ id: number }>('/api/retornos', e).then(r => r.data),
   salvar: (id: number, e: RetornoEntrada) => api.put(`/api/retornos/${id}`, e),
   excluir: (id: number) => api.delete(`/api/retornos/${id}`),

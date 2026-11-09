@@ -1561,6 +1561,16 @@ static class Ddl
         """
         ALTER TABLE "StradaArquivos" ENABLE ROW LEVEL SECURITY;
         """,
+        // VIA-22 (09/11/2026): a outra carga do motorista é só anotação, ligada pelo sistema ao retorno importado
+        """
+        ALTER TABLE "ViagemCaminhaoCargas" ADD COLUMN IF NOT EXISTS "Ligacao" text;
+        """,
+        """
+        ALTER TABLE "ViagemCaminhaoCargas" ADD COLUMN IF NOT EXISTS "LigacaoAviso" text;
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS "UQ_ViagemCaminhaoCargas_RetornoId" ON "ViagemCaminhaoCargas" ("RetornoId") WHERE "RetornoId" IS NOT NULL;
+        """,
     ];
 
     /// <summary>
@@ -1583,5 +1593,6 @@ static class Ddl
         ("MotoristasFrota", "CnhValidade"), ("MotoristasFrota", "Pai"), ("MotoristasFrota", "Mae"),
         ("MotoristasFrota", "CnhPdfNome"), ("MotoristasFrota", "CnhAtualizadaEm"),
         ("FechamentosMensais", "MotoristaId"),
+        ("ViagemCaminhaoCargas", "Ligacao"), ("ViagemCaminhaoCargas", "LigacaoAviso"),
     ];
 }

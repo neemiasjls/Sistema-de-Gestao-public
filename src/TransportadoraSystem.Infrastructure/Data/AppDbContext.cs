@@ -280,6 +280,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .HasOne(c => c.Retorno).WithMany()
             .HasForeignKey(c => c.RetornoId)
             .OnDelete(DeleteBehavior.SetNull);
+        // Um retorno liga a no máximo uma anotação do motorista (VIA-22); o índice existe no banco (Ddl)
+        modelBuilder.Entity<ViagemCaminhaoCarga>()
+            .HasIndex(c => c.RetornoId).IsUnique().HasFilter("\"RetornoId\" IS NOT NULL")
+            .HasDatabaseName("UQ_ViagemCaminhaoCargas_RetornoId");
         modelBuilder.Entity<ViagemCaminhao>()
             .HasOne(v => v.Motorista).WithMany()
             .HasForeignKey(v => v.MotoristaId)

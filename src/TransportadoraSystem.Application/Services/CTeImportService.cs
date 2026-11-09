@@ -123,16 +123,6 @@ public class CTeImportService(AppDbContext db)
         };
     }
 
-    // Placas Bento e Caio — permitidas para boleto Girassol/Horacio (Dudu NÃO)
-    private static readonly HashSet<string> PlacasBento = new(StringComparer.OrdinalIgnoreCase)
-        { "XAA-9457", "XAB-4C58", "XAC-6D57" };
-
-    private static readonly HashSet<string> PlacasCaio = new(StringComparer.OrdinalIgnoreCase)
-        { "XAD-5H46", "XAE-4D55", "XAF-2J52", "XAG-2G58", "XAH-2I15" };
-
-    public static bool PlacaPermiteBoletoHoracio(string placa) =>
-        PlacasBento.Contains(placa) || PlacasCaio.Contains(placa);
-
     // ──────────────────────────────────────────────────────────────
     // IMPORTAÇÃO DE CT-e (substitui cte_geral.py e cte_placas.py)
     // ──────────────────────────────────────────────────────────────

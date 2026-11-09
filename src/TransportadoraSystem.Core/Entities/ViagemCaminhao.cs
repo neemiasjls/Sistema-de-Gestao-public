@@ -158,7 +158,9 @@ public class ViagemCaminhaoDespesa
 
 /// <summary>
 /// Carga que o motorista disse que fez: VOLUMES (a carga da fazenda; caixas vêm do
-/// controle de carregamento) ou RETORNO (outra carga, vira linha dos Retornos).
+/// controle de carregamento) ou RETORNO (outra carga). Desde 09/11/2026 (VIA-22) a
+/// carga RETORNO é só a anotação do motorista: não cria retorno; o sistema a liga
+/// sozinho ao retorno importado da planilha (RetornoId), pela placa e pela data.
 /// </summary>
 public class ViagemCaminhaoCarga
 {
@@ -171,9 +173,15 @@ public class ViagemCaminhaoCarga
     public DateOnly? Data { get; set; }
     public string? Origem { get; set; }
     public string? Destino { get; set; }
+    // O valor que o motorista anotou (não muda com o retorno ligado)
     public decimal Valor { get; set; }
+    // Retorno importado ligado a esta anotação (no máximo uma anotação por retorno)
     public int? RetornoId { get; set; }
     public RetornoFrete? Retorno { get; set; }
+    // Situação da ligação (só RETORNO): ligado, manual, conferir, sem_par; nulo = ainda não tentou
+    public string? Ligacao { get; set; }
+    // Por que ficou para conferir ou sem par (texto da tela)
+    public string? LigacaoAviso { get; set; }
 }
 
 /// <summary>

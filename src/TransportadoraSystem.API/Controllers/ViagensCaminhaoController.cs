@@ -87,13 +87,18 @@ public class ViagensCaminhaoController(ViagensCaminhaoService svc, AuthService a
 
     [HttpPost("importar-acerto")]
     [RequestSizeLimit(60_000_000)]
-    public async Task<IActionResult> ImportarAcerto([FromForm] List<IFormFile> arquivos, [FromQuery] string? placa, [FromQuery] bool substituir = false)
+    // VIA-23: viagem que já está no sistema volta IGUAL ou CONFIRMAR; só é trocada com
+    // ?abas=VIAGEM1,VIAGEM3 (as escolhidas) ou ?substituir=true sem lista (todas).
+    public async Task<IActionResult> ImportarAcerto([FromForm] List<IFormFile> arquivos, [FromQuery] string? placa,
+        [FromQuery] bool substituir = false, [FromQuery] string? abas = null)
     {
         if (arquivos.Count == 0) return BadRequest(new { erro = "Envie a planilha do acerto (.xlsx ou .xls)." });
+        var escolhidas = string.IsNullOrWhiteSpace(abas) ? null
+            : abas.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
         var resultados = new List<object>();
         foreach (var f in arquivos)
         {
-            try { resultados.Add(await svc.ImportarAcertoAsync(await Bytes(f), f.FileName, placa, substituir)); }
+            try { resultados.Add(await svc.ImportarAcertoAsync(await Bytes(f), f.FileName, placa, substituir, escolhidas)); }
             catch (Exception ex) when (ex is InvalidOperationException or ErroViagem or ExcelDataReader.Exceptions.HeaderException)
             { resultados.Add(new { arquivo = f.FileName, erro = ex.Message }); }
             catch (Exception ex)
@@ -393,6 +398,16 @@ public class RetornosController(ViagensCaminhaoService svc, ILogger<RetornosCont
     public async Task<IActionResult> Vincular(int id, [FromBody] VinculoDto dto)
     {
         try { await svc.VincularRetornoAsync(id, dto.ViagemId); return Ok(new { mensagem = dto.ViagemId == null ? "Retorno solto da viagem." : "Retorno ligado à viagem." }); }
+        catch (ErroViagem ex) { return BadRequest(new { erro = ex.Message }); }
+    }
+
+    public record LigarAnotacaoDto(int? RetornoId);
+
+    /// <summary>Escritório liga à mão a anotação do motorista que ficou em dúvida ou sem par (VIA-22); retornoId nulo solta.</summary>
+    [HttpPut("anotacoes/{cargaId:int}")]
+    public async Task<IActionResult> LigarAnotacao(int cargaId, [FromBody] LigarAnotacaoDto dto)
+    {
+        try { await svc.LigarAnotacaoManualAsync(cargaId, dto.RetornoId); return Ok(new { mensagem = dto.RetornoId == null ? "Anotação solta do retorno." : "Anotação ligada ao retorno." }); }
         catch (ErroViagem ex) { return BadRequest(new { erro = ex.Message }); }
     }
 

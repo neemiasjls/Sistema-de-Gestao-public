@@ -420,8 +420,19 @@ export default function ViagemCaminhaoPage() {
               <p className="font-medium text-gray-700">O que o motorista anotou:</p>
               <ul className="text-gray-600 space-y-0.5">
                 {form.cargas.map((cg, i) => (
-                  <li key={i}>{cg.tipo === 'VOLUMES' ? 'Carga de volumes' : `Outra carga · ${cg.transportadora ?? ''} · ${brl(cg.valor)}`}
-                    {cg.data ? ` · ${dataBr(cg.data)}` : ''}{cg.origem || cg.destino ? ` · ${[cg.origem, cg.destino].filter(Boolean).join(' / ')}` : ''}</li>
+                  <li key={i}>{cg.tipo === 'VOLUMES' ? 'Carga de volumes' : `Outra carga · ${cg.transportadora ?? 'sem transportadora'} · ${brl(cg.valor)}`}
+                    {cg.data ? ` · ${dataBr(cg.data)}` : ''}{cg.origem || cg.destino ? ` · ${[cg.origem, cg.destino].filter(Boolean).join(' / ')}` : ''}
+                    {cg.tipo === 'RETORNO' && (
+                      <span className="flex flex-wrap items-center gap-1 mt-0.5">
+                        {cg.retornoLigado
+                          ? <Selo tom="info">Ligada ao retorno importado de {dataBr(cg.retornoLigado.data)} · {brl(cg.retornoLigado.freteTotal)}{cg.ligacao === 'manual' ? ' (ligada no escritório)' : ''}</Selo>
+                          : cg.ligacao === 'conferir' ? <Selo tom="atencao">Para conferir</Selo>
+                          : <Selo tom="atencao">Sem retorno importado</Selo>}
+                        {cg.ligacaoAviso && <span className="text-xs text-gray-600">{cg.ligacaoAviso}</span>}
+                        {!cg.retornoLigado && <Link to={`/retornos?mes=${Number((cg.data ?? form.dataSaida ?? '').slice(5, 7)) || ''}&ano=${(cg.data ?? form.dataSaida ?? '').slice(0, 4)}`} className="text-xs font-medium text-tinta-700 underline">Resolver em Retornos</Link>}
+                      </span>
+                    )}
+                  </li>
                 ))}
               </ul>
             </div>

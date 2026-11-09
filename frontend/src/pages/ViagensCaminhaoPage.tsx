@@ -16,8 +16,9 @@ import { erroDaApi } from '../services/semPararApi'
 import {
   viagensApi,
   type ListaViagens, type ViagemResumo, type Carregamento,
-  type ResultadoAcerto, type ResultadoCarregamento,
+  type ResultadoAcerto, type ResultadoCarregamento, type ViagemDoAcerto,
 } from '../services/viagensCaminhaoApi'
+import { Modal } from '../components/ModalBase'
 import FechamentoMes from '../components/viagens/FechamentoMes'
 import { NavegaMes, SeloStatus, Selo, ListaResultado, mesExtenso } from '../components/viagens/ViagensPecas'
 
@@ -73,6 +74,10 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
   }, [ano, mes])
   useEffect(carregar, [carregar])
 
+  // Viagem que já está no sistema e o arquivo traz diferente espera Cancelar ou Substituir (VIA-23, UI-21)
+  const [pendentes, setPendentes] = useState<Pendente[] | null>(null)
+  const [substituindo, setSubstituindo] = useState(false)
+
   const importarAcerto = async (arquivos: File[]) => {
     if (arquivos.length === 0) return
     setImportando(true)
@@ -80,10 +85,34 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
       const r = await viagensApi.importarAcerto(arquivos)
       setResultado(r)
       const n = r.reduce((s, x) => s + (x.criadas ?? 0), 0)
-      toast.success(n > 0 ? `${n} viagens trazidas.` : 'Nada novo: essas abas já estavam aqui.')
+      const espera: Pendente[] = r.flatMap(x => {
+        const arquivo = arquivos.find(f => f.name === x.arquivo)
+        const viagens = (x.viagens ?? []).filter(v => v.situacao === 'CONFIRMAR')
+        return arquivo && viagens.length ? [{ arquivo, viagens }] : []
+      })
+      if (espera.length) setPendentes(espera)
+      else toast.success(n > 0 ? `${n} ${n === 1 ? 'viagem trazida' : 'viagens trazidas'}.` : 'Nada novo: essas viagens já estavam aqui, iguais.')
       carregar()
     } catch (e) { toast.error(await erroDaApi(e, 'Não consegui importar.')) }
     finally { setImportando(false) }
+  }
+
+  const substituir = async () => {
+    if (!pendentes) return
+    setSubstituindo(true)
+    try {
+      let trocadas = 0
+      for (const p of pendentes) {
+        const [r] = await viagensApi.importarAcerto([p.arquivo], undefined, p.viagens.map(v => v.aba))
+        if (r?.erro) { toast.error(`${p.arquivo.name}: ${r.erro}`); continue }
+        trocadas += r?.substituidas ?? 0
+        if (r) setResultado(atual => (atual ?? []).map(x => x.arquivo === r.arquivo ? r : x))
+      }
+      toast.success(`${trocadas} ${trocadas === 1 ? 'viagem substituída' : 'viagens substituídas'} pelo arquivo.`)
+      setPendentes(null)
+      carregar()
+    } catch (e) { toast.error(await erroDaApi(e, 'Não consegui substituir.')) }
+    finally { setSubstituindo(false) }
   }
 
   const exportar = async (grupo: string, vs: ViagemResumo[]) => {
@@ -109,7 +138,7 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
       {importar && (
         <AreaSoltar aceita={['.xlsx', '.xls']} onArquivos={importarAcerto} carregando={importando} textoCarregando="Lendo as abas..."
                     titulo="Arraste a planilha do acerto do caminhão" icone={FileSpreadsheet}
-                    dica="9-V -SETEMBRO-2026.xlsx. Importe antes os retornos do mês, para casar. Importar de novo não duplica." />
+                    dica="9-V -SETEMBRO-2026.xlsx. Importe antes os retornos do mês, para casar. Viagem que já está aqui mostra as diferenças antes de trocar." />
       )}
       {resultado && (
         <ListaResultado titulo="Acertos importados" onFechar={() => setResultado(null)} itens={resultado.map((r, i) => {
@@ -117,10 +146,16 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
           return {
             chave: `${r.arquivo}-${i}`, nome: `${r.arquivo}${r.placa ? ` · ${r.placa}` : ''}`, erro: r.erro, problema: dif.length > 0,
             avisos: [...(r.avisos ?? []), ...dif.map(c => `${c.aba}: ${c.diferencas.join('; ')}`)],
-            linha: <>{r.mes && r.ano ? mesExtenso(r.mes, r.ano) : ''} · {r.criadas} viagens novas{(r.puladas ?? 0) > 0 && <> · {r.puladas} já estavam</>}
+            linha: <>{r.mes && r.ano ? mesExtenso(r.mes, r.ano) : ''} · {r.criadas} viagens novas
+              {(r.iguais ?? 0) > 0 && <> · {r.iguais} já estavam iguais</>}
+              {(r.substituidas ?? 0) > 0 && <> · {r.substituidas} substituídas</>}
+              {esperando(r) > 0 && <> · {esperando(r)} com diferença, sem trocar</>}
               {' · '}{(r.conferencia ?? []).length - dif.length} de {(r.conferencia ?? []).length} abas conferem com a planilha</>,
           }
         })} />
+      )}
+      {pendentes && (
+        <ModalSubstituirViagens pendentes={pendentes} enviando={substituindo} onClose={() => setPendentes(null)} onSubstituir={substituir} />
       )}
       {dados && dados.aConferir > 0 && (
         <Aviso tipo="atencao">{dados.aConferir} {dados.aConferir === 1 ? 'viagem enviada por motorista espera' : 'viagens enviadas por motoristas esperam'} conferência (marcadas como Lançada).</Aviso>
@@ -189,6 +224,67 @@ function Valor({ rotulo, valor }: { rotulo: string; valor: number }) {
       <span className="text-gray-500 lg:block lg:text-xs">{rotulo}</span>
       <span className="font-medium tabular-nums text-gray-900">{brl(valor)}</span>
     </p>
+  )
+}
+
+// ───────────────────────────── Viagem que já está no sistema ─────────────────────────────
+
+type Pendente = { arquivo: File; viagens: ViagemDoAcerto[] }
+
+const esperando = (r: ResultadoAcerto) => (r.viagens ?? []).filter(v => v.situacao === 'CONFIRMAR').length
+
+/** Cancelar ou Substituir as viagens que o arquivo traz diferente (VIA-23, UI-21) */
+function ModalSubstituirViagens({ pendentes, enviando, onClose, onSubstituir }: {
+  pendentes: Pendente[]; enviando: boolean; onClose: () => void; onSubstituir: () => void
+}) {
+  const total = pendentes.reduce((s, p) => s + p.viagens.length, 0)
+  return (
+    <Modal titulo={total === 1 ? 'Viagem que já está no sistema' : 'Viagens que já estão no sistema'} onClose={onClose} largura="lg"
+           descricao={`${total === 1 ? 'Esta viagem já está' : `Estas ${total} viagens já estão`} no sistema e o arquivo traz diferenças. As viagens novas já entraram. Substituir troca pelo arquivo, sem duplicar; Cancelar deixa como está.`}
+           rodape={
+             <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
+               <Botao onClick={onClose} disabled={enviando}>Cancelar</Botao>
+               <Botao variante="primario" onClick={onSubstituir} carregando={enviando} textoCarregando="Substituindo...">Substituir</Botao>
+             </div>
+           }>
+      <ul className="space-y-3">
+        {pendentes.flatMap(p => p.viagens.map(v => {
+          const fechada = v.diferencas.some(d => d.campo === 'Situação')
+          const campos = v.diferencas.filter(d => d.campo !== 'Situação')
+          return (
+            <li key={`${p.arquivo.name}-${v.aba}`} className="border border-gray-200 rounded-lg p-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <p className="font-medium text-gray-900">{v.aba}{v.saida ? ` · saída ${dataBr(v.saida)}` : ''}</p>
+                <SeloStatus status={v.status} />
+                {v.origem === 'motorista' && <Selo tom="info">Enviada pelo motorista</Selo>}
+                {v.origem === 'escritorio' && <Selo tom="info">Lançada no escritório</Selo>}
+                {v.origem === 'importacao' && <Selo>Da planilha</Selo>}
+              </div>
+              <p className="text-xs text-gray-500 break-all">{p.arquivo.name}</p>
+              {fechada && <Aviso tipo="atencao">Esta viagem foi lançada no sistema e já está fechada. Substituir troca os dados dela pelos do arquivo.</Aviso>}
+              <p className="text-sm text-gray-700">
+                {campos.length} {campos.length === 1 ? 'diferença' : 'diferenças'}: {campos.slice(0, 4).map(d => d.campo).join(', ')}{campos.length > 4 ? ` e mais ${campos.length - 4}` : ''}.
+              </p>
+              <details className="text-sm">
+                <summary className="cursor-pointer font-medium text-tinta-700">Ver detalhes</summary>
+                <div className="mt-2 divide-y divide-gray-100 border border-gray-100 rounded-md">
+                  <div className="hidden sm:grid grid-cols-[1fr_1.4fr_1.4fr] gap-3 px-3 py-1.5 text-xs text-gray-500 bg-gray-50">
+                    <span>Campo</span><span>No sistema</span><span>No arquivo</span>
+                  </div>
+                  {campos.map((d, k) => (
+                    <div key={k} className="grid grid-cols-1 sm:grid-cols-[1fr_1.4fr_1.4fr] gap-x-3 gap-y-0.5 px-3 py-2 tabular-nums">
+                      <span className="font-medium text-gray-900">{d.campo}</span>
+                      <span className="text-gray-700"><span className="sm:hidden text-gray-500">No sistema: </span>{d.sistema}</span>
+                      <span className="text-gray-900"><span className="sm:hidden text-gray-500">No arquivo: </span>{d.arquivo}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            </li>
+          )
+        }))}
+      </ul>
+    </Modal>
   )
 }
 
