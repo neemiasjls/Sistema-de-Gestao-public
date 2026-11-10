@@ -8,7 +8,7 @@ import { useConfirmar } from './ui/Confirmar'
 import { formatBRL } from '../services/api'
 import { boletosContasApi } from '../services/boletosContasApi'
 import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
-import { sicoobApi, type BoletoConferido, type ConferenciaBoletos, type PostoDda, type ResumoConferenciaTudo, type SituacaoBoletoBanco } from '../services/sicoobApi'
+import { sicoobApi, type BoletoConferido, type ConferenciaBoletos, type ResumoConferenciaTudo, type SituacaoBoletoBanco } from '../services/sicoobApi'
 import { dataBr } from '../utils/formato'
 
 // Conferência dos boletos a receber da CD e da Girassol com o extrato do Sicoob (BOL-10).
@@ -46,8 +46,7 @@ export default function ConferenciaBoletosPagos({ mudou }: { mudou: () => void }
     try {
       const { data } = await sicoobApi.conferirTudo()
       setResumo(data)
-      if (data.receber.marcados.length || data.postos.marcados.length || data.dda.agendados.length || data.dda.pagos.length
-          || data.dda.agendamentosRetirados) mudou()
+      if (data.receber.marcados.length || data.postos.marcados.length) mudou()
     } catch (e) { setResumo(await erroApi(e, 'Não consegui fazer a conferência automática com o Sicoob.')) }
     await conferir()
   }
@@ -212,7 +211,7 @@ export default function ConferenciaBoletosPagos({ mudou }: { mudou: () => void }
 
 // O que a conferência com o banco fez: recebidos marcados, postos marcados e Pix esperando a confirmação dele
 function ResumoConferencia({ r }: { r: ResumoConferenciaTudo }) {
-  const { receber, postos, pix, dda } = r
+  const { receber, postos, pix } = r
   const linhas: string[] = []
   linhas.push(receber.marcados.length === 0
     ? `Nenhum boleto a receber liquidado no banco (${receber.consultados} de ${receber.emAberto} em aberto consultados).`
@@ -227,26 +226,10 @@ function ResumoConferencia({ r }: { r: ResumoConferenciaTudo }) {
     : `${postos.marcados.length === 1 ? '1 boleto de posto marcado' : `${postos.marcados.length} boletos de posto marcados`} como pago: ` +
       postos.marcados.map(p => `${p.posto} ${p.numero} em ${dataBr(p.data)}`).join('; ') + '.')
   if (!postos.erro && postos.duvidas > 0) linhas.push(`${postos.duvidas === 1 ? '1 débito de posto' : `${postos.duvidas} débitos de posto`} em dúvida: veja na aba Extrato.`)
-  const postoDda = (p: PostoDda) => `${p.posto} ${p.numero} em ${dataBr(p.data)}${p.semDataNoBanco ? ' (o banco não informou a data)' : ''}`
-  if (dda.erro?.startsWith('DDA indisponível')) linhas.push(dda.erro)
-  else {
-    linhas.push(dda.agendados.length + dda.pagos.length === 0
-      ? 'DDA: nenhum boleto de posto novo agendado ou pago no banco.'
-      : [dda.agendados.length ? `DDA: ${dda.agendados.length === 1 ? '1 boleto de posto agendado' : `${dda.agendados.length} boletos de posto agendados`} no banco: ${dda.agendados.map(postoDda).join('; ')}.` : '',
-         dda.pagos.length ? `DDA: ${dda.pagos.length === 1 ? '1 boleto de posto pago' : `${dda.pagos.length} boletos de posto pagos`} no banco: ${dda.pagos.map(postoDda).join('; ')}.` : '']
-        .filter(Boolean).join(' '))
-    if (dda.agendamentosRetirados > 0) linhas.push(`DDA: ${dda.agendamentosRetirados === 1 ? '1 agendamento sumiu' : `${dda.agendamentosRetirados} agendamentos sumiram`} do banco; tirei o agendado.`)
-    if (dda.duvidas > 0) linhas.push(`DDA: ${dda.duvidas === 1 ? '1 boleto' : `${dda.duvidas} boletos`} com mais de um boleto de posto possível; não marquei.`)
-    const deposto = dda.naoCadastrados.filter(n => n.posto)
-    if (deposto.length > 0) linhas.push(`No DDA e não cadastrado no site: ${deposto.map(n => `${n.posto} ${formatBRL(n.valor)}${n.vencimento ? `, vence ${dataBr(n.vencimento)}` : ''} (${n.situacao})`).join('; ')}.`)
-    const outros = dda.naoCadastrados.length - deposto.length
-    if (outros > 0) linhas.push(`${outros === 1 ? '1 outro boleto' : `${outros} outros boletos`} no DDA sem cadastro no site (não são de posto conhecido).`)
-    if (dda.erro) linhas.push(dda.erro)
-  }
   linhas.push(pix.erro ? `Pix: ${pix.erro}`
     : pix.aguardando.length === 0 ? 'Nenhum Pix de boleto esperando confirmação.'
     : `${pix.aguardando.length === 1 ? '1 Pix de boleto aguardando' : `${pix.aguardando.length} Pix de boleto aguardando`} sua confirmação na aba Extrato: ` +
       pix.aguardando.map(p => `${formatBRL(p.valor)} em ${dataBr(p.data)} de ${p.pagador} (${p.duvida ? 'mais de uma combinação' : p.boletos.join(' + ')})`).join('; ') + '.')
-  const tudoCerto = !receber.erro && !postos.erro && !pix.erro && !dda.erro && !receber.parouNoLimite
+  const tudoCerto = !receber.erro && !postos.erro && !pix.erro && !receber.parouNoLimite
   return <Aviso tipo={tudoCerto ? 'info' : 'atencao'} titulo="Conferência com o banco" itens={linhas} />
 }

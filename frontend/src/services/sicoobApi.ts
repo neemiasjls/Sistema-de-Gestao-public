@@ -133,18 +133,7 @@ export interface ResumoConferenciaTudo {
   }
   postos: { marcados: { id: number; posto: string; numero: string; valor: number; data: string }[]; duvidas: number; erro: string | null }
   pix: { aguardando: { id: string; data: string; valor: number; pagador: string; duvida: boolean; boletos: string[] }[]; erro: string | null }
-  // DDA do Sicoob (ABA-07): boletos dos postos agendados ou pagos no banco
-  dda: {
-    agendados: PostoDda[]
-    pagos: PostoDda[]
-    agendamentosRetirados: number
-    duvidas: number
-    naoCadastrados: { beneficiario: string; posto: string | null; valor: number; vencimento: string | null; situacao: string }[]
-    erro: string | null
-  }
 }
-
-export interface PostoDda { id: number; posto: string; numero: string; valor: number | null; data: string; motivo: string; semDataNoBanco: boolean }
 
 export const sicoobApi = {
   // Conferência com o banco (boletos a receber, postos e Pix): só marca o que já foi pago; nada é baixado no banco
@@ -154,7 +143,6 @@ export const sicoobApi = {
       c.receber = comoObjeto<ResumoConferenciaTudo['receber']>(c.receber, ['marcados', 'naoMarcados'], 'boletos a receber')
       c.postos = comoObjeto<ResumoConferenciaTudo['postos']>(c.postos, ['marcados'], 'postos')
       c.pix = comoObjeto<ResumoConferenciaTudo['pix']>(c.pix, ['aguardando'], 'Pix')
-      c.dda = comoObjeto<ResumoConferenciaTudo['dda']>(c.dda, ['agendados', 'pagos', 'naoCadastrados'], 'DDA')
       return c
     })),
   // Ação REAL no banco: baixa no Sicoob e apaga do sistema; só o dono, depois da confirmação na tela

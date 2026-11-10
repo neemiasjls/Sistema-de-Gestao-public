@@ -19,10 +19,8 @@ export interface BoletoAPagar {
   avisos: string[]
   nomeArquivo: string
   temPdf: boolean
-  agendadoPara: string | null   // só posto: pagamento agendado no banco (ABA-07)
-  agendadoPeloBanco: boolean    // só posto: o agendado veio do DDA do Sicoob (false = marcado à mão)
+  agendadoPara: string | null   // só posto: pagamento agendado no banco, marcado à mão (ABA-07)
   peloExtrato: boolean          // só posto: pago identificado no extrato do Sicoob
-  peloDda: boolean              // só posto: pago identificado no DDA do Sicoob
 }
 
 export interface ListaAPagar {

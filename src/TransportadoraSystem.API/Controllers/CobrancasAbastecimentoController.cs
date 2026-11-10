@@ -581,7 +581,6 @@ public class CobrancasAbastecimentoGuarda(AppDbContext db)
             Posto = b.Posto,
             NumeroDocumento = b.NumeroDocumento,
             NossoNumero = b.NossoNumero,
-            CodigoBarras = b.CodigoBarras,
             Valor = valor,
             Vencimento = b.Vencimento,
             DataDocumento = b.DataDocumento,

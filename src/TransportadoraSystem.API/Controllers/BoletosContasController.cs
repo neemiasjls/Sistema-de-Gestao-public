@@ -72,9 +72,7 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
             .Select(b => new
             {
                 b.Id, b.Posto, b.NumeroDocumento, b.NossoNumero, b.Valor, b.Vencimento, b.DataChegada, b.PagoEm,
-                b.AgendadoPara, b.AgendadoPeloBanco,
-                PeloExtrato = b.PagoExtratoId != "" && !b.PagoExtratoId.StartsWith(PostosDda.Prefixo),
-                PeloDda = b.PagoExtratoId.StartsWith(PostosDda.Prefixo),
+                b.AgendadoPara, PeloExtrato = b.PagoExtratoId != "",
                 b.LidoDoPdf, b.AvisosJson, b.NomeArquivo, TemPdf = b.Pdf != null,
                 Fatura = b.Fatura != null ? b.Fatura.Numero : null,
             })
@@ -90,7 +88,7 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
         var boletos = postos.Select(b => new BoletoAPagar(
                 "POSTO", b.Id, b.Posto, b.Fatura != null ? $"Fatura {b.Fatura}" : "Posto de combustível",
                 b.NumeroDocumento != "" ? b.NumeroDocumento : b.NossoNumero, b.Valor, b.Vencimento, b.DataChegada, b.PagoEm,
-                b.LidoDoPdf, Lista(b.AvisosJson), b.NomeArquivo, b.TemPdf, b.AgendadoPara, b.PeloExtrato, b.AgendadoPeloBanco, b.PeloDda))
+                b.LidoDoPdf, Lista(b.AvisosJson), b.NomeArquivo, b.TemPdf, b.AgendadoPara, b.PeloExtrato))
             .Concat(avulsos.Select(b => new BoletoAPagar(
                 "AVULSO", b.Id, b.Beneficiario, b.Descricao, b.Numero, b.Valor, b.Vencimento, b.DataChegada, b.PagoEm,
                 b.LidoDoPdf, Lista(b.AvisosJson), b.NomeArquivo, b.TemPdf, null, false)))
@@ -121,8 +119,7 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
 
     public record BoletoAPagar(string Origem, int Id, string Beneficiario, string Descricao, string Numero, decimal? Valor,
         DateOnly? Vencimento, DateOnly DataChegada, DateOnly? PagoEm, bool LidoDoPdf, List<string> Avisos,
-        string NomeArquivo, bool TemPdf, DateOnly? AgendadoPara = null, bool PeloExtrato = false,
-        bool AgendadoPeloBanco = false, bool PeloDda = false);
+        string NomeArquivo, bool TemPdf, DateOnly? AgendadoPara = null, bool PeloExtrato = false);
 
     public record PagoPedido(string? PagoEm);
 
@@ -152,7 +149,6 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
         if (b == null) return NotFound(new { erro = "Boleto não encontrado." });
         if (data != null && b.PagoEm != null) return BadRequest(new { erro = "Este boleto já está pago." });
         b.AgendadoPara = data;
-        b.AgendadoPeloBanco = false; // marcado (ou tirado) à mão; o DDA marca de novo se o banco ainda mostrar agendado
         b.AtualizadoEm = DateTime.UtcNow;
         await db.SaveChangesAsync();
         return NoContent();

@@ -254,9 +254,7 @@ function APagar() {
   )
   const notaPosto = (b: BoletoAPagar) => b.origem !== 'POSTO' ? null
     : b.pagoEm && b.peloExtrato ? <p className="text-sm font-normal text-emerald-800 mt-0.5">Identificado no extrato do Sicoob em {dataBr(b.pagoEm).slice(0, 5)}</p>
-    : b.pagoEm && b.peloDda ? <p className="text-sm font-normal text-emerald-800 mt-0.5">Pago no Sicoob em {dataBr(b.pagoEm).slice(0, 5)} (visto no DDA)</p>
-    : !b.pagoEm && b.agendadoPara && b.agendadoPeloBanco ? <p className="text-sm font-normal text-tinta-800 mt-0.5 flex items-center gap-1"><Landmark size={14} aria-hidden />Agendado no banco para {dataBr(b.agendadoPara).slice(0, 5)}</p>
-    : !b.pagoEm && b.agendadoPara ? <p className="text-sm font-normal text-tinta-800 mt-0.5">Agendado para {dataBr(b.agendadoPara).slice(0, 5)} (marcado à mão)</p>
+    : !b.pagoEm && b.agendadoPara ? <p className="text-sm font-normal text-tinta-800 mt-0.5">Agendado para {dataBr(b.agendadoPara).slice(0, 5)}</p>
     : null
   const vencido = (b: BoletoAPagar) => !b.pagoEm && !!b.vencimento && b.vencimento < hoje
 
