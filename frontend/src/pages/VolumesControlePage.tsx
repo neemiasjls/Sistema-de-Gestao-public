@@ -499,12 +499,12 @@ function ModalLinha({ c, grupo, linha, sugestoes, onClose, onSalvou }: {
 
       {!mostrarCrus ? (
         <Botao variante="fantasma" tamanho="sm" icone={Plus} onClick={() => setMostrarCrus(true)} className="-ml-3 text-tinta-700">
-          Saiu caixa da fazenda sem embalar (ou produtoC avulsa)?
+          Saiu caixa a granel sem embalar (ou produtoC avulsa)?
         </Botao>
       ) : (
         <fieldset>
           <legend className="block text-sm sm:text-xs font-medium text-gray-700 mb-1">
-            {entrada ? 'Caixas da fazenda' : 'Caixa da fazenda sem embalar'}
+            {entrada ? 'Caixas a granel' : 'Caixa a granel sem embalar'}
           </legend>
           <div className="space-y-2">
             {TIPOS_CRUS.map(t => (
@@ -701,7 +701,7 @@ function AbaConferencia({ c, onSalvou }: { c: Controle; onSalvou: () => void }) 
 
   // O que não bate, numa olhada, antes das contas
   const problemas = [
-    ...crus.filter(x => !x.bate).map(x => ({ k: x.chave, nome: x.nome, tipo: 'caixa da fazenda', sobrou: x.estoque > 0, quanto: caixasEProdutosC(Math.abs(x.estoque)) })),
+    ...crus.filter(x => !x.bate).map(x => ({ k: x.chave, nome: x.nome, tipo: 'caixa a granel', sobrou: x.estoque > 0, quanto: caixasEProdutosC(Math.abs(x.estoque)) })),
     ...produzidos.filter(p => !p.bate).map(p => ({ k: p.chave, nome: p.codigo, tipo: 'embalado', sobrou: p.estoque > 0, quanto: caixasProduzido(Math.abs(p.estoque), porCaixaDe(p.chave)) })),
   ]
   const temAlgo = crus.length > 0 || produzidos.length > 0
@@ -841,7 +841,7 @@ function CartaoCru({ x, onUsarQuebra, salvando }: { x: LinhaCru; onUsarQuebra: (
   return (
     <section className={`bg-white border rounded-xl overflow-hidden flex flex-col ${tom.borda}`}>
       <h3 className="px-4 py-2.5 border-b border-gray-100 font-display text-base font-semibold text-gray-900">
-        {x.nome} <span className="font-sans text-sm font-normal text-gray-500">caixa da fazenda</span>
+        {x.nome} <span className="font-sans text-sm font-normal text-gray-500">caixa a granel</span>
       </h3>
       <dl className="text-sm px-4 py-2.5 space-y-1.5 flex-1">
         {linhas.filter(([, v]) => v !== 0).map(([rot, v, s]) => (

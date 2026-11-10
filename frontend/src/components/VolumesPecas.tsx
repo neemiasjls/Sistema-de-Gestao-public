@@ -39,7 +39,7 @@ export function Volume({ tipo, pequeno }: { tipo: TipoVolume; pequeno?: boolean 
   )
 }
 
-// Cru (caixa da fazenda) → como ele fala: "Vermelho fazenda"
+// Cru (caixa a granel) → como ele fala: "Vermelho fazenda"
 const NOME_CRU: Record<string, { nome: string; tipo: TipoVolume }> = {
   ab:   { nome: 'Branco',       tipo: 'branco' },
   ab20: { nome: 'Branco de 20', tipo: 'branco' },

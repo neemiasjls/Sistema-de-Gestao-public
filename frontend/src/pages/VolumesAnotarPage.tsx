@@ -987,7 +987,7 @@ export default function VolumesAnotarPage() {
 
       {/* ── Sobras e quebras ───────────────────────────────────────────── */}
       <section ref={cruRef} className="mt-6 scroll-mt-4">
-        <Titulo texto="Sobras e quebras" nota="caixa da fazenda" />
+        <Titulo texto="Sobras e quebras" nota="caixa a granel" />
         <div className="bg-white border border-gray-200 rounded-xl p-3 sm:p-4 space-y-4">
           <div className="grid grid-cols-2 gap-1 p-1 bg-gray-100 rounded-lg" role="group" aria-label="Sobra ou quebra">
             {(['sobra', 'quebra'] as Grupo[]).map(g => (

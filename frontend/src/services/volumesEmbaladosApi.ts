@@ -2,7 +2,7 @@ import api from './api'
 import { comoLista, comoObjeto } from '../utils/resposta'
 
 // Volumes embalados: controle do barracão (uma produtoB por controle).
-// Tipos crus (caixa da fazenda) vêm em PRODUTOSC; produzidos, em caixas.
+// Tipos crus (caixa a granel) vêm em PRODUTOSC; produzidos, em caixas.
 
 export type Quantidades = {
   ab: number; ab20: number; bb: number; av: number
