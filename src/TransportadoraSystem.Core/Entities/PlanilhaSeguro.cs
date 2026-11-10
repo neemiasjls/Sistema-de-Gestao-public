@@ -31,6 +31,7 @@ public class PlanilhaSeguro
     public decimal? IofSeguros { get; set; }
     public decimal? ServicoEscritorio { get; set; }
     public decimal? TaxaBSoft { get; set; }
+    public decimal? FaturaSeguro { get; set; }         // valor da fatura do seguro (SEG-05)
 
     public DateTime CriadoEm { get; set; } = DateTime.UtcNow;
     public DateTime AtualizadoEm { get; set; } = DateTime.UtcNow;

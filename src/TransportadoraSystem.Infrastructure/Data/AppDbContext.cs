@@ -67,6 +67,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
     // Planilhas SG (Seguro / ICMS) do mês, geradas na tela de CT-es ou trazidas do Drive
     public DbSet<PlanilhaSeguro> PlanilhasSeguro => Set<PlanilhaSeguro>();
+    public DbSet<AliquotaSeguro> AliquotasSeguro => Set<AliquotaSeguro>();
 
     // E-mail semanal da Cedro Frutas e do Dunas: destinatários e histórico
     public DbSet<EmailClienteConfig> EmailsClienteConfig => Set<EmailClienteConfig>();

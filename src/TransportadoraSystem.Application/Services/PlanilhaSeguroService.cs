@@ -15,7 +15,8 @@ public class PlanilhaSeguroService(AppDbContext db)
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     /// <summary>Os valores digitados na tela antes de gerar.</summary>
-    public record ValoresInformados(decimal Das, decimal IofSeguros, decimal ServicoEscritorio, decimal TaxaBSoft);
+    public record ValoresInformados(decimal Das, decimal IofSeguros, decimal ServicoEscritorio, decimal TaxaBSoft,
+        decimal? FaturaSeguro = null);
 
     public record Guardada(PlanilhaSeguro Registro, PlanilhaSeguroLeitor.Resumo Resumo, bool Substituiu, string? OrigemAnterior);
 
@@ -81,6 +82,7 @@ public class PlanilhaSeguroService(AppDbContext db)
         reg.IofSeguros = valores?.IofSeguros;
         reg.ServicoEscritorio = valores?.ServicoEscritorio;
         reg.TaxaBSoft = valores?.TaxaBSoft;
+        reg.FaturaSeguro = valores?.FaturaSeguro;
         reg.AtualizadoEm = DateTime.UtcNow;
     }
 

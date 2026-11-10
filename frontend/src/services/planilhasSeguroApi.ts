@@ -77,6 +77,7 @@ export interface DetalhePlanilhaSeguro {
     iofSeguros: number | null
     servicoEscritorio: number | null
     taxaBSoft: number | null
+    faturaSeguro?: number | null   // só nas geradas depois de 09/11/2026
   } | null
   resumo: ResumoSeguro
 }

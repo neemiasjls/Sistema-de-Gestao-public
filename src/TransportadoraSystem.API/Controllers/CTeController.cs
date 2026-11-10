@@ -239,6 +239,43 @@ public class CTeController(AppDbContext db, CTeImportService importService, CTeE
         }
     }
 
+    private static string Brl(double v) =>
+        v.ToString("C2", System.Globalization.CultureInfo.GetCultureInfo("pt-BR"));
+
+    // ── Alíquotas do seguro por UF (SEG-06): valem para as próximas planilhas SG ──
+    [HttpGet("aliquotas-seguro")]
+    public async Task<IActionResult> ListarAliquotas() =>
+        Ok(await db.AliquotasSeguro.AsNoTracking().OrderBy(a => a.Id)
+            .Select(a => new { a.Id, a.Uf, a.Aliquota, a.AtualizadoEm }).ToListAsync());
+
+    /// <summary>Grava a tabela inteira como veio da tela (muda, acrescenta e tira UF).</summary>
+    [HttpPut("aliquotas-seguro")]
+    public async Task<IActionResult> GravarAliquotas([FromBody] List<AliquotaSeguroDto> lista)
+    {
+        if (lista == null || lista.Count == 0)
+            return BadRequest(new { erro = "A tabela precisa de pelo menos uma UF." });
+        var limpas = lista.Select(a => (Uf: (a.Uf ?? "").Trim().ToUpperInvariant(), a.Aliquota)).ToList();
+        if (limpas.Any(a => !System.Text.RegularExpressions.Regex.IsMatch(a.Uf, "^[A-Z]{2}$")))
+            return BadRequest(new { erro = "UF tem duas letras, ex.: GO." });
+        var repetida = limpas.GroupBy(a => a.Uf).FirstOrDefault(gp => gp.Count() > 1);
+        if (repetida != null)
+            return BadRequest(new { erro = $"{repetida.Key} está duas vezes." });
+        if (limpas.Any(a => a.Aliquota <= 0 || a.Aliquota >= 100))
+            return BadRequest(new { erro = "A alíquota tem de ser maior que zero (em %, ex.: 0,069)." });
+
+        var atuais = await db.AliquotasSeguro.ToListAsync();
+        foreach (var velha in atuais.Where(v => limpas.All(a => a.Uf != v.Uf)))
+            db.AliquotasSeguro.Remove(velha);
+        foreach (var (uf, aliq) in limpas)
+        {
+            var reg = atuais.FirstOrDefault(v => v.Uf == uf);
+            if (reg == null) db.AliquotasSeguro.Add(new Core.Entities.AliquotaSeguro { Uf = uf, Aliquota = aliq });
+            else if (reg.Aliquota != aliq) { reg.Aliquota = aliq; reg.AtualizadoEm = DateTime.UtcNow; }
+        }
+        await db.SaveChangesAsync();
+        return await ListarAliquotas();
+    }
+
     // ── Exportar planilha SG (arquivo único: MÊS-GERAL + abas por placa + RESUMO) ──
     private static readonly string[] MesesPt =
         ["", "JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
@@ -251,6 +288,7 @@ public class CTeController(AppDbContext db, CTeImportService importService, CTeE
         [FromQuery] double iofSeguros = 0,
         [FromQuery] double servicoEscritorio = 0,
         [FromQuery] double taxaBSoft = 0,
+        [FromQuery] double? faturaSeguro = null,
         [FromForm] string? placas = null,
         [FromQuery] bool semPlacaOk = false)
     {
@@ -258,6 +296,9 @@ public class CTeController(AppDbContext db, CTeImportService importService, CTeE
         {
             if (arquivos == null || arquivos.Count == 0)
                 return BadRequest(new { erro = "Nenhum arquivo enviado." });
+            // A diferença dos seguros sai da fatura: sem ela não gera (SEG-05)
+            if (faturaSeguro is not > 0)
+                return BadRequest(new { erro = "Digite o valor da fatura do seguro." });
 
             var xmls = new List<string>();
             foreach (var arq in arquivos)
@@ -266,7 +307,11 @@ public class CTeController(AppDbContext db, CTeImportService importService, CTeE
                 xmls.Add(await sr.ReadToEndAsync());
             }
 
-            var linhas = excelService.ParsearXmls(xmls);
+            // Alíquotas do seguro de agora (SEG-06); a planilha guardada fica com as de quando saiu
+            var aliquotas = (await db.AliquotasSeguro.AsNoTracking().OrderBy(a => a.Id).ToListAsync())
+                .Select(a => (a.Uf, (double)a.Aliquota)).ToList();
+            IReadOnlyList<(string uf, double aliq)>? tabela = aliquotas.Count > 0 ? aliquotas : null;
+            var linhas = excelService.ParsearXmls(xmls, tabela);
 
             // Placas digitadas na tela para os CT-es que vieram sem (número do CT-e → placa).
             // Fica com a mesma grafia da placa que já veio em outro CT-e do mês, senão com traço,
@@ -308,18 +353,28 @@ public class CTeController(AppDbContext db, CTeImportService importService, CTeE
             string nomeArquivo = $"{refMes.Month:D2}-SEGURO {MesesPt[refMes.Month]} {refMes.Year}.xlsx";
 
             var parametros = new CTeExcelService.ParametrosSG(
-                das, iofSeguros, servicoEscritorio, taxaBSoft, mesRef);
+                das, iofSeguros, servicoEscritorio, taxaBSoft, mesRef, faturaSeguro.Value, tabela);
 
             var xlsxBytes = excelService.GerarSG(linhas, parametros);
 
             // Guarda no sistema (tela CT-es › Planilhas SG guardadas). Se não
             // der, a planilha sai assim mesmo e o aviso conta o que houve.
             var avisos = new List<string>();
+            if (tabela == null)
+                avisos.Add("As alíquotas do seguro não vieram do banco: usei as de sempre (GO/DF/MG/SP 0,069; TO 0,121; PA 0,147).");
+            var semAliquota = linhas.Where(l => l.Data != "CANCELADO" && l.Aliquota == null)
+                .Select(l => string.IsNullOrEmpty(l.UfCliente) ? "sem UF" : l.UfCliente).Distinct().ToList();
+            if (semAliquota.Count > 0)
+                avisos.Add($"Sem alíquota do seguro para {string.Join(", ", semAliquota)}: esses CT-es ficaram sem seguro. Cadastre em Seguro › Alíquotas e gere de novo.");
+            var seguros = CTeExcelService.SegurosMensal(linhas);
+            var diferenca = CTeExcelService.DiferencaSeguros(linhas, faturaSeguro.Value, iofSeguros);
+            avisos.Add($"Diferença dos seguros: {Brl(diferenca)} (fatura {Brl(faturaSeguro.Value)} − seguros {Brl(seguros)} − IOF {Brl(iofSeguros)}).");
             try
             {
                 var g = await planilhasSeguro.GuardarAsync(xlsxBytes, nomeArquivo, refMes.Month, refMes.Year, "gerada",
                     new PlanilhaSeguroService.ValoresInformados(
-                        (decimal)das, (decimal)iofSeguros, (decimal)servicoEscritorio, (decimal)taxaBSoft));
+                        (decimal)das, (decimal)iofSeguros, (decimal)servicoEscritorio, (decimal)taxaBSoft,
+                        (decimal)faturaSeguro.Value));
                 if (g.Substituiu)
                     avisos.Add($"A planilha de {PlanilhaSeguroService.MesAno(refMes.Month, refMes.Year)} já estava guardada"
                                + (g.OrigemAnterior == "importada" ? " (importada do Drive)" : "")
@@ -346,6 +401,8 @@ public class CTeController(AppDbContext db, CTeImportService importService, CTeE
         }
     }
 }
+
+public record AliquotaSeguroDto(string Uf, decimal Aliquota);
 
 public record AdicionarDistanciaDto(string Origem, string UFOrigem, string Destino, string UF, int Km);
 public record RemoverDistanciaDto(string Origem, string Destino, string UF);

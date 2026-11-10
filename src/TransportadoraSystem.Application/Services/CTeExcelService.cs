@@ -21,22 +21,21 @@ public record CTeLinha(
 
 public class CTeExcelService
 {
-    private static readonly Dictionary<string, double> Aliquotas = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["GO"] = 0.0690,
-        ["DF"] = 0.0690,
-        ["MG"] = 0.0690,
-        ["SP"] = 0.0690,
-        ["TO"] = 0.1210,
-        ["PA"] = 0.1470,
-    };
+    // Alíquotas do seguro por UF (em %). As que valem ficam no banco (AliquotasSeguro,
+    // SEG-06); estas são só as de começo, para quando ninguém passa a tabela.
+    public static readonly IReadOnlyList<(string uf, double aliq)> AliquotasPadrao =
+        [("GO", 0.069), ("DF", 0.069), ("MG", 0.069), ("TO", 0.121), ("PA", 0.147), ("SP", 0.069)];
 
     private static readonly XNamespace NsCte = "http://www.portalfiscal.inf.br/cte";
 
     // ── Parsing ─────────────────────────────────────────────────────
-    public List<CTeLinha> ParsearXmls(IEnumerable<string> xmlContents)
+    public List<CTeLinha> ParsearXmls(IEnumerable<string> xmlContents,
+        IReadOnlyList<(string uf, double aliq)>? aliquotasSeguro = null)
     {
         var lista = new List<CTeLinha>();
+        var aliquotas = (aliquotasSeguro ?? AliquotasPadrao)
+            .GroupBy(a => a.uf, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(gp => gp.Key, gp => gp.First().aliq, StringComparer.OrdinalIgnoreCase);
 
         foreach (var xml in xmlContents)
         {
@@ -87,7 +86,7 @@ public class CTeExcelService
                     Cte:          string.IsNullOrEmpty(nCT)      ? null : int.Parse(nCT),
                     Placa:        placa,
                     VFrete:       string.IsNullOrEmpty(vTPrest)  ? null : double.Parse(vTPrest,  System.Globalization.CultureInfo.InvariantCulture),
-                    Aliquota:     Aliquotas.TryGetValue(ufCliente, out var al) ? al : null
+                    Aliquota:     aliquotas.TryGetValue(ufCliente, out var al) ? al : null
                 ));
             }
             catch { /* ignora XML inválido */ }
@@ -151,13 +150,22 @@ public class CTeExcelService
     // ═══════════════════════════════════════════════════════════════════
     //  Planilha SG (arquivo único): MÊS-GERAL + 1 aba por placa + RESUMO
     // ═══════════════════════════════════════════════════════════════════
+    // FaturaSeguro: valor da fatura do seguro (SEG-05). AliquotasSeguro: a tabela
+    // ALIQUOTA SEGURO CARGA do rodapé (a mesma usada nas linhas); nula = a padrão.
     public record ParametrosSG(double DasValor, double IofSeguros, double ServicoEscritorio,
-        double TaxaBSoft, string MesReferente);
+        double TaxaBSoft, string MesReferente, double FaturaSeguro,
+        IReadOnlyList<(string uf, double aliq)>? AliquotasSeguro = null);
 
     private const string GERAL = "MÊS-GERAL";
-    // Tabela ALIQUOTA SEGURO CARGA do bloco
-    private static readonly (string uf, double aliq)[] TabelaSeguro =
-        [("GO", 0.069), ("DF", 0.069), ("MG", 0.069), ("TO", 0.121), ("PA", 0.147), ("SP", 0.069)];
+
+    /// <summary>VALOR SEGUROS MENSAL: a soma da coluna L (valor da NF × alíquota / 100).</summary>
+    public static double SegurosMensal(IEnumerable<CTeLinha> linhas) =>
+        linhas.Where(l => l.ValorNF.HasValue && l.Aliquota.HasValue)
+              .Sum(l => l.ValorNF!.Value * l.Aliquota!.Value / 100);
+
+    /// <summary>DIFERENÇA SEGUROS (SEG-05) = fatura − (seguros mensal + IOF).</summary>
+    public static double DiferencaSeguros(IEnumerable<CTeLinha> linhas, double fatura, double iof) =>
+        fatura - (SegurosMensal(linhas) + iof);
 
     // Cores (fundo) — resolvidas do tema do modelo
     private const string cCinza = "#7C7C7C", cCinza2 = "#767171", cAmbar = "#FFC000",
@@ -214,7 +222,8 @@ public class CTeExcelService
         MR(g, B + 2, 8, 9, 12, true, fPreto, cVerdeEsc, C, nfRs).FirstCell().FormulaA1 = $"SUM(J4:J{gUlt})";
         MR(g, B + 2, 10, 13, 12, true, fPreto, cVerde, C).FirstCell().Value = "ENCARGOS SEGUROS CARGAS ";
         // tabela seguro (esquerda) GO..PA
-        for (int i = 0; i < TabelaSeguro.Length; i++)
+        var TabelaSeguro = p.AliquotasSeguro ?? AliquotasPadrao;
+        for (int i = 0; i < TabelaSeguro.Count; i++)
         {
             SC(g, B + 3 + i, 1, 11, true, fVerm, null, C).Value = TabelaSeguro[i].uf;
             SC(g, B + 3 + i, 2, 10, true, fAzulB, null, C, "#,##0.0000").Value = TabelaSeguro[i].aliq;
@@ -225,6 +234,9 @@ public class CTeExcelService
         MR(g, B + 3, 11, 12, 12, true, fPreto, cLimao, R).FirstCell().Value = "IOF SEGUROS";
         SC(g, B + 3, 13, 12, true, fPreto, cLimao, C, nfRs).Value = p.IofSeguros;
         MR(g, B + 4, 11, 12, 12, true, fPreto, cLimao, R).FirstCell().Value = "DIFERENÇA SEGUROS";
+        // fatura − (seguros mensal + IOF): o VALOR TOTAL SEGUROS fica igual à fatura (SEG-05)
+        SC(g, B + 4, 13, 12, true, fPreto, cBranco, C, nfRs).FormulaA1 =
+            $"{p.FaturaSeguro.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}-J{B + 1}-M{B + 3}";
         MR(g, B + 5, 11, 12, 12, true, fPreto, cLimao, R).FirstCell().Value = "SERVIÇOS ESCRITÓRIO";
         SC(g, B + 5, 13, 12, true, fPreto, cBranco, C, nfRs).Value = p.ServicoEscritorio;
         MR(g, B + 6, 11, 12, 12, true, fPreto, cLimao, R).FirstCell().Value = "TAXA B SOFT   ";

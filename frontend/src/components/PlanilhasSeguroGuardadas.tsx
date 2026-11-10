@@ -325,6 +325,7 @@ function VisaoPlanilha({ detalhe, baixando, onBaixar, onClose }: {
           <span className="font-semibold text-gray-800">Digitado na geração: </span>
           DAS {formatBRL(v.das ?? 0)} · IOF seguros {formatBRL(v.iofSeguros ?? 0)} ·
           Serviço escritório {formatBRL(v.servicoEscritorio ?? 0)} · Taxa B Soft {formatBRL(v.taxaBSoft ?? 0)}
+          {v.faturaSeguro != null && <> · Fatura do seguro {formatBRL(v.faturaSeguro)}</>}
         </p>
       )}
 

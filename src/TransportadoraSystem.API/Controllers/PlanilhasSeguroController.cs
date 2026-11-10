@@ -67,7 +67,7 @@ public class PlanilhasSeguroController(AppDbContext db, PlanilhaSeguroService se
         {
             p.Id, p.Mes, p.Ano, p.Nome, p.Origem, p.CriadoEm, p.AtualizadoEm,
             valoresInformados = p.Origem == "gerada"
-                ? new { das = p.Das, iofSeguros = p.IofSeguros, servicoEscritorio = p.ServicoEscritorio, taxaBSoft = p.TaxaBSoft }
+                ? new { das = p.Das, iofSeguros = p.IofSeguros, servicoEscritorio = p.ServicoEscritorio, taxaBSoft = p.TaxaBSoft, faturaSeguro = p.FaturaSeguro }
                 : null,
             resumo,
         });

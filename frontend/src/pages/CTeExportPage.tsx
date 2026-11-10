@@ -4,7 +4,9 @@ import Aviso from '../components/ui/Aviso'
 import AreaSoltar from '../components/ui/AreaSoltar'
 import Botao, { BotaoIcone, classesBotao } from '../components/ui/Botao'
 import { Link } from 'react-router-dom'
-import { Download, FileCode2, FileSpreadsheet, FileUp, Upload, X } from 'lucide-react'
+import { Download, FileCode2, FileSpreadsheet, FileUp, Percent, Upload, X } from 'lucide-react'
+import { Abas, PainelAba, useAbas } from '../components/ui/Abas'
+import AliquotasSeguro from '../components/AliquotasSeguro'
 import { useCallback, useState } from 'react'
 import toast from 'react-hot-toast'
 import api, { downloadBlob } from '../services/api'
@@ -30,6 +32,10 @@ export default function CTeExportPage() {
   const [iof, setIof]                 = useState('')
   const [servico, setServico]         = useState('')
   const [taxa, setTaxa]               = useState('')
+  // Valor da fatura do seguro (SEG-05): obrigatório, dele sai a diferença dos seguros
+  const [fatura, setFatura]           = useState('')
+  const [aba, setAba]                 = useState<'planilha' | 'aliquotas'>('planilha')
+  const idAbas = useAbas('seguro')
   const [gerando, setGerando]         = useState(false)
   // Muda a cada geração: a lista das guardadas recarrega e mostra a nova
   const [geradas, setGeradas]         = useState(0)
@@ -51,6 +57,7 @@ export default function CTeExportPage() {
 
   const gerar = async (manuais: Record<string, string> = {}, semPlacaOk = false) => {
     if (!arquivos.length) return
+    if (!(parseBr(fatura) > 0)) { toast.error('Digite o valor da fatura do seguro.'); return }
     setGerando(true)
     try {
       const fd = new FormData()
@@ -63,6 +70,7 @@ export default function CTeExportPage() {
         iofSeguros:        String(parseBr(iof)),
         servicoEscritorio: String(parseBr(servico)),
         taxaBSoft:         String(parseBr(taxa)),
+        faturaSeguro:      String(parseBr(fatura)),
       })
       if (semPlacaOk) params.set('semPlacaOk', 'true')
 
@@ -98,6 +106,12 @@ export default function CTeExportPage() {
           return
         } catch { /* cai no erro comum */ }
       }
+      if (r?.status === 400 && r.data) {
+        try {
+          const corpo = JSON.parse(await r.data.text()) as { erro?: string }
+          if (corpo.erro) { toast.error(corpo.erro); return }
+        } catch { /* cai no erro comum */ }
+      }
       toast.error('Não consegui gerar a planilha.')
     } finally {
       setGerando(false)
@@ -129,6 +143,13 @@ export default function CTeExportPage() {
         }
       />
 
+      <Abas id={idAbas} valor={aba} onChange={setAba} rotulo="Seguro"
+            opcoes={[['planilha', 'Planilha SG', FileSpreadsheet], ['aliquotas', 'Alíquotas', Percent]]} />
+
+      {aba === 'aliquotas' ? (
+        <PainelAba id={idAbas} valor={aba}><AliquotasSeguro /></PainelAba>
+      ) : (
+      <PainelAba id={idAbas} valor={aba}>
       {/* Gerar a planilha: fechada por padrão (SEG-01); abre ao tocar e mostra tudo */}
       <SecaoRecolhivel
         titulo="Planilha SG (Seguro / ICMS)"
@@ -148,7 +169,7 @@ export default function CTeExportPage() {
       <fieldset className="space-y-3">
         <legend className="text-sm font-semibold text-gray-900">Valores do mês</legend>
         <p className="text-sm text-gray-600 -mt-1">
-          Deixe vazio para ficar em branco. A <b>quantidade de caminhões</b> é contada sozinha, pelas placas dos CT-es.
+          Deixe vazio para ficar em branco (menos a fatura do seguro). A <b>quantidade de caminhões</b> é contada sozinha, pelas placas dos CT-es.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
           {campo('Valor do DAS (R$)', das, setDas, 'Ex: 42.696,00',
@@ -156,6 +177,8 @@ export default function CTeExportPage() {
           {campo('IOF Seguros (R$)', iof, setIof, 'Ex: 331,22')}
           {campo('Serviços Escritório (R$)', servico, setServico, 'Ex: 1.100,00')}
           {campo('Taxa B Soft (R$)', taxa, setTaxa, 'Ex: 698,31')}
+          {campo('Valor da fatura do seguro (R$)', fatura, setFatura, 'Ex: 2.450,90',
+                 'Obrigatório. A diferença dos seguros sai dele.')}
         </div>
       </fieldset>
 
@@ -188,7 +211,8 @@ export default function CTeExportPage() {
 
       {/* 3. Gerar */}
       <Botao variante="primario" icone={Download} bloco className="sm:w-auto" onClick={() => gerar()} carregando={gerando} textoCarregando="Gerando..."
-             disabled={arquivos.length === 0} title={arquivos.length === 0 ? 'Escolha os XMLs primeiro' : undefined}>
+             disabled={arquivos.length === 0 || !(parseBr(fatura) > 0)}
+             title={arquivos.length === 0 ? 'Escolha os XMLs primeiro' : !(parseBr(fatura) > 0) ? 'Digite o valor da fatura do seguro' : undefined}>
         Gerar planilha SG (.xlsx)
       </Botao>
       </div>
@@ -239,6 +263,8 @@ export default function CTeExportPage() {
       <div className="pt-4 border-t border-gray-200">
         <PlanilhasSeguroGuardadas atualizar={geradas} />
       </div>
+      </PainelAba>
+      )}
     </div>
   )
 }
