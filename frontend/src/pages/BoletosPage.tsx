@@ -3,7 +3,9 @@ import AreaSoltar from '../components/ui/AreaSoltar'
 import { useConfirmar } from '../components/ui/Confirmar'
 import ComparaBoletos from '../components/ComparaBoletos'
 import ExtratoSicoob from '../components/ExtratoSicoob'
+import ConfigEmissaoBoletos from '../components/ConfigEmissaoBoletos'
 import MontarBoleto from '../components/MontarBoleto'
+import ParaEmitirBoletos from '../components/ParaEmitirBoletos'
 import { Abas, PainelAba, Segmentado, useAbas } from '../components/ui/Abas'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
 import Aviso from '../components/ui/Aviso'
@@ -25,6 +27,20 @@ import { Modal, Campo, BotoesModal } from '../components/ModalBase'
 // transportadora emite para os clientes, cada cliente com a sua lista, como na
 // planilha de controle dele.
 
+// Sicoob (BOL-12): a configuração da emissão e o extrato. A lista "Para emitir" fica em A receber,
+// junto com o Montar boleto que emite (a confirmação a cada boleto continua lá).
+type AbaSicoob = 'emissao' | 'extrato'
+function Sicoob() {
+  const [aba, setAba] = useState<AbaSicoob>('emissao')
+  return (
+    <div className="space-y-4">
+      <Segmentado valor={aba} onChange={setAba} rotulo="Sicoob"
+                  opcoes={[['emissao', 'Emissão de boletos'], ['extrato', 'Extrato']]} />
+      {aba === 'emissao' ? <ConfigEmissaoBoletos /> : <ExtratoSicoob />}
+    </div>
+  )
+}
+
 // O dia daqui, não o de Greenwich: à noite o toISOString já seria amanhã
 const hojeLocal = () => {
   const d = new Date()
@@ -39,7 +55,7 @@ const inputCls = 'w-full min-h-11 sm:min-h-0 text-sm border border-gray-300 roun
 const diasAte = (venc: string, hoje: string) =>
   Math.round((Date.parse(`${venc}T12:00:00`) - Date.parse(`${hoje}T12:00:00`)) / 86_400_000)
 
-type Aba = 'pagar' | 'receber' | 'extrato'
+type Aba = 'pagar' | 'receber' | 'sicoob'
 
 export default function BoletosPage() {
   const [aba, setAba] = useState<Aba>('pagar')
@@ -49,10 +65,10 @@ export default function BoletosPage() {
       <CabecalhoTela descricao="O que a transportadora tem a pagar (postos e outros) e o que tem a receber dos clientes." />
 
       <Abas id={idAbas} valor={aba} onChange={setAba} rotulo="Tipo de boleto"
-            opcoes={[['pagar', 'A pagar', ArrowUpFromLine], ['receber', 'A receber', ArrowDownToLine], ['extrato', 'Extrato', Landmark]]} />
+            opcoes={[['pagar', 'A pagar', ArrowUpFromLine], ['receber', 'A receber', ArrowDownToLine], ['sicoob', 'Sicoob', Landmark]]} />
 
       <PainelAba id={idAbas} valor={aba}>
-        {aba === 'pagar' ? <APagar /> : aba === 'receber' ? <AReceber /> : <ExtratoSicoob />}
+        {aba === 'pagar' ? <APagar /> : aba === 'receber' ? <AReceber /> : <Sicoob />}
       </PainelAba>
     </div>
   )
@@ -411,6 +427,7 @@ function AReceber() {
   const [antigosAbertos, setAntigosAbertos] = useState(false)
   const [montando, setMontando] = useState<{ data: string; placa: string | null } | null>(null)
   const [falhou, setFalhou] = useState(false)
+  const [versaoParaEmitir, setVersaoParaEmitir] = useState(0)
   const confirmar = useConfirmar()
 
   const carregar = useCallback(async () => {
@@ -517,6 +534,9 @@ function AReceber() {
           <Total rotulo="Emitido" valor={formatBRL(resumo.totalEmitido)} detalhe={qtd(resumo.quantidade, 'boleto', 'boletos')} />
         </div>
       ) : !lista && !falhou && <Carregando forma="cartoes" linhas={4} rotulo="Carregando os totais" />}
+
+      <ParaEmitirBoletos cliente={cliente} rotuloCliente={resumo?.rotulo ?? cliente} versao={versaoParaEmitir}
+                         onEmitir={(data, placa) => setMontando({ data, placa })} />
 
       <section aria-labelledby="receber-subir" className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
         <div>
@@ -632,7 +652,8 @@ function AReceber() {
       )}
       {montando && (
         <MontarBoleto cliente={cliente} rotuloCliente={resumo?.rotulo ?? cliente} dataInicial={montando.data}
-                      placaInicial={montando.placa} onClose={() => setMontando(null)} onEmitido={carregar} />
+                      placaInicial={montando.placa} onClose={() => setMontando(null)}
+                      onEmitido={() => { carregar(); setVersaoParaEmitir(v => v + 1) }} />
       )}
       {editando && (
         <ReceberModal boleto={editando === 'novo' ? null : editando} cliente={cliente} onClose={() => setEditando(null)}

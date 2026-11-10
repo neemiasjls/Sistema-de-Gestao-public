@@ -131,8 +131,12 @@ public class NFeController(NFeImportService nfeService, AppDbContext db,
                 trocas = JsonSerializer.Deserialize<List<CorrecaoTipo>>(correcoes, Json);
 
             var escritas = await tiposVolume.EscritasAsync();
+            // Preço da produtoD da CD: o mesmo do boleto (aba Sicoob → Emissão de boletos, BOL-12)
+            decimal precoProdutoD;
+            try { precoProdutoD = await db.ConfigEmissaoBoleto.AsNoTracking().Where(c => c.Cliente == "CD").Select(c => c.PrecoCaixaProdutoD).FirstOrDefaultAsync(); }
+            catch (Exception ex) { logger.LogWarning(ex, "Sem a configuração da emissão; produtoD a 120"); precoProdutoD = 0; }
             var resultado = nfeService.GerarPlanilhas(xmls, qtdProdutosDCedro, nums, caixasProdutoE, escritas, trocas,
-                produtosCBrz, precoProdutoCBrz);
+                produtosCBrz, precoProdutoCBrz, precoProdutoD);
 
             if (resultado.SemTipo.Count > 0)
                 return BadRequest(new { erro = resultado.Erro, produtosSemTipo = resultado.SemTipo });

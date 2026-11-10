@@ -76,6 +76,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     // Boletos emitidos para os clientes (a receber) e os avulsos a pagar
     public DbSet<BoletoReceber> BoletosReceber => Set<BoletoReceber>();
     public DbSet<BoletoPagarAvulso> BoletosPagarAvulsos => Set<BoletoPagarAvulso>();
+    public DbSet<ConfigEmissaoBoleto> ConfigEmissaoBoleto => Set<ConfigEmissaoBoleto>();
 
     // Volumes embalados (controle do barracão)
     public DbSet<ControleVolumes> VolumesControles => Set<ControleVolumes>();

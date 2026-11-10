@@ -1,5 +1,5 @@
 import api, { downloadBlob, nomeDoArquivo } from './api'
-import { comDados, comoObjeto } from '../utils/resposta'
+import { comDados, comoLista, comoObjeto } from '../utils/resposta'
 
 // Tela Boletos. "A pagar": boletos dos postos (os mesmos da tela
 // Abastecimentos) mais os avulsos. "A receber": os que a transportadora emite
@@ -145,6 +145,27 @@ const pdfs = (arquivos: File[], extra?: Record<string, string>) => {
 }
 const multipart = { headers: { 'Content-Type': 'multipart/form-data' } }
 
+export interface ConfigEmissao {
+  cliente: ClienteReceber
+  diasVencimento: number
+  pagadorNome: string
+  pagadorCnpj: string
+  pagadorEndereco: string
+  pagadorBairro: string
+  pagadorCidade: string
+  pagadorUf: string
+  pagadorCep: string
+  precoCaixaProdutoD: number
+  multaPct: number
+  jurosMes: number
+  instrucao3: string
+  pix: boolean
+}
+export interface ListaConfigEmissao {
+  clientes: { config: ConfigEmissao; aviso: string | null }[]
+  podeSalvar: boolean
+}
+
 export const boletosContasApi = {
   // A pagar
   listarAPagar: () => api.get(`${base}/pagar`).then(r => comDados(r, d => {
@@ -178,18 +199,35 @@ export const boletosContasApi = {
   editarAReceber: (id: number, d: ReceberEdicao) => api.put(`${base}/receber/${id}`, d),
   marcarRecebido: (id: number, recebidoEm: string | null) => api.put(`${base}/receber/${id}/recebido`, { recebidoEm }),
   excluirAReceber: (id: number) => api.delete(`${base}/receber/${id}`),
-  montarAReceber: (cliente: ClienteReceber, data: string, placa?: string | null) =>
-    api.get(`${base}/receber/montar`, { params: { cliente, data, placa: placa || undefined } }).then(r => comDados(r, d => {
-      const m = comoObjeto<BoletoMontagem>(d, ['fontes', 'faltando'], 'boleto montado')
-      m.boleto = comoObjeto(m.boleto ?? {}, ['campos', 'avisos'], 'boleto montado')
-      m.impedeEmitir = Array.isArray(m.impedeEmitir) ? m.impedeEmitir : ['A API não disse se dá para emitir.']
-      return m
-    })),
+  // caixas: CD, as caixas de produtoD digitadas (sem informar = as do romaneio)
+  montarAReceber: (cliente: ClienteReceber, data: string, placa?: string | null, caixas?: number | null) =>
+    api.get(`${base}/receber/montar`, { params: { cliente, data, placa: placa || undefined, caixas: caixas ?? undefined } })
+      .then(r => comDados(r, d => comoMontagem(d))),
+  // Configuração da emissão (BOL-12): uma por cliente; só o dono salva
+  configEmissao: () => api.get(`${base}/receber/config-emissao`).then(r => comDados(r, d =>
+    comoObjeto<ListaConfigEmissao>(d, ['clientes'], 'configuração da emissão'))),
+  gravarConfigEmissao: (c: ConfigEmissao) => api.put(`${base}/receber/config-emissao`, c).then(r => comDados(r, d =>
+    comoObjeto<ListaConfigEmissao>(d, ['clientes'], 'configuração da emissão'))),
+  // Cargas dos últimos 30 dias sem boleto, já montadas (nada vai ao Sicoob)
+  paraEmitirAReceber: (cliente: ClienteReceber) =>
+    api.get(`${base}/receber/para-emitir`, { params: { cliente } }).then(r => comDados(r, d =>
+      comoLista<CargaParaEmitir>(d, 'cargas para emitir').map(c => ({ ...c, montagem: comoMontagem(c.montagem) })))),
   // Cobrança REAL no Sicoob: só depois da confirmação do Admin para este boleto
-  emitirAReceber: (d: { cliente: ClienteReceber; data: string; placa: string | null; valor: number; vencimento: string }) =>
+  emitirAReceber: (d: { cliente: ClienteReceber; data: string; placa: string | null; valor: number; vencimento: string; caixas?: number | null }) =>
     api.post<BoletoEmitido>(`${base}/receber/emitir`, { ...d, confirmado: true }).then(r => r.data),
   baixarAReceber: (b: Pick<BoletoReceber, 'id' | 'nomeArquivo'>) =>
     baixar(`${base}/receber/${b.id}/pdf`, b.nomeArquivo || 'BOLETO.pdf'),
+}
+
+function comoMontagem(d: unknown): BoletoMontagem {
+  const m = comoObjeto<BoletoMontagem>(d ?? {}, ['fontes', 'faltando'], 'boleto montado')
+  m.boleto = comoObjeto(m.boleto ?? {}, ['campos', 'avisos'], 'boleto montado')
+  m.impedeEmitir = Array.isArray(m.impedeEmitir) ? m.impedeEmitir : ['A API não disse se dá para emitir.']
+  return m
+}
+
+export interface CargaParaEmitir {
+  cliente: ClienteReceber; data: string; placa: string | null; arquivo: string | null; montagem: BoletoMontagem
 }
 
 export interface BoletoEmitido {
@@ -210,4 +248,6 @@ export interface BoletoMontagem {
   comparacao: DiferencaMontado[] | null
   sequencia: number; nomeArquivo: string
   impedeEmitir: string[]   // vazio = pode emitir no Sicoob
+  caixas: number | null; caixasRomaneio: number | null   // CD: caixas usadas no valor e as do romaneio
+  jaTemBoleto: boolean
 }

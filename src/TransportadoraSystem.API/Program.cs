@@ -349,6 +349,7 @@ app.MapGet("/health/tabelas", async (AppDbContext db) =>
         "FechamentosMensais", "FechamentoDespesas", "FechamentoCreditos", "FechamentoVales", "Consorcios",
         "DespesasDivididasLinhas", "DespesasDivididasSocios", "DespesasDivididasPlacas", "PlacasFrota", "MotoristasCnhPdf",
         "AgrotradeViagens", "StradaFaturas", "StradaContratos", "StradaArquivos",
+        "ConfigEmissaoBoleto",
     ];
 
     try

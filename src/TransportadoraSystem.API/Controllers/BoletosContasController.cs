@@ -291,15 +291,84 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
     // ao banco nem ao Sicoob). Se o boleto da carga já foi feito, compara.
     [HttpGet("receber/montar")]
     public async Task<IActionResult> MontarAReceber([FromQuery] string? cliente, [FromQuery] DateOnly? data,
-        [FromQuery] string? placa, [FromServices] BoletoMontagemService montagem)
+        [FromQuery] string? placa, [FromQuery] decimal? caixas, [FromServices] BoletoMontagemService montagem)
     {
         var c = (cliente ?? "").Trim().ToUpperInvariant();
         if (!BoletoReceberLeitor.Clientes.Contains(c)) return BadRequest(new { erro = "Escolha o cliente: CD ou Girassol." });
         if (data == null) return BadRequest(new { erro = "Informe a data da carga." });
-        return Ok(await montagem.Montar(c, data.Value, placa));
+        if (caixas is <= 0) return BadRequest(new { erro = "Informe as caixas de produtoD (mais que zero)." });
+        return Ok(await montagem.Montar(c, data.Value, placa, c == BoletoReceberLeitor.Perfil ? null : caixas));
     }
 
-    public record EmitirPedido(string? Cliente, DateOnly? Data, string? Placa, decimal? Valor, DateOnly? Vencimento, bool Confirmado);
+    // Cargas dos últimos 30 dias ainda sem boleto, já montadas (lista "Para emitir"; nada vai ao Sicoob)
+    [HttpGet("receber/para-emitir")]
+    public async Task<IActionResult> ParaEmitirAReceber([FromQuery] string? cliente, [FromServices] BoletoMontagemService montagem)
+    {
+        var c = (cliente ?? "").Trim().ToUpperInvariant();
+        if (!BoletoReceberLeitor.Clientes.Contains(c)) return BadRequest(new { erro = "Escolha o cliente: CD ou Girassol." });
+        return Ok(await montagem.ParaEmitir(c, Hoje()));
+    }
+
+    // ── Configuração da emissão (BOL-12): uma linha por cliente; sem ela valem os valores do BOL-11 ──
+    public record ConfigEmissaoDto(string? Cliente, int DiasVencimento, string? PagadorNome, string? PagadorCnpj,
+        string? PagadorEndereco, string? PagadorBairro, string? PagadorCidade, string? PagadorUf, string? PagadorCep,
+        decimal PrecoCaixaProdutoD, decimal MultaPct, decimal JurosMes, string? Instrucao3, bool Pix);
+
+    private static ConfigEmissaoDto Dto(BoletoMontador.Config c) => new(c.Cliente, c.DiasVencimento,
+        c.Pagador.Nome, c.Pagador.Cnpj, c.Pagador.Endereco, c.Pagador.Bairro, c.Pagador.Cidade, c.Pagador.Uf, c.Pagador.Cep,
+        c.PrecoCaixaProdutoD, c.MultaPct, c.JurosMes, c.Instrucao3, c.Pix);
+
+    [HttpGet("receber/config-emissao")]
+    public async Task<IActionResult> ConfigEmissao([FromServices] BoletoMontagemService montagem)
+    {
+        var lista = new List<object>();
+        foreach (var c in new[] { BoletoReceberLeitor.Perfil, BoletoReceberLeitor.Cd })
+        {
+            var (regras, aviso) = await montagem.Regras(c);
+            lista.Add(new { config = Dto(regras), aviso });
+        }
+        return Ok(new { clientes = lista, podeSalvar = User.FindFirst(AuthService.ClaimDono)?.Value == "true" });
+    }
+
+    /// <summary>Grava a configuração de um cliente (só o dono). Valida tudo antes; nada vai ao Sicoob.</summary>
+    [HttpPut("receber/config-emissao")]
+    public async Task<IActionResult> GravarConfigEmissao([FromBody] ConfigEmissaoDto req, [FromServices] BoletoMontagemService montagem)
+    {
+        if (User.FindFirst(AuthService.ClaimDono)?.Value != "true")
+            return StatusCode(StatusCodes.Status403Forbidden, new { erro = "Só o dono pode mudar a configuração da emissão." });
+        var c = (req.Cliente ?? "").Trim().ToUpperInvariant();
+        if (!BoletoReceberLeitor.Clientes.Contains(c)) return BadRequest(new { erro = "Escolha o cliente: CD ou Girassol." });
+        static string T(string? s) => (s ?? "").Trim();
+        var cfg = new BoletoMontador.Config(c, req.DiasVencimento,
+            new(T(req.PagadorNome), T(req.PagadorCnpj), T(req.PagadorEndereco), T(req.PagadorBairro), T(req.PagadorCidade),
+                T(req.PagadorUf).ToUpperInvariant(), T(req.PagadorCep)),
+            Math.Round(req.PrecoCaixaProdutoD, 2), Math.Round(req.MultaPct, 2), Math.Round(req.JurosMes, 2), T(req.Instrucao3), req.Pix);
+        var erros = BoletoMontador.Validar(cfg);
+        if (erros.Count > 0) return BadRequest(new { erro = string.Join(" ", erros) });
+
+        var reg = await db.ConfigEmissaoBoleto.FirstOrDefaultAsync(x => x.Cliente == c);
+        if (reg == null) db.ConfigEmissaoBoleto.Add(reg = new ConfigEmissaoBoleto { Cliente = c });
+        reg.DiasVencimento = cfg.DiasVencimento;
+        reg.PagadorNome = cfg.Pagador.Nome;
+        reg.PagadorCnpj = cfg.Pagador.Cnpj;
+        reg.PagadorEndereco = cfg.Pagador.Endereco ?? "";
+        reg.PagadorBairro = cfg.Pagador.Bairro ?? "";
+        reg.PagadorCidade = cfg.Pagador.Cidade ?? "";
+        reg.PagadorUf = cfg.Pagador.Uf ?? "";
+        reg.PagadorCep = cfg.Pagador.Cep ?? "";
+        reg.PrecoCaixaProdutoD = cfg.PrecoCaixaProdutoD;
+        reg.MultaPct = cfg.MultaPct;
+        reg.JurosMes = cfg.JurosMes;
+        reg.Instrucao3 = cfg.Instrucao3;
+        reg.Pix = cfg.Pix;
+        reg.AtualizadoEm = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+        logger.LogInformation("Configuração da emissão de boleto {Cliente} alterada", c);
+        return await ConfigEmissao(montagem);
+    }
+
+    public record EmitirPedido(string? Cliente, DateOnly? Data, string? Placa, decimal? Valor, DateOnly? Vencimento, bool Confirmado,
+        decimal? Caixas = null);
 
     // Emite no Sicoob o boleto montado (cobrança REAL, BOL-10). A tela confirma a cada boleto e manda
     // o valor e o vencimento que o Admin viu; se a montagem mudou, ou a carga já tem boleto, não emite.
@@ -312,7 +381,9 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
         if (req.Data == null || req.Valor == null || req.Vencimento == null)
             return BadRequest(new { erro = "Informe a data da carga, o valor e o vencimento conferidos." });
         if (!req.Confirmado) return BadRequest(new { erro = "Confirme a emissão do boleto." });
-        var r = await emissao.Emitir(new(c, req.Data.Value, req.Placa, req.Valor.Value, req.Vencimento.Value), ct);
+        if (req.Caixas is <= 0) return BadRequest(new { erro = "Informe as caixas de produtoD (mais que zero)." });
+        var r = await emissao.Emitir(new(c, req.Data.Value, req.Placa, req.Valor.Value, req.Vencimento.Value,
+            c == BoletoReceberLeitor.Perfil ? null : req.Caixas), ct);
         if (r.Erro != null)
             return r.Incerto ? StatusCode(StatusCodes.Status502BadGateway, new { erro = r.Erro, r.Id, incerto = true })
                              : UnprocessableEntity(new { erro = r.Erro });

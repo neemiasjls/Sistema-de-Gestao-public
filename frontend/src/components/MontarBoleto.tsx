@@ -10,7 +10,7 @@ import { useConfirmar } from './ui/Confirmar'
 import { boletosContasApi as api, type BoletoEmitido, type BoletoMontagem, type ClienteReceber } from '../services/boletosContasApi'
 import { formatBRL } from '../services/api'
 import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
-import { dataBr } from '../utils/formato'
+import { dataBr, lerNum } from '../utils/formato'
 
 // O sistema monta o boleto a receber com as regras do Sicoob (BOL-11), para conferir
 // com o que foi feito à mão. Montar não grava nada; "Emitir no Sicoob" registra a cobrança
@@ -39,17 +39,34 @@ export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, plac
   const [emitindo, setEmitindo] = useState(false)
   const [emitido, setEmitido] = useState<BoletoEmitido | null>(null)
   const confirmar = useConfirmar()
-  // A data e a placa que valem são as da última montagem (o que está na tela), não o que foi digitado depois
-  const [montado, setMontado] = useState({ data: dataInicial, placa: placaInicial ?? '' })
+  // CD: caixas de produtoD (vêm do romaneio; ele pode corrigir antes de emitir)
+  const [caixas, setCaixas] = useState('')
+  // A data, a placa e as caixas que valem são as da última montagem (o que está na tela), não o que foi digitado depois
+  const [montado, setMontado] = useState<{ data: string; placa: string; caixas: number | null }>({ data: dataInicial, placa: placaInicial ?? '', caixas: null })
+  const ehCd = cliente === 'CD'
 
-  const montar = useCallback(async (d: string, p: string) => {
+  const montar = useCallback(async (d: string, p: string, cx: number | null = null) => {
     if (!d) return
     setCarregando(true); setErro(null)
-    try { setRes((await api.montarAReceber(cliente, d, p)).data); setMontado({ data: d, placa: p }) }
+    try {
+      const m = (await api.montarAReceber(cliente, d, p, cx)).data
+      setRes(m); setMontado({ data: d, placa: p, caixas: m.caixas })
+      setCaixas(m.caixas != null ? String(m.caixas).replace('.', ',') : '')
+    }
     catch (e) { setRes(null); setErro(await erroApi(e, 'Não consegui montar o boleto.')) }
     finally { setCarregando(false) }
   }, [cliente])
   useEffect(() => { montar(dataInicial, placaInicial ?? '') }, [montar, dataInicial, placaInicial])
+
+  // Caixas digitadas valem só na mesma carga; trocou a data, valem as do romaneio novo
+  const caixasDigitadas = ehCd && caixas.trim() !== '' ? lerNum(caixas) : null
+  const montarDoForm = () => {
+    const mesmaCarga = data === montado.data
+    montar(data, placa, mesmaCarga && caixasDigitadas != null && caixasDigitadas > 0 ? caixasDigitadas : null)
+  }
+  const caixasMudaram = ehCd && res?.caixas != null && caixasDigitadas !== res.caixas
+  // Preço da caixa tirado da própria montagem (valor ÷ caixas), para mostrar a conta enquanto ele digita
+  const precoCaixa = res?.caixas && res.boleto.valor != null ? res.boleto.valor / res.caixas : null
 
   const grupos = res ? [...new Set(res.boleto.campos.map(c => c.grupo))] : []
   const avisos = res ? [...res.faltando, ...res.boleto.avisos] : []
@@ -66,6 +83,13 @@ export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, plac
           <p className="font-medium text-red-800">Cobrança real: o boleto fica registrado no banco para o cliente pagar.</p>
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
             <dt className="text-gray-600">Pagador</dt><dd className="text-gray-900">{b.pagador.nome} · {b.pagador.cnpj}</dd>
+            {ehCd && res.caixas != null && (<>
+              <dt className="text-gray-600">Caixas de produtoD</dt>
+              <dd className="text-gray-900 tabular-nums">
+                {String(res.caixas).replace('.', ',')}
+                {res.caixasRomaneio != null && res.caixasRomaneio !== res.caixas && ` (o romaneio tem ${String(res.caixasRomaneio).replace('.', ',')})`}
+              </dd>
+            </>)}
             <dt className="text-gray-600">Valor</dt><dd className="text-gray-900 font-semibold tabular-nums">{formatBRL(b.valor!)}</dd>
             <dt className="text-gray-600">Vencimento</dt><dd className="text-gray-900 tabular-nums">{dataBr(b.vencimento)}</dd>
             <dt className="text-gray-600">Carga</dt><dd className="text-gray-900">{dataBr(b.emissao)} · {b.placa} · seu número {b.seuNumero}</dd>
@@ -78,7 +102,8 @@ export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, plac
     if (!ok) return
     setEmitindo(true)
     try {
-      const r = await api.emitirAReceber({ cliente, data: montado.data, placa: montado.placa || null, valor: b.valor!, vencimento: b.vencimento })
+      const r = await api.emitirAReceber({ cliente, data: montado.data, placa: montado.placa || null, valor: b.valor!, vencimento: b.vencimento,
+                                              caixas: ehCd ? montado.caixas : null })
       setEmitido(r)
       toast.success(`Boleto emitido no Sicoob: nosso número ${r.nossoNumero}.`)
       onEmitido?.()
@@ -87,23 +112,36 @@ export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, plac
       onEmitido?.()   // emissão sem resposta fica gravada "a conferir": a lista precisa mostrar
     } finally {
       setEmitindo(false)
-      montar(montado.data, montado.placa)
+      montar(montado.data, montado.placa, montado.caixas)
     }
   }
 
   return (
     <Modal titulo={`Montar boleto · ${rotuloCliente}`} onClose={onClose} largura="xl" fecharFora
            descricao="Montar só mostra. Emitir no Sicoob registra a cobrança, com confirmação.">
-      <form className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 sm:items-end"
-            onSubmit={e => { e.preventDefault(); montar(data, placa) }}>
+      <form className={`grid grid-cols-1 gap-3 sm:items-end ${ehCd ? 'sm:grid-cols-[1fr_1fr_auto_auto]' : 'sm:grid-cols-[1fr_1fr_auto]'}`}
+            onSubmit={e => { e.preventDefault(); montarDoForm() }}>
         <Campo rotulo="Data da carga"><input type="date" value={data} onChange={e => setData(e.target.value)} className={inputCls} data-nao-suja /></Campo>
         <Campo rotulo="Caminhão (se houver mais de uma carga no dia)">
           <input value={placa} onChange={e => setPlaca(e.target.value)} className={inputCls} placeholder="Sem preencher: o da carga" data-nao-suja />
         </Campo>
+        {ehCd && (
+          <Campo rotulo="Caixas de produtoD">
+            <input value={caixas} onChange={e => setCaixas(e.target.value)} inputMode="decimal" className={`${inputCls} sm:w-32`}
+                   placeholder="Do romaneio" data-nao-suja />
+          </Campo>
+        )}
         <Botao type="submit" variante="primario" carregando={carregando}>Montar</Botao>
       </form>
+      {caixasMudaram && (
+        <p className="text-sm text-amber-800 mt-2">
+          {caixasDigitadas != null && caixasDigitadas > 0
+            ? <>{String(caixasDigitadas).replace('.', ',')} caixas{precoCaixa ? ` × ${formatBRL(precoCaixa)} = ${formatBRL(Math.round(caixasDigitadas * precoCaixa * 100) / 100)}` : ''}. Toque em Montar para recalcular o boleto antes de emitir.</>
+            : 'Digite as caixas de produtoD (mais que zero) e toque em Montar.'}
+        </p>
+      )}
 
-      {erro ? <ErroCarga mensagem={erro} onTentar={() => montar(data, placa)} />
+      {erro ? <ErroCarga mensagem={erro} onTentar={montarDoForm} />
         : !res ? <Carregando linhas={6} rotulo="Montando o boleto" />
         : (
           <div className="space-y-4">
@@ -142,7 +180,7 @@ export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, plac
                   </p>
                 </div>
                 <Botao variante="primario" icone={Landmark} carregando={emitindo} onClick={emitir}
-                       disabled={carregando || emitindo}>Emitir no Sicoob</Botao>
+                       disabled={carregando || emitindo || caixasMudaram}>Emitir no Sicoob</Botao>
               </section>
             )}
 

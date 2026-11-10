@@ -887,8 +887,9 @@ public class NFeImportService
     public PlanilhasResult GerarPlanilhas(IEnumerable<string> xmls, int qtdProdutosDCedro = 0,
         Dictionary<string, int>? numeros = null, double caixasProdutoE = 0,
         IReadOnlyDictionary<string, string>? escritas = null, IEnumerable<CorrecaoTipo>? correcoes = null,
-        int produtosCBrz = 0, double precoProdutoCBrz = PrecoProdutoCPadrao)
+        int produtosCBrz = 0, double precoProdutoCBrz = PrecoProdutoCPadrao, decimal precoProdutoDCedro = PrecoCaixaProdutoDCedro)
     {
+        precoProdutoD = precoProdutoDCedro > 0 ? precoProdutoDCedro : PrecoCaixaProdutoDCedro;
         var result = new PlanilhasResult();
         var nfes = new List<NFeData>();
         foreach (var xml in xmls)
@@ -1003,6 +1004,8 @@ public class NFeImportService
     public const double PrecoProdutoCPadrao = 22.00;
     // Caixa de produtoD da Cedro no romaneio (Admin, 20/10/2026: era 115)
     public const decimal PrecoCaixaProdutoDCedro = 120m;
+    // Preço da caixa de produtoD desta geração: o da aba Sicoob → Emissão de boletos (BOL-12), padrão 120
+    private decimal precoProdutoD = PrecoCaixaProdutoDCedro;
 
     private (byte[] Bytes, List<string> SemLinha) PreencherTemplate(GrupoCliente grupo, string templateKey,
         string apelido, int qtdProdutosD, int produtosC = 0, double precoProdutoC = PrecoProdutoCPadrao)
@@ -1089,7 +1092,7 @@ public class NFeImportService
         linhas.AddRange(produtosDNota.Select(i => (i.Nome, (double?)i.QCom, (double?)i.VUnCom)));
         // As produtosD da Cedro não vêm na nota (NFE-03): linha fixa, digitada na tela
         if (templateKey == "CEDRO")
-            linhas.Add(("ProdutosD", qtdProdutosD > 0 ? qtdProdutosD : null, qtdProdutosD > 0 ? (double)PrecoCaixaProdutoDCedro : null));
+            linhas.Add(("ProdutosD", qtdProdutosD > 0 ? qtdProdutosD : null, qtdProdutosD > 0 ? (double)precoProdutoD : null));
         linhas.Add(("Embal.Amar.", null, null));
         linhas.Add(("Embal.Branca", null, null));
         linhas.Add(("ProdutosC", produtosC > 0 ? produtosC : null, produtosC > 0 ? precoProdutoC : null));
@@ -1202,7 +1205,7 @@ public class NFeImportService
         catch { }
 
         // Boleto text — preenche B e G (lado direito)
-        var boletoTxt = CalcularBoletosTexto(grupo, apelido, qtdProdutosD, valorAPagar);
+        var boletoTxt = CalcularBoletosTexto(grupo, apelido, qtdProdutosD, valorAPagar, precoProdutoD);
         foreach (var row in ws.RowsUsed())
         {
             var cellB = row.Cell(2);
@@ -1220,7 +1223,8 @@ public class NFeImportService
         return (output.ToArray(), semLinha);
     }
 
-    private static string CalcularBoletosTexto(GrupoCliente grupo, string apelido, int qtdProdutosD, decimal? valorAPagar)
+    private static string CalcularBoletosTexto(GrupoCliente grupo, string apelido, int qtdProdutosD, decimal? valorAPagar,
+        decimal precoProdutoD)
     {
         var estilo = BoletoEstilo.GetValueOrDefault(apelido, "por_nf");
         var nfs = grupo.NFs.OrderBy(n => n.NF).ToList();
@@ -1240,7 +1244,7 @@ public class NFeImportService
         }
         else // metade_cod
         {
-            var valorCod = qtdProdutosD * PrecoCaixaProdutoDCedro;
+            var valorCod = qtdProdutosD * precoProdutoD;
             decimal boletoVolumes;
             if (valorAPagar.HasValue) boletoVolumes = Math.Round((valorAPagar.Value - valorCod) / 2, 2);
             else { var tn = nfs.Sum(n => n.VNF ?? 0m); var tf = nfs.Sum(n => n.Funrural ?? 0m); boletoVolumes = Math.Round((tn - tf - valorCod) / 2, 2); }

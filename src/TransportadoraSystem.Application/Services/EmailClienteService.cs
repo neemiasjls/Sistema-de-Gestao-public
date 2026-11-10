@@ -209,10 +209,10 @@ public class EmailClienteService(AppDbContext db, EmailService email)
             var emitidos = await db.BoletosReceber.AsNoTracking()
                 .Where(b => b.Cliente == cr && b.DataCarga == data && b.Pdf != null)
                 .OrderBy(b => b.Id)
-                .Select(b => new { b.Id, b.NomeArquivo, b.Pdf, b.Valor, b.Vencimento, b.NossoNumero })
+                .Select(b => new { b.Id, b.NomeArquivo, b.Pdf, b.Valor, b.Vencimento, b.NossoNumero, b.LinhaDigitavel })
                 .ToListAsync();
             if (emitidos.Count == 0)
-                faltando.Add("Boleto das produtosD não encontrado — suba em Boletos → A receber.");
+                faltando.Add($"Boleto das produtosD não encontrado — {OndeEmitir}");
             if (emitidos.Count > 1)
                 avisos.Add($"{emitidos.Count} boletos das produtosD com a carga de {dataBr}; confira quais vão.");
             foreach (var b in emitidos)
@@ -220,7 +220,8 @@ public class EmailClienteService(AppDbContext db, EmailService email)
                 if (b.Valor is decimal valorEmitido) valoresEmitidos.Add(Math.Round(valorEmitido, 2));
                 var desc = "Boleto das produtosD" +
                     (b.Valor is decimal v ? $": {v.ToString("C", PtBr)}" : "") +
-                    (b.Vencimento is DateOnly ve ? $", vence {ve:dd/MM/yyyy}" : "");
+                    (b.Vencimento is DateOnly ve ? $", vence {ve:dd/MM/yyyy}" : "") +
+                    (string.IsNullOrWhiteSpace(b.LinhaDigitavel) ? "" : MarcaEmitido);
                 pecas.Add(new Peca($"produtosD-{b.Id}", NomeOuPadrao(b.NomeArquivo, $"BOLETO PRODUTOSD {data:dd-MM}.pdf"),
                     TipoBoletoProdutosD, desc, b.Pdf!, true));
             }
@@ -248,7 +249,12 @@ public class EmailClienteService(AppDbContext db, EmailService email)
     private const int DiasSugestao = 10;
 
     private record BoletoFrete(int Id, string NomeArquivo, byte[]? Pdf, decimal? Valor, DateOnly? Vencimento,
-        string NossoNumero, string Placa, DateOnly? DataCarga, int? Sequencia);
+        string NossoNumero, string Placa, DateOnly? DataCarga, int? Sequencia, string LinhaDigitavel);
+
+    // Boleto que falta: o caminho é emitir pelo painel (BOL-13); subir o PDF continua valendo
+    private const string OndeEmitir = "emita em Boletos → A receber → Para emitir (ou suba o PDF em Boletos → A receber).";
+    // Só a emissão pelo sistema (BoletoEmissaoService) grava a linha digitável
+    private const string MarcaEmitido = " · emitido pelo sistema";
 
     private async Task<Montagem> MontarFrete(Cliente c, DateOnly data)
     {
@@ -298,14 +304,15 @@ public class EmailClienteService(AppDbContext db, EmailService email)
             .Where(b => b.Cliente == c.ClienteBoletoReceber && b.Pdf != null && b.DataCarga != null
                         && b.DataCarga >= data.AddDays(-DiasSugestao) && b.DataCarga <= data.AddDays(DiasSugestao))
             .OrderBy(b => b.DataCarga).ThenBy(b => b.Id)
-            .Select(b => new BoletoFrete(b.Id, b.NomeArquivo, b.Pdf, b.Valor, b.Vencimento, b.NossoNumero, b.Placa, b.DataCarga, b.Sequencia))
+            .Select(b => new BoletoFrete(b.Id, b.NomeArquivo, b.Pdf, b.Valor, b.Vencimento, b.NossoNumero, b.Placa, b.DataCarga, b.Sequencia, b.LinhaDigitavel))
             .ToListAsync();
 
         string Descricao(BoletoFrete b) =>
             $"Boleto do frete {(b.Sequencia is int s ? s + " " : "")}({b.NossoNumero}), carga de {b.DataCarga:dd/MM/yyyy}" +
             (string.IsNullOrWhiteSpace(b.Placa) ? "" : $" ({b.Placa})") +
             (b.Valor is decimal v ? $": {v.ToString("C", PtBr)}" : "") +
-            (b.Vencimento is DateOnly ve ? $", vence {ve:dd/MM/yyyy}" : "");
+            (b.Vencimento is DateOnly ve ? $", vence {ve:dd/MM/yyyy}" : "") +
+            (string.IsNullOrWhiteSpace(b.LinhaDigitavel) ? "" : MarcaEmitido);
 
         var exatos = emitidos.Where(b => b.DataCarga == data).ToList();
         // Mais de um boleto no dia: o da placa do relatório vai; os outros ficam para marcar
@@ -329,7 +336,7 @@ public class EmailClienteService(AppDbContext db, EmailService email)
 
         if (exatos.Count == 0)
         {
-            faltando.Add($"Boleto da Girassol da carga de {dataBr}{(placa != "" ? $" ({placa})" : "")} não encontrado — suba em Boletos → A receber ou solte no Acerto Alfa.");
+            faltando.Add($"Boleto da Girassol da carga de {dataBr}{(placa != "" ? $" ({placa})" : "")} não encontrado — {OndeEmitir}");
             // Os de cargas vizinhas sem relatório próprio podem ser este com a data trocada
             foreach (var b in emitidos.Where(b => !diasComRelatorio.Contains(b.DataCarga!.Value)))
             {

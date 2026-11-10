@@ -296,49 +296,6 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
         }
     }
 
-    public record TestePermissao(bool Funciona, int? Status, string Explicacao, List<string> Mensagens);
-
-    /// <summary>
-    /// TEMPORÁRIO (etapa 1 do plano montar-boleto): POST /boletos propositalmente incompleto (sem valor, vencimento
-    /// nem pagador), que o banco não tem como registrar. 400/406 com mensagens de campo = inclusão liberada;
-    /// 401/403 = não liberada. Tirar depois do teste.
-    /// </summary>
-    public async Task<TestePermissao> TestarPermissaoEmissaoAsync(CancellationToken ct = default)
-    {
-        if (FaltaConfigurar() is { } falta) return new(false, null, falta, []);
-        if (NumeroCliente == null || !long.TryParse(NumeroCliente, out var numeroCliente))
-            return new(false, null, "Falta Sicoob__NumeroCliente no Render.", []);
-        var (token, erroToken) = await TokenAsync(ct, EscoposCobranca);
-        if (token == null) return new(false, null, "O Sicoob recusou o token da Cobrança: " + erroToken, []);
-        var corpo = JsonSerializer.Serialize(new { numeroCliente, codigoModalidade = 1 });
-        try
-        {
-            using var req = new HttpRequestMessage(HttpMethod.Post, $"{UrlCobranca}/boletos")
-            {
-                Content = new StringContent(corpo, System.Text.Encoding.UTF8, "application/json"),
-            };
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            req.Headers.Add("client_id", ClientId);
-            using var resp = await http.SendAsync(req, ct);
-            var texto = await resp.Content.ReadAsStringAsync(ct);
-            var st = (int)resp.StatusCode;
-            log.LogWarning("Sicoob teste de emissão: {Status} {Corpo}", st, Curto(texto));
-            var msgs = MensagensSicoob(texto);
-            if (msgs.Count == 0 && texto.Length > 0) msgs.Add(Curto(texto));
-            return st switch
-            {
-                400 or 406 or 422 => new(true, st, "Funciona: o Sicoob aceitou o acesso e só recusou o pedido incompleto (nenhum boleto criado).", msgs),
-                401 or 403 => new(false, st, "Não funciona: o Sicoob recusou o acesso à emissão (permissão boletos_inclusao não liberada).", msgs),
-                >= 200 and < 300 => new(true, st, "ATENÇÃO: o Sicoob aceitou o pedido incompleto; confira no Sicoobnet.", msgs),
-                _ => new(false, st, $"Inconclusivo: o Sicoob respondeu {st}.", msgs),
-            };
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-        {
-            return new(false, null, "Não consegui falar com o Sicoob: " + ex.Message, []);
-        }
-    }
-
     private static List<string> MensagensSicoob(string corpo)
     {
         var l = new List<string>();

@@ -18,7 +18,8 @@ public class BoletoEmissaoService(AppDbContext db, BoletoMontagemService montage
     // A API roda numa instância só: a trava impede o duplo clique de emitir duas vezes
     private static readonly SemaphoreSlim Trava = new(1, 1);
 
-    public record Pedido(string Cliente, DateOnly Data, string? Placa, decimal Valor, DateOnly Vencimento);
+    // Caixas: CD, as caixas de produtoD confirmadas (nulo = as do romaneio); o valor é recalculado com elas
+    public record Pedido(string Cliente, DateOnly Data, string? Placa, decimal Valor, DateOnly Vencimento, decimal? Caixas = null);
 
     public record Resultado(int? Id, string? NossoNumero, string? LinhaDigitavel, string? NomeArquivo, bool TemPdf,
         string? Erro, bool Incerto);
@@ -34,7 +35,7 @@ public class BoletoEmissaoService(AppDbContext db, BoletoMontagemService montage
 
     private async Task<Resultado> EmitirTravado(Pedido p, CancellationToken ct)
     {
-        var m = await montagem.Montar(p.Cliente, p.Data, p.Placa);
+        var m = await montagem.Montar(p.Cliente, p.Data, p.Placa, p.Caixas);
         var b = m.Boleto;
         if (m.ImpedeEmitir.Count > 0) return Falha("Não dá para emitir: " + string.Join(" ", m.ImpedeEmitir));
         if (b.Valor is not decimal valor || Math.Abs(valor - p.Valor) >= 0.005m || b.Vencimento != p.Vencimento)
