@@ -3,17 +3,6 @@ import { comDados, comoObjeto } from '../utils/resposta'
 
 // Extrato da conta PJ no Sicoob, lido pela API do banco (só consulta)
 
-export interface BoletoSugerido {
-  id: number
-  cliente: 'CD' | 'GIRASSOL'
-  rotulo: string
-  nossoNumero: string
-  valor: number
-  vencimento: string | null
-  dataCarga: string | null
-  placa: string
-}
-
 export interface LancamentoSicoob {
   id: string
   data: string | null
@@ -23,16 +12,14 @@ export interface LancamentoSicoob {
   documento: string
   cpfCnpj: string
   complemento: string
-  jaMarcado: { id: number; cliente: string; rotulo: string; nossoNumero: string; dataCarga: string | null } | null
-  sugestoes: BoletoSugerido[]
   pix: PixAchado | null
 }
 
 // Pix de cliente que bate com boletos a receber em aberto (BOL-14)
 export interface PixAchado {
   cliente: 'CD' | 'GIRASSOL' | null
-  pagador: string | null      // nome da configuração da emissão; null = o banco não informou o CNPJ
-  semCnpj: boolean
+  pagador: string | null      // nome da configuração da emissão
+  semCnpj: boolean            // o banco não informou o CNPJ: achado pelo nome do pagador escrito no Pix
   certo: boolean
   duvida: boolean
   maisOpcoes: boolean
@@ -195,7 +182,7 @@ export const sicoobApi = {
     api.get('/api/sicoob/extrato', { params: { inicio, fim } }).then(r => comDados(r, d => {
       const e = comoObjeto<ExtratoSicoob>(d, ['lancamentos'], 'extrato do Sicoob')
       e.lancamentos = e.lancamentos.map(l => {
-        const x = comoObjeto<LancamentoSicoob>(l, ['sugestoes'], 'lançamento')
+        const x = comoObjeto<LancamentoSicoob>(l, [], 'lançamento')
         x.pix = x.pix ? comoObjeto<PixAchado>(x.pix, ['opcoes', 'jaRecebidos'], 'Pix do lançamento') : null
         return x
       })

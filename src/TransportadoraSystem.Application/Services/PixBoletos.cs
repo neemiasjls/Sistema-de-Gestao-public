@@ -7,8 +7,9 @@ namespace TransportadoraSystem.Application.Services;
 /// CPF/CNPJ do pagador é o de um cliente (CD/Perfil, configuração da emissão; só dígitos), acha entre os
 /// boletos a receber em aberto DELE um de mesmo valor ou a combinação cuja soma bata (centavos exatos).
 /// Entram também os vencidos, pelo valor de face, sem alerta (atraso pago por Pix é normal). Mais de uma
-/// combinação = mostra as opções e não escolhe. Pix sem CNPJ no extrato: busca só pela soma em todos os
-/// clientes e a tela avisa (UI-04). "CRÉD.LIQUIDAÇÃO COBRANÇA" não é Pix (é a ConferenciaCobranca).
+/// combinação = mostra as opções e não escolhe. Pix sem CNPJ no extrato: vale o nome do pagador escrito no Pix
+/// (SemCnpj = achado pelo nome, a tela avisa); sem nome de cliente, fica de fora. Nunca só pelo valor.
+/// "CRÉD.LIQUIDAÇÃO COBRANÇA" não é Pix (é a ConferenciaCobranca).
 /// </summary>
 public static class PixBoletos
 {
@@ -50,6 +51,33 @@ public static class PixBoletos
         return m.Success ? Digitos(m.Value) : "";
     }
 
+    // Nome só com letras e números, sem acento: "G.F. DE FONTES FILHO" e "G F DE FONTES FILHO" ficam iguais
+    private static string Compacto(string? s) =>
+        new(new string((s ?? "").Normalize(System.Text.NormalizationForm.FormD)
+                .Where(ch => System.Globalization.CharUnicodeInfo.GetUnicodeCategory(ch) != System.Globalization.UnicodeCategory.NonSpacingMark)
+                .ToArray())
+            .ToUpperInvariant().Where(char.IsLetterOrDigit).ToArray());
+
+    /// <summary>
+    /// Cliente pelo NOME do pagador escrito no Pix ("Recebimento Pix|@NOME|@CNPJ|@..."), quando o banco não traz o CNPJ.
+    /// Vale o nome da configuração da emissão, inteiro ou cortado pelo banco (um começa com o outro, 10+ letras).
+    /// </summary>
+    public static Cliente? ClientePeloNome(Pix p, IReadOnlyList<Cliente> clientes)
+    {
+        foreach (var parte in (p.Descricao + "|" + p.Complemento).Split('|'))
+        {
+            var nome = Compacto(parte.Trim().TrimStart('@'));
+            if (nome.Length < 10) continue;
+            var c = clientes.FirstOrDefault(c =>
+            {
+                var cfg = Compacto(c.Nome);
+                return cfg.Length >= 10 && (nome.StartsWith(cfg, StringComparison.Ordinal) || cfg.StartsWith(nome, StringComparison.Ordinal));
+            });
+            if (c != null) return c;
+        }
+        return null;
+    }
+
     /// <summary>
     /// Quantos boletos em aberto do cliente, mais antigos que o último da combinação, ela deixa de fora. O cliente
     /// paga os que estão para vencer e às vezes alguns adiantados, mas não pula os mais antigos (Admin, BOL-14).
@@ -67,20 +95,13 @@ public static class PixBoletos
         var achados = new List<Achado>();
         foreach (var p in pixes.Where(p => p.Valor > 0 && EhPix(p.Descricao, p.Complemento)).OrderBy(p => p.Data).ThenBy(p => p.Id))
         {
+            // Só pelo pagador (Admin, 10/11/2026): CNPJ do Pix; sem CNPJ, o nome escrito no Pix. Pix de quem não é
+            // cliente de boleto, ou sem como saber quem pagou, fica de fora (nada de casar só pelo valor)
             var doc = DocumentoDoPix(p);
             var semCnpj = doc.Length == 0;
-            Cliente? pagador = null;
-            if (semCnpj)
-            {
-                // Repasse da Strada é Pix e não é boleto (StradaService)
-                if ((p.Descricao + " " + p.Complemento).Contains("STRADA", StringComparison.OrdinalIgnoreCase)) continue;
-            }
-            else
-            {
-                pagador = clientes.FirstOrDefault(c => Digitos(c.Cnpj) == doc);
-                if (pagador == null) continue; // Pix de quem não é cliente de boleto
-            }
-            IReadOnlyList<Cliente> deQuem = pagador != null ? [pagador] : clientes;
+            var pagador = semCnpj ? ClientePeloNome(p, clientes) : clientes.FirstOrDefault(c => Digitos(c.Cnpj) == doc);
+            if (pagador == null) continue;
+            IReadOnlyList<Cliente> deQuem = [pagador];
 
             var opcoes = new List<(List<Boleto> Boletos, int Pulados)>();
             foreach (var c in deQuem)

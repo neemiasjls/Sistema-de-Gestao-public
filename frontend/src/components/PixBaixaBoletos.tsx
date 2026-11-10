@@ -105,7 +105,7 @@ export default function PixBaixaBoletos({ l, pix, mudou }: { l: LancamentoSicoob
     <div className="sm:ml-[60px] rounded-lg border border-tinta-200 bg-tinta-50 px-3 py-2 space-y-2">
       {pix.semCnpj && (
         <Aviso tipo="atencao" titulo="O banco não informou o CNPJ de quem pagou">
-          Achei os boletos só pela soma. Confira quem pagou antes de dar baixa.
+          Achei o cliente pelo nome escrito no Pix. Confira antes de dar baixa.
         </Aviso>
       )}
       {pix.certo && opcao ? (

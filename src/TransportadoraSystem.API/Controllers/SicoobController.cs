@@ -42,39 +42,16 @@ public class SicoobController(AppDbContext db, SicoobService sicoob) : Controlle
         var (extrato, erro) = await sicoob.ExtratoAsync(de, ate, ct);
         if (extrato == null) return StatusCode(StatusCodes.Status502BadGateway, new { erro });
 
-        // Boletos a receber de mesmo valor: os em aberto (para marcar) e os já
-        // marcados no dia do crédito (para a tela dizer que já está feito)
-        var valores = extrato.Lancamentos.Where(l => l.Credito).Select(l => l.Valor).Distinct().ToList();
-        var boletos = await db.BoletosReceber.AsNoTracking()
-            .Where(b => b.Valor != null && valores.Contains(b.Valor.Value))
-            .Select(b => new { b.Id, b.Cliente, b.NossoNumero, b.Valor, b.Vencimento, b.DataCarga, b.Placa, b.RecebidoEm })
-            .ToListAsync(ct);
-
+        // Entrada só vira boleto pelo PAGADOR (Pix com CNPJ ou nome do cliente, PixBoletos). Casar só pelo valor
+        // saiu (Admin, 10/11/2026: Pix da Avícola Gotty de 1.080,00 aparecia como "pode ser" boleto da CD)
         var pix = await PixDoExtrato(extrato.Lancamentos, de, montagem, ct);
 
         var lancamentos = extrato.Lancamentos.Select(l =>
         {
             var achado = pix.GetValueOrDefault(l.Id);
-            // Pix que bate com boleto em aberto: o caminho é "Dar baixa" (banco + site), não só marcar
-            var mesmoValor = l.Credito && achado is not { Opcoes.Count: > 0 } ? boletos.Where(b => b.Valor == l.Valor).ToList() : [];
-            var jaMarcado = mesmoValor.FirstOrDefault(b => b.RecebidoEm != null && b.RecebidoEm == l.Data);
-            var emAberto = jaMarcado != null ? [] : mesmoValor
-                .Where(b => b.RecebidoEm == null)
-                .OrderBy(b => b.Vencimento == null || l.Data == null ? int.MaxValue : Math.Abs(b.Vencimento.Value.DayNumber - l.Data.Value.DayNumber))
-                .ToList();
             return new
             {
                 l.Id, l.Data, l.Credito, l.Valor, l.Descricao, l.Documento, l.CpfCnpj, l.Complemento,
-                JaMarcado = jaMarcado == null ? null : new
-                {
-                    jaMarcado.Id, jaMarcado.Cliente, Rotulo = BoletoReceberLeitor.RotuloCliente(jaMarcado.Cliente),
-                    jaMarcado.NossoNumero, jaMarcado.DataCarga,
-                },
-                Sugestoes = emAberto.Select(b => new
-                {
-                    b.Id, b.Cliente, Rotulo = BoletoReceberLeitor.RotuloCliente(b.Cliente),
-                    b.NossoNumero, b.Valor, b.Vencimento, b.DataCarga, b.Placa,
-                }),
                 Pix = achado == null ? null : new
                 {
                     Cliente = achado.Pagador?.Codigo, Pagador = achado.Pagador?.Nome, achado.SemCnpj, achado.Certo, achado.Duvida,

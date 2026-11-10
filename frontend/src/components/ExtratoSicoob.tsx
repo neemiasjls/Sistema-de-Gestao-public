@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import toast from 'react-hot-toast'
-import { CheckCircle2, Landmark, RefreshCw } from 'lucide-react'
+import { Landmark, RefreshCw } from 'lucide-react'
 import { Carregando, ErroCarga, Vazio } from './ui/Estados'
 import { Segmentado } from './ui/Abas'
 import Aviso from './ui/Aviso'
@@ -8,7 +7,7 @@ import Botao from './ui/Botao'
 import { formatBRL } from '../services/api'
 import { boletosContasApi, type ConfigEmissao } from '../services/boletosContasApi'
 import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
-import { sicoobApi, type BoletoSugerido, type ExtratoSicoob, type LancamentoSicoob } from '../services/sicoobApi'
+import { sicoobApi, type ExtratoSicoob } from '../services/sicoobApi'
 import { dataBr } from '../utils/formato'
 import { limparDescricao } from '../utils/descricaoExtrato'
 import ConferenciaBoletosPagos from './ConferenciaBoletosPagos'
@@ -16,8 +15,8 @@ import PixBaixaBoletos from './PixBaixaBoletos'
 import PostosPagosExtrato from './PostosPagosExtrato'
 
 // Aba "Extrato do banco" de Boletos: o que entrou e saiu da conta PJ no Sicoob,
-// lido pela API do banco (só consulta, BOL-10). Entrada de mesmo valor que um
-// boleto a receber em aberto oferece "Marcar recebido" com a data do crédito.
+// lido pela API do banco (só consulta, BOL-10). Entrada vira boleto só pelo pagador
+// (Pix de cliente pelo CNPJ ou pelo nome, BOL-14); nunca só pelo valor.
 
 type Mostrar = 'entradas' | 'saidas' | 'tudo'
 
@@ -38,7 +37,6 @@ export default function ExtratoSicoob() {
   const [extrato, setExtrato] = useState<ExtratoSicoob | null>(null)
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
-  const [marcando, setMarcando] = useState<number | null>(null)
   // Período do extrato lido por último: a conferência dos postos usa o mesmo
   const [lido, setLido] = useState({ de: '', ate: '', versao: 0 })
   const [pagadores, setPagadores] = useState<ConfigEmissao[]>([])
@@ -65,21 +63,8 @@ export default function ExtratoSicoob() {
     return (doc: string) => mapa.get(doc) ?? null
   }, [pagadores])
 
-  const marcar = async (l: LancamentoSicoob, b: BoletoSugerido) => {
-    if (!l.data) return
-    setMarcando(b.id)
-    try {
-      await boletosContasApi.marcarRecebido(b.id, l.data)
-      toast.success(`Boleto ${b.nossoNumero} da ${b.rotulo} marcado como recebido em ${dataBr(l.data)}.`)
-      await carregar(inicio, fim)
-    } catch (e) {
-      toast.error(await erroApi(e, 'Não consegui marcar o boleto.'))
-    } finally { setMarcando(null) }
-  }
-
   const lista = (extrato?.lancamentos ?? []).filter(l =>
     mostrar === 'tudo' ? true : mostrar === 'entradas' ? l.credito : !l.credito)
-  const paraMarcar = (extrato?.lancamentos ?? []).filter(l => l.sugestoes.length > 0).length
   const pixParaBaixar = (extrato?.lancamentos ?? []).filter(l => (l.pix?.opcoes.length ?? 0) > 0).length
 
   return (
@@ -117,12 +102,6 @@ export default function ExtratoSicoob() {
             <Numero rotulo="Saídas no período" valor={extrato.saidas} />
           </dl>
 
-          {paraMarcar > 0 && (
-            <Aviso tipo="info" titulo={paraMarcar === 1 ? '1 entrada bate com boleto a receber' : `${paraMarcar} entradas batem com boletos a receber`}>
-              Confira e marque como recebido. A data usada é a do crédito no banco.
-            </Aviso>
-          )}
-
           {pixParaBaixar > 0 && (
             <Aviso tipo="info" titulo={pixParaBaixar === 1 ? '1 Pix de cliente bate com boletos a receber' : `${pixParaBaixar} Pix de clientes batem com boletos a receber`}>
               Confira e dê baixa: o boleto é baixado no Sicoob e fica recebido na data do Pix.
@@ -154,26 +133,7 @@ export default function ExtratoSicoob() {
                     </span>
                   </div>
 
-                  {l.jaMarcado && (
-                    <p className="sm:pl-[60px] flex items-center gap-1.5 text-sm text-emerald-800">
-                      <CheckCircle2 size={14} aria-hidden />
-                      Boleto {l.jaMarcado.nossoNumero} da {l.jaMarcado.rotulo} já marcado como recebido
-                    </p>
-                  )}
                   {l.pix && <PixBaixaBoletos l={l} pix={l.pix} mudou={() => carregar(inicio, fim)} />}
-                  {l.sugestoes.map(b => (
-                    <div key={b.id} className="sm:ml-[60px] flex flex-wrap items-center gap-2 rounded-lg border border-tinta-200 bg-tinta-50 px-3 py-2">
-                      <p className="flex-1 min-w-[200px] text-sm text-tinta-900">
-                        Pode ser o boleto <b>{b.nossoNumero || 'sem número'}</b> da {b.rotulo}
-                        {b.dataCarga && <> · carga de {dataBr(b.dataCarga)}</>}
-                        {b.vencimento && <> · vence {dataBr(b.vencimento)}</>}
-                      </p>
-                      <Botao tamanho="sm" variante="secundario" carregando={marcando === b.id} disabled={marcando !== null || !l.data}
-                             onClick={() => marcar(l, b)}>
-                        Marcar recebido em {l.data ? dataBr(l.data).slice(0, 5) : '—'}
-                      </Botao>
-                    </div>
-                  ))}
                 </li>
                 )
               })}
