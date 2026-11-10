@@ -12,7 +12,7 @@ import Aviso from '../components/ui/Aviso'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { ArrowDownToLine, ArrowUpFromLine, CalendarClock, ChevronRight, ClipboardCheck, Landmark, Download, FileUp, Inbox, Pencil, Plus, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, Ban, CalendarClock, ChevronRight, ClipboardCheck, Landmark, Download, FileUp, Inbox, Pencil, Plus, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
 import { boletosApi, clientesApi, formatBRL, type Boleto, type Cliente } from '../services/api'
 import {
   boletosContasApi as api,
@@ -20,6 +20,8 @@ import {
 } from '../services/boletosContasApi'
 import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
 import { dataBr, lerNum, num } from '../utils/formato'
+import { useAuth } from '../contexts/AuthContext'
+import { sicoobApi } from '../services/sicoobApi'
 import { Modal, Campo, BotoesModal } from '../components/ModalBase'
 
 // Boletos em duas abas. "A pagar": os dos postos (os mesmos da tela
@@ -455,6 +457,7 @@ function AReceber() {
   const [falhou, setFalhou] = useState(false)
   const [versaoParaEmitir, setVersaoParaEmitir] = useState(0)
   const confirmar = useConfirmar()
+  const dono = useAuth().usuario?.dono === true
 
   const carregar = useCallback(async () => {
     setCarregando(true)
@@ -534,6 +537,19 @@ function AReceber() {
                       onClick={() => setMontando({ data: b.dataCarga!, placa: b.placa || null })} />
         )}
         <BotaoIcone icone={Pencil} rotulo={`Editar ${nome}`} onClick={() => setEditando(b)} />
+        {/* Boleto emitido errado: baixa no Sicoob e apaga do sistema (ação real no banco, só o dono) */}
+        {dono && !b.recebidoEm && b.nossoNumero && (
+          <BotaoIcone icone={Ban} rotulo="Baixar e excluir" perigo
+                      onClick={async () => await confirmar({
+                        titulo: 'Baixar no Sicoob e excluir o boleto?',
+                        texto: <>
+                          <p><b>{b.nossoNumero}</b> · {b.valor != null ? formatBRL(b.valor) : 'valor sem informar'} · vence {b.vencimento ? dataBr(b.vencimento) : 'data sem informar'}</p>
+                          <p className="mt-2">Dá baixa no Sicoob e apaga do sistema; não dá para desfazer.</p>
+                        </>,
+                        confirmar: 'Baixar e excluir',
+                      }) && tentar(async () => { const { data } = await sicoobApi.baixarEExcluir(b.id); toast.success(data.mensagem) },
+                                   'O Sicoob não baixou o boleto.')} />
+        )}
         <BotaoIcone icone={Trash2} rotulo={`Excluir ${nome}`} perigo
                     onClick={async () => await confirmar({
                       titulo: 'Excluir o boleto?',

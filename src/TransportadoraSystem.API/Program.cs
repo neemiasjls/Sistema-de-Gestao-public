@@ -68,6 +68,7 @@ builder.Services.AddScoped<PlanilhaSeguroService>();
 builder.Services.AddScoped<EmailClienteService>();
 builder.Services.AddScoped<BoletoMontagemService>();
 builder.Services.AddScoped<PostosPagosExtratoService>();
+builder.Services.AddScoped<ConferenciaAutomaticaService>();
 builder.Services.AddScoped<BoletoEmissaoService>();
 builder.Services.AddScoped<BoletoReceberImportacao>();
 builder.Services.AddScoped<RomaneiosEmbalarService>();

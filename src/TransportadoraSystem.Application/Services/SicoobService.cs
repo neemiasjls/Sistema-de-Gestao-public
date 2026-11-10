@@ -83,6 +83,8 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
     // Vale 10 minutos; se o banco recusar, usa o último lido do mesmo período (até 12 horas).
     private static readonly Dictionary<(DateOnly, DateOnly), (DateTime Lido, Extrato Extrato)> Guardados = [];
     private static readonly SemaphoreSlim TravaExtrato = new(1, 1);
+    // 429: o Sicoob limita as consultas seguidas; quem consulta em lote para aqui
+    public const string PediuTempo = "O Sicoob pediu um tempo (muitas consultas seguidas). Tente de novo em alguns minutos.";
     private const string NaoLiberou = "O Sicoob não liberou a consulta. Confira se o aplicativo está aprovado com o escopo de consulta.";
 
     // Erro vira texto para a tela; null no lugar do extrato quando falhou
@@ -188,6 +190,7 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
             if (json == null)
             {
                 if (e == NaoLiberou) return (null, "O Sicoob não liberou a consulta de boletos para este aplicativo (API de Cobrança Bancária).");
+                if (e == PediuTempo) return (null, e);
                 erro = e; continue;
             }
             using (json)
@@ -434,7 +437,7 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
             {
                 log.LogWarning("Sicoob {Url}: {Status} {Corpo}", SemConta(url), (int)resp.StatusCode, Curto(corpo));
                 if ((int)resp.StatusCode == 429)
-                    return (null, "O Sicoob pediu um tempo (muitas consultas seguidas). Tente de novo em alguns minutos.");
+                    return (null, PediuTempo);
                 return (null, MensagemSicoob(corpo) ?? $"O Sicoob respondeu com erro ({(int)resp.StatusCode}).");
             }
             return (JsonDocument.Parse(string.IsNullOrWhiteSpace(corpo) ? "{}" : corpo), null);

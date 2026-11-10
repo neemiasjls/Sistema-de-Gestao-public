@@ -8,7 +8,7 @@ import { useConfirmar } from './ui/Confirmar'
 import { formatBRL } from '../services/api'
 import { boletosContasApi } from '../services/boletosContasApi'
 import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
-import { sicoobApi, type BoletoConferido, type ConferenciaBoletos, type SituacaoBoletoBanco } from '../services/sicoobApi'
+import { sicoobApi, type BoletoConferido, type ConferenciaBoletos, type ResumoConferenciaTudo, type SituacaoBoletoBanco } from '../services/sicoobApi'
 import { dataBr } from '../utils/formato'
 
 // Conferência dos boletos a receber da CD e da Girassol com o extrato do Sicoob (BOL-10).
@@ -26,6 +26,7 @@ export default function ConferenciaBoletosPagos({ mudou }: { mudou: () => void }
   const [verCreditos, setVerCreditos] = useState(false)
   const [consultando, setConsultando] = useState<number | null>(null)
   const [situacoes, setSituacoes] = useState<Record<number, SituacaoBoletoBanco | string>>({})
+  const [resumo, setResumo] = useState<ResumoConferenciaTudo | string | null>(null)
 
   // Pergunta ao banco a situação de um boleto (pago com juros não fecha na soma do crédito do dia)
   const consultar = async (b: BoletoConferido) => {
@@ -37,6 +38,17 @@ export default function ConferenciaBoletosPagos({ mudou }: { mudou: () => void }
       const msg = await erroApi(e, 'Não consegui consultar o boleto no Sicoob.')
       setSituacoes(s => ({ ...s, [b.id]: msg }))
     } finally { setConsultando(null) }
+  }
+
+  // Primeiro a conferência com o banco (marca o que já foi pago: boletos liquidados e postos), depois a soma dos créditos
+  const conferirComBanco = async () => {
+    setCarregando(true)
+    try {
+      const { data } = await sicoobApi.conferirTudo()
+      setResumo(data)
+      if (data.receber.marcados.length || data.postos.marcados.length) mudou()
+    } catch (e) { setResumo(await erroApi(e, 'Não consegui fazer a conferência automática com o Sicoob.')) }
+    await conferir()
   }
 
   const conferir = async () => {
@@ -74,11 +86,13 @@ export default function ConferenciaBoletosPagos({ mudou }: { mudou: () => void }
           <h3 className="font-semibold text-gray-900">Boletos pagos da CD e da Girassol</h3>
           <p className="text-sm text-gray-600">O Sicoob junta num crédito só todos os boletos pagos no dia. O sistema acha quais boletos somam cada crédito dos últimos 60 dias.</p>
         </div>
-        <Botao variante="primario" icone={SearchCheck} carregando={carregando} textoCarregando="Conferindo..." onClick={conferir}>
+        <Botao variante="primario" icone={SearchCheck} carregando={carregando} textoCarregando="Conferindo..." onClick={conferirComBanco}>
           Conferir com o banco
         </Botao>
       </div>
 
+      {typeof resumo === 'string' && <Aviso tipo="atencao" titulo="Conferência automática não rodou">{resumo}</Aviso>}
+      {resumo && typeof resumo !== 'string' && <ResumoConferencia r={resumo} />}
       {erro && <ErroCarga mensagem={erro} onTentar={conferir} />}
       {dados && !dados.configurado && <Aviso tipo="atencao" titulo="Extrato do Sicoob ainda não ligado">{dados.erro}</Aviso>}
 
@@ -193,4 +207,29 @@ export default function ConferenciaBoletosPagos({ mudou }: { mudou: () => void }
       )}
     </section>
   )
+}
+
+// O que a conferência com o banco fez: recebidos marcados, postos marcados e Pix esperando a confirmação dele
+function ResumoConferencia({ r }: { r: ResumoConferenciaTudo }) {
+  const { receber, postos, pix } = r
+  const linhas: string[] = []
+  linhas.push(receber.marcados.length === 0
+    ? `Nenhum boleto a receber liquidado no banco (${receber.consultados} de ${receber.emAberto} em aberto consultados).`
+    : `${receber.marcados.length === 1 ? '1 boleto a receber marcado' : `${receber.marcados.length} boletos a receber marcados`} como recebido: ` +
+      receber.marcados.map(m => `${m.nossoNumero} em ${dataBr(m.data)}${m.semDataNoBanco ? ' (o banco não informou a data)' : ''}${m.valorPago != null ? `, pago ${formatBRL(m.valorPago)}` : ''}`).join('; ') + '.')
+  if (receber.parouNoLimite) linhas.push(`O Sicoob pediu um tempo: ${receber.emAberto - receber.consultados} boletos ficaram para a próxima conferência.`)
+  else if (receber.emAberto > receber.consultados && !receber.erro) linhas.push(`${receber.emAberto - receber.consultados} boletos ficaram para a próxima conferência.`)
+  if (receber.erro) linhas.push(`Boletos a receber: ${receber.erro}`)
+  for (const n of receber.naoMarcados) linhas.push(`Boleto ${n.nossoNumero}${n.valor != null ? ` (${formatBRL(n.valor)})` : ''}: ${n.situacao}. Não marquei.`)
+  linhas.push(postos.erro ? `Postos: ${postos.erro}`
+    : postos.marcados.length === 0 ? 'Nenhum boleto de posto novo pago no extrato.'
+    : `${postos.marcados.length === 1 ? '1 boleto de posto marcado' : `${postos.marcados.length} boletos de posto marcados`} como pago: ` +
+      postos.marcados.map(p => `${p.posto} ${p.numero} em ${dataBr(p.data)}`).join('; ') + '.')
+  if (!postos.erro && postos.duvidas > 0) linhas.push(`${postos.duvidas === 1 ? '1 débito de posto' : `${postos.duvidas} débitos de posto`} em dúvida: veja na aba Extrato.`)
+  linhas.push(pix.erro ? `Pix: ${pix.erro}`
+    : pix.aguardando.length === 0 ? 'Nenhum Pix de boleto esperando confirmação.'
+    : `${pix.aguardando.length === 1 ? '1 Pix de boleto aguardando' : `${pix.aguardando.length} Pix de boleto aguardando`} sua confirmação na aba Extrato: ` +
+      pix.aguardando.map(p => `${formatBRL(p.valor)} em ${dataBr(p.data)} de ${p.pagador} (${p.duvida ? 'mais de uma combinação' : p.boletos.join(' + ')})`).join('; ') + '.')
+  const tudoCerto = !receber.erro && !postos.erro && !pix.erro && !receber.parouNoLimite
+  return <Aviso tipo={tudoCerto ? 'info' : 'atencao'} titulo="Conferência com o banco" itens={linhas} />
 }

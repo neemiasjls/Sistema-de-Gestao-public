@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -318,6 +320,58 @@ public class SicoobController(AppDbContext db, SicoobService sicoob) : Controlle
         if (data == null || string.IsNullOrWhiteSpace(req.Chave)) return BadRequest(new { erro = "Informe o débito do extrato." });
         var erro = await postos.MarcarAsync(req.BoletoId, req.Chave.Trim(), data.Value, ct);
         return erro == null ? NoContent() : BadRequest(new { erro });
+    }
+
+    /// <summary>
+    /// "Conferir com o banco" da tela: boletos a receber liquidados viram recebidos, postos pagos pelo extrato e
+    /// Pix de boleto só identificado (ConferenciaAutomaticaService). Nada é baixado, pago ou transferido no banco.
+    /// </summary>
+    [HttpPost("conferir-tudo")]
+    public async Task<IActionResult> ConferirTudo([FromServices] ConferenciaAutomaticaService conferencia, CancellationToken ct)
+    {
+        var r = await conferencia.ConferirTudoAsync(ct);
+        if (r == null) return Conflict(new { erro = "Já tem uma conferência com o banco rodando. Tente de novo em um minuto." });
+        return Ok(r);
+    }
+
+    /// <summary>
+    /// A mesma conferência, chamada de hora em hora pelo pg_cron do Supabase (docs/planos/cron-conferir.sql).
+    /// Sem login: exige o cabeçalho X-Chave-Agendada igual ao segredo "conferir_agendado" do Vault do Supabase
+    /// (lido pelo banco a cada chamada; não fica no código nem em variável). Errado ou sem segredo = 401 seco.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("conferir-agendado")]
+    public async Task<IActionResult> ConferirAgendado([FromServices] ConferenciaAutomaticaService conferencia,
+        [FromServices] ILogger<SicoobController> log)
+    {
+        var enviada = Request.Headers["X-Chave-Agendada"].ToString();
+        if (string.IsNullOrEmpty(enviada)) return Unauthorized();
+        string? segredo;
+        try
+        {
+            segredo = (await db.Database
+                .SqlQueryRaw<string>("select decrypted_secret as \"Value\" from vault.decrypted_secrets where name = 'conferir_agendado'")
+                .ToListAsync()).FirstOrDefault();
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning("Conferência agendada: não consegui ler o segredo do Vault ({Tipo})", ex.GetType().Name);
+            return Unauthorized();
+        }
+        if (string.IsNullOrEmpty(segredo)) return Unauthorized();
+        // Compara o hash dos dois em tempo constante (tamanho igual, nada vaza pelo tempo)
+        if (!CryptographicOperations.FixedTimeEquals(SHA256.HashData(Encoding.UTF8.GetBytes(enviada)), SHA256.HashData(Encoding.UTF8.GetBytes(segredo))))
+            return Unauthorized();
+
+        // Sem o token da requisição: o pg_net pode desistir de esperar e a conferência termina mesmo assim
+        var r = await conferencia.ConferirTudoAsync(TimeSpan.Zero, CancellationToken.None);
+        if (r == null)
+        {
+            log.LogInformation("Conferência agendada: outra ainda rodando, pulei esta");
+            return Ok(new { emAndamento = true });
+        }
+        log.LogInformation("Conferência agendada: {Resumo}", r.Texto);
+        return Ok(new { r.Em, Texto = r.Texto });
     }
 
     // Situação de UM boleto na Cobrança do Sicoob (só consulta): pega o pago com juros ou desconto,
