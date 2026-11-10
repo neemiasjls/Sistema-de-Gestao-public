@@ -69,7 +69,7 @@ public static class BoletoReceberLeitor
         return null;
     }
 
-    // A transportadora no boleto: CAIO JOSE MOREIRA E CIA LTDA, CNPJ 11.222.333/0001-81 (EMP-01)
+    // A transportadora no boleto: CAIO JOSE MOREIRA E CIA LTDA, CNPJ XX.XXX.XXX/0001-XX (EMP-01)
     private const string CnpjTransportadora = "11.222.333";
 
     /// <summary>

@@ -46,7 +46,8 @@ builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<StradaService>();
 builder.Services.AddHttpClient<EmailService>();
 // Sicoob: o certificado A1 vai na conexão (mTLS), por isso o handler próprio
-builder.Services.AddHttpClient<SicoobService>(c => c.Timeout = TimeSpan.FromSeconds(30))
+// 60 s: a emissão do boleto devolve o PDF junto e demora mais que a consulta
+builder.Services.AddHttpClient<SicoobService>(c => c.Timeout = TimeSpan.FromSeconds(60))
     .ConfigurePrimaryHttpMessageHandler(sp => SicoobService.CriarHandler(
         sp.GetRequiredService<IConfiguration>(), sp.GetRequiredService<ILoggerFactory>().CreateLogger("Sicoob")))
     .SetHandlerLifetime(TimeSpan.FromHours(6));
@@ -65,6 +66,8 @@ builder.Services.AddScoped<ArquivoNFeService>();
 builder.Services.AddScoped<TiposVolumeService>();
 builder.Services.AddScoped<PlanilhaSeguroService>();
 builder.Services.AddScoped<EmailClienteService>();
+builder.Services.AddScoped<BoletoMontagemService>();
+builder.Services.AddScoped<BoletoEmissaoService>();
 builder.Services.AddScoped<BoletoReceberImportacao>();
 builder.Services.AddScoped<RomaneiosEmbalarService>();
 builder.Services.AddScoped<ViagensCaminhaoService>();

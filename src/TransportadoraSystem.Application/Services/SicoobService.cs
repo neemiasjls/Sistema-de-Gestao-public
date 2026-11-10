@@ -9,9 +9,9 @@ using Microsoft.Extensions.Logging;
 
 namespace TransportadoraSystem.Application.Services;
 
-// Leitura da conta PJ no Sicoob (API Conta Corrente v4): extrato e saldo.
-// O aplicativo do Sicoob foi criado só com escopos de consulta e de boletos; nada
-// aqui paga, transfere ou devolve Pix (PEN-37, BOL-10).
+// Conta PJ no Sicoob: extrato e saldo (Conta Corrente v4); consulta e emissão do boleto a receber
+// (Cobrança Bancária v3). O aplicativo do Sicoob foi criado só com escopos de consulta e de boletos;
+// nada aqui paga, transfere ou devolve Pix (PEN-37, BOL-10).
 //
 // Configuração (variáveis de ambiente na Render):
 //   Sicoob__ClientId            Client ID do aplicativo no Sicoob Developers
@@ -25,7 +25,6 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
     private const string UrlContaCorrente = "https://api.sicoob.com.br/conta-corrente/v4";
     private const string Escopos = "cco_consulta";
     private const string UrlCobranca = "https://api.sicoob.com.br/cobranca-bancaria/v3";
-    // Só consulta de boleto (nunca emitir, alterar ou baixar por aqui)
     // Todas as da Cobrança do aplicativo: o Sicoob recusou ("Not registered to plan") com só a de consulta
     private const string EscoposCobranca = "boletos_consulta boletos_inclusao boletos_alteracao webhooks_inclusao webhooks_consulta webhooks_alteracao";
     private string? NumeroCliente => new string((config["Sicoob:NumeroCliente"] ?? "").Where(char.IsDigit).ToArray()) is { Length: > 0 } n ? n : null;
@@ -219,6 +218,143 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
             }
         }
         return (null, erro ?? "O Sicoob não achou o boleto.");
+    }
+
+    // ───────────── Cobrança: emitir o boleto a receber (CD e Girassol) ─────────────
+
+    public record BoletoEmitido(string NossoNumero, string LinhaDigitavel, string CodigoBarras, byte[]? Pdf);
+
+    /// <summary>
+    /// POST /boletos com um boleto (objeto único, BoletoMontador.CorpoSicoob). Cobrança REAL: só chamar
+    /// depois da confirmação do Admin para este boleto. Incerto = o pedido saiu e a resposta não voltou
+    /// (o boleto pode ter sido registrado): conferir no Sicoobnet antes de tentar de novo.
+    /// </summary>
+    public async Task<(BoletoEmitido? Boleto, string? Erro, bool Incerto)> IncluirBoletoAsync(BoletoMontador.Boleto b, CancellationToken ct = default)
+    {
+        if (FaltaConfigurar() is { } falta) return (null, falta, false);
+        if (NumeroCliente == null || !long.TryParse(NumeroCliente, out var numeroCliente))
+            return (null, "Falta Sicoob__NumeroCliente (código do beneficiário) no Render.", false);
+        if (!long.TryParse(Conta, out var conta)) return (null, "Conta do Sicoob inválida no Render.", false);
+        var (token, erroToken) = await TokenAsync(ct, EscoposCobranca);
+        if (token == null) return (null, erroToken, false);
+
+        var corpo = JsonSerializer.Serialize(BoletoMontador.CorpoSicoob(b, numeroCliente, conta));
+        HttpResponseMessage resp;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{UrlCobranca}/boletos")
+            {
+                Content = new StringContent(corpo, System.Text.Encoding.UTF8, "application/json"),
+            };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            req.Headers.Add("client_id", ClientId);
+            resp = await http.SendAsync(req, ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            log.LogError("Sicoob emissão {Cliente} {Seu}: sem resposta {Tipo} {Msg}", b.Cliente, b.SeuNumero, ex.GetType().Name, ex.Message);
+            return (null, "O Sicoob não respondeu. O boleto pode ter sido registrado: confira no Sicoobnet (Cobrança → Boletos) antes de tentar de novo.", true);
+        }
+        using (resp)
+        {
+            var texto = await resp.Content.ReadAsStringAsync(ct);
+            if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            {
+                lock (Tokens) Tokens.Remove(EscoposCobranca);
+                log.LogWarning("Sicoob emissão: {Status} {Corpo}", (int)resp.StatusCode, Curto(texto));
+                return (null, "O Sicoob não liberou a emissão de boletos para este aplicativo (escopo boletos_inclusao).", false);
+            }
+            if (!resp.IsSuccessStatusCode)
+            {
+                log.LogWarning("Sicoob emissão {Cliente} {Seu}: {Status} {Corpo}", b.Cliente, b.SeuNumero, (int)resp.StatusCode, Curto(texto));
+                if ((int)resp.StatusCode == 429)
+                    return (null, "O Sicoob pediu um tempo (muitos pedidos seguidos). Tente de novo em alguns minutos.", false);
+                // 400/406: o banco recusou e nada foi registrado; todas as mensagens dele vão para a tela
+                var msgs = MensagensSicoob(texto);
+                if (msgs.Count > 0) return (null, $"O Sicoob recusou o boleto: {string.Join(" · ", msgs)}", false);
+                if ((int)resp.StatusCode >= 500)
+                    return (null, $"O Sicoob deu erro ({(int)resp.StatusCode}). O boleto pode ter sido registrado: confira no Sicoobnet antes de tentar de novo.", true);
+                return (null, $"O Sicoob recusou o boleto ({(int)resp.StatusCode}).", false);
+            }
+            try
+            {
+                using var doc = JsonDocument.Parse(texto);
+                var r = Resultado(doc.RootElement);
+                var nosso = Texto(r, "nossoNumero");
+                if (nosso == "") throw new JsonException("sem nossoNumero");
+                byte[]? pdf = null;
+                var b64 = Texto(r, "pdfBoleto");
+                if (b64 != "") try { pdf = Convert.FromBase64String(b64); } catch (FormatException) { pdf = null; }
+                log.LogInformation("Sicoob emissão {Cliente} {Seu}: nosso número {Nosso}", b.Cliente, b.SeuNumero, nosso);
+                return (new BoletoEmitido(nosso, Texto(r, "linhaDigitavel"), Texto(r, "codigoBarras"), pdf), null, false);
+            }
+            catch (JsonException ex)
+            {
+                log.LogError("Sicoob emissão {Cliente} {Seu}: resposta {Status} ilegível {Msg} {Corpo}", b.Cliente, b.SeuNumero, (int)resp.StatusCode, ex.Message, Curto(texto));
+                return (null, "O Sicoob aceitou o pedido, mas não consegui ler a resposta. Confira o boleto no Sicoobnet antes de tentar de novo.", true);
+            }
+        }
+    }
+
+    public record TestePermissao(bool Funciona, int? Status, string Explicacao, List<string> Mensagens);
+
+    /// <summary>
+    /// TEMPORÁRIO (etapa 1 do plano montar-boleto): POST /boletos propositalmente incompleto (sem valor, vencimento
+    /// nem pagador), que o banco não tem como registrar. 400/406 com mensagens de campo = inclusão liberada;
+    /// 401/403 = não liberada. Tirar depois do teste.
+    /// </summary>
+    public async Task<TestePermissao> TestarPermissaoEmissaoAsync(CancellationToken ct = default)
+    {
+        if (FaltaConfigurar() is { } falta) return new(false, null, falta, []);
+        if (NumeroCliente == null || !long.TryParse(NumeroCliente, out var numeroCliente))
+            return new(false, null, "Falta Sicoob__NumeroCliente no Render.", []);
+        var (token, erroToken) = await TokenAsync(ct, EscoposCobranca);
+        if (token == null) return new(false, null, "O Sicoob recusou o token da Cobrança: " + erroToken, []);
+        var corpo = JsonSerializer.Serialize(new { numeroCliente, codigoModalidade = 1 });
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{UrlCobranca}/boletos")
+            {
+                Content = new StringContent(corpo, System.Text.Encoding.UTF8, "application/json"),
+            };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            req.Headers.Add("client_id", ClientId);
+            using var resp = await http.SendAsync(req, ct);
+            var texto = await resp.Content.ReadAsStringAsync(ct);
+            var st = (int)resp.StatusCode;
+            log.LogWarning("Sicoob teste de emissão: {Status} {Corpo}", st, Curto(texto));
+            var msgs = MensagensSicoob(texto);
+            if (msgs.Count == 0 && texto.Length > 0) msgs.Add(Curto(texto));
+            return st switch
+            {
+                400 or 406 or 422 => new(true, st, "Funciona: o Sicoob aceitou o acesso e só recusou o pedido incompleto (nenhum boleto criado).", msgs),
+                401 or 403 => new(false, st, "Não funciona: o Sicoob recusou o acesso à emissão (permissão boletos_inclusao não liberada).", msgs),
+                >= 200 and < 300 => new(true, st, "ATENÇÃO: o Sicoob aceitou o pedido incompleto; confira no Sicoobnet.", msgs),
+                _ => new(false, st, $"Inconclusivo: o Sicoob respondeu {st}.", msgs),
+            };
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            return new(false, null, "Não consegui falar com o Sicoob: " + ex.Message, []);
+        }
+    }
+
+    private static List<string> MensagensSicoob(string corpo)
+    {
+        var l = new List<string>();
+        try
+        {
+            using var doc = JsonDocument.Parse(corpo);
+            if (doc.RootElement.TryGetProperty("mensagens", out var ms) && ms.ValueKind == JsonValueKind.Array)
+                foreach (var m in ms.EnumerateArray())
+                {
+                    var t = Texto(m, "mensagem"); var c = Texto(m, "codigo");
+                    if (t != "") l.Add(c == "" ? t : $"{t} ({c})");
+                }
+            if (l.Count == 0 && Texto(doc.RootElement, "mensagem") is { Length: > 0 } msg) l.Add(msg);
+        }
+        catch (JsonException) { }
+        return l;
     }
 
     private async Task<(string? Token, string? Erro)> TokenAsync(CancellationToken ct, string escopos = Escopos)

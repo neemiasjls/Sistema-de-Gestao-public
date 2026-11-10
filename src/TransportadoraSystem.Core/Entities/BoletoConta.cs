@@ -17,6 +17,7 @@ public class BoletoReceber
     public int? Sequencia { get; set; }                // o número que abre o nome do arquivo: "197-REF. ..."
     public string Numero { get; set; } = "";           // número do documento (no Sicoob é a data da carga: 29092026)
     public string NossoNumero { get; set; } = "";      // "668-8" — é o "Nº BOLETO" da planilha de controle
+    public string LinhaDigitavel { get; set; } = "";   // devolvida pelo Sicoob quando o sistema emite (BOL-10)
     public string Pagador { get; set; } = "";
     public string Placa { get; set; } = "";
     public decimal? Valor { get; set; }

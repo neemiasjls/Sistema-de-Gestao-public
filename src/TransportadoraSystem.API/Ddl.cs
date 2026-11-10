@@ -1598,6 +1598,9 @@ static class Ddl
         """
         ALTER TABLE "AliquotasSeguro" ENABLE ROW LEVEL SECURITY;
         """,
+        """
+        ALTER TABLE "BoletosReceber" ADD COLUMN IF NOT EXISTS "LinhaDigitavel" text NOT NULL DEFAULT '';
+        """,
     ];
 
     /// <summary>
@@ -1622,5 +1625,6 @@ static class Ddl
         ("FechamentosMensais", "MotoristaId"),
         ("ViagemCaminhaoCargas", "Ligacao"), ("ViagemCaminhaoCargas", "LigacaoAviso"),
         ("PlanilhasSeguro", "FaturaSeguro"), ("AliquotasSeguro", "Aliquota"),
+        ("BoletosReceber", "LinhaDigitavel"),
     ];
 }

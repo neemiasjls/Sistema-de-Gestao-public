@@ -23,6 +23,15 @@ public class SicoobController(AppDbContext db, SicoobService sicoob) : Controlle
     private static DateOnly? Data(string? s) =>
         DateOnly.TryParseExact(s?.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? d : null;
 
+    // TEMPORÁRIO (plano montar-boleto, etapa 1): testa se a emissão de boleto está liberada sem criar boleto.
+    // Só o dono. Tirar depois do teste.
+    [HttpPost("teste-emissao")]
+    public async Task<IActionResult> TesteEmissao(CancellationToken ct)
+    {
+        if (User.FindFirst(Application.Services.AuthService.ClaimDono)?.Value != "true") return Forbid();
+        return Ok(await sicoob.TestarPermissaoEmissaoAsync(ct));
+    }
+
     [HttpGet("extrato")]
     public async Task<IActionResult> Extrato([FromQuery] string? inicio, [FromQuery] string? fim, CancellationToken ct)
     {

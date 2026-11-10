@@ -287,6 +287,38 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
 
     // ═════════════════════════ A receber ═════════════════════════
 
+    // Monta o boleto da CD ou da Girassol com as regras do BOL-11, para mostrar (nada vai
+    // ao banco nem ao Sicoob). Se o boleto da carga já foi feito, compara.
+    [HttpGet("receber/montar")]
+    public async Task<IActionResult> MontarAReceber([FromQuery] string? cliente, [FromQuery] DateOnly? data,
+        [FromQuery] string? placa, [FromServices] BoletoMontagemService montagem)
+    {
+        var c = (cliente ?? "").Trim().ToUpperInvariant();
+        if (!BoletoReceberLeitor.Clientes.Contains(c)) return BadRequest(new { erro = "Escolha o cliente: CD ou Girassol." });
+        if (data == null) return BadRequest(new { erro = "Informe a data da carga." });
+        return Ok(await montagem.Montar(c, data.Value, placa));
+    }
+
+    public record EmitirPedido(string? Cliente, DateOnly? Data, string? Placa, decimal? Valor, DateOnly? Vencimento, bool Confirmado);
+
+    // Emite no Sicoob o boleto montado (cobrança REAL, BOL-10). A tela confirma a cada boleto e manda
+    // o valor e o vencimento que o Admin viu; se a montagem mudou, ou a carga já tem boleto, não emite.
+    [HttpPost("receber/emitir")]
+    public async Task<IActionResult> EmitirAReceber([FromBody] EmitirPedido req, [FromServices] BoletoEmissaoService emissao,
+        CancellationToken ct)
+    {
+        var c = (req.Cliente ?? "").Trim().ToUpperInvariant();
+        if (!BoletoReceberLeitor.Clientes.Contains(c)) return BadRequest(new { erro = "Escolha o cliente: CD ou Girassol." });
+        if (req.Data == null || req.Valor == null || req.Vencimento == null)
+            return BadRequest(new { erro = "Informe a data da carga, o valor e o vencimento conferidos." });
+        if (!req.Confirmado) return BadRequest(new { erro = "Confirme a emissão do boleto." });
+        var r = await emissao.Emitir(new(c, req.Data.Value, req.Placa, req.Valor.Value, req.Vencimento.Value), ct);
+        if (r.Erro != null)
+            return r.Incerto ? StatusCode(StatusCodes.Status502BadGateway, new { erro = r.Erro, r.Id, incerto = true })
+                             : UnprocessableEntity(new { erro = r.Erro });
+        return Ok(r);
+    }
+
     [HttpGet("receber")]
     public async Task<IActionResult> ListarAReceber()
     {
@@ -295,7 +327,7 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
             .OrderByDescending(b => b.DataCarga).ThenByDescending(b => b.Id)
             .Select(b => new
             {
-                b.Id, b.Cliente, b.Sequencia, b.Numero, b.NossoNumero, b.Pagador, b.Placa, b.Valor, b.Vencimento,
+                b.Id, b.Cliente, b.Sequencia, b.Numero, b.NossoNumero, b.LinhaDigitavel, b.Pagador, b.Placa, b.Valor, b.Vencimento,
                 b.Emissao, b.DataCarga, b.RecebidoEm, b.Observacao, b.LidoDoPdf, b.AvisosJson, b.NomeArquivo,
                 TemPdf = b.Pdf != null, b.CriadoEm,
             })
@@ -326,7 +358,7 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
             Clientes = clientes,
             Boletos = lista.Select(b => new
             {
-                b.Id, b.Cliente, b.Sequencia, b.Numero, b.NossoNumero, b.Pagador, b.Placa, b.Valor, b.Vencimento,
+                b.Id, b.Cliente, b.Sequencia, b.Numero, b.NossoNumero, b.LinhaDigitavel, b.Pagador, b.Placa, b.Valor, b.Vencimento,
                 b.Emissao, b.DataCarga, b.RecebidoEm, b.Observacao, b.LidoDoPdf, Avisos = Lista(b.AvisosJson),
                 b.NomeArquivo, b.TemPdf, b.CriadoEm,
             }),

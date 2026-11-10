@@ -53,6 +53,7 @@ export interface BoletoReceber {
   sequencia: number | null
   numero: string
   nossoNumero: string
+  linhaDigitavel?: string
   pagador: string
   placa: string
   valor: number | null
@@ -177,6 +178,36 @@ export const boletosContasApi = {
   editarAReceber: (id: number, d: ReceberEdicao) => api.put(`${base}/receber/${id}`, d),
   marcarRecebido: (id: number, recebidoEm: string | null) => api.put(`${base}/receber/${id}/recebido`, { recebidoEm }),
   excluirAReceber: (id: number) => api.delete(`${base}/receber/${id}`),
+  montarAReceber: (cliente: ClienteReceber, data: string, placa?: string | null) =>
+    api.get(`${base}/receber/montar`, { params: { cliente, data, placa: placa || undefined } }).then(r => comDados(r, d => {
+      const m = comoObjeto<BoletoMontagem>(d, ['fontes', 'faltando'], 'boleto montado')
+      m.boleto = comoObjeto(m.boleto ?? {}, ['campos', 'avisos'], 'boleto montado')
+      m.impedeEmitir = Array.isArray(m.impedeEmitir) ? m.impedeEmitir : ['A API não disse se dá para emitir.']
+      return m
+    })),
+  // Cobrança REAL no Sicoob: só depois da confirmação do Admin para este boleto
+  emitirAReceber: (d: { cliente: ClienteReceber; data: string; placa: string | null; valor: number; vencimento: string }) =>
+    api.post<BoletoEmitido>(`${base}/receber/emitir`, { ...d, confirmado: true }).then(r => r.data),
   baixarAReceber: (b: Pick<BoletoReceber, 'id' | 'nomeArquivo'>) =>
     baixar(`${base}/receber/${b.id}/pdf`, b.nomeArquivo || 'BOLETO.pdf'),
+}
+
+export interface BoletoEmitido {
+  id: number; nossoNumero: string; linhaDigitavel: string | null; nomeArquivo: string; temPdf: boolean
+}
+
+// Boleto montado pelo sistema (BOL-11); a montagem não vai ao banco nem ao Sicoob (emitir é à parte)
+export interface CampoMontado { grupo: string; rotulo: string; valor: string | null; aviso: string | null }
+export interface DiferencaMontado { campo: string; montado: string; feito: string; bate: boolean }
+export interface BoletoMontagem {
+  boleto: {
+    cliente: ClienteReceber; emissao: string; vencimento: string; valor: number | null; placa: string | null
+    seuNumero: string; pagador: { nome: string; cnpj: string }; campos: CampoMontado[]; avisos: string[]
+  }
+  fontes: { nome: string; descricao: string }[]
+  faltando: string[]
+  feitoId: number | null; feitoNome: string | null; feitoNossoNumero: string | null
+  comparacao: DiferencaMontado[] | null
+  sequencia: number; nomeArquivo: string
+  impedeEmitir: string[]   // vazio = pode emitir no Sicoob
 }

@@ -3,13 +3,14 @@ import AreaSoltar from '../components/ui/AreaSoltar'
 import { useConfirmar } from '../components/ui/Confirmar'
 import ComparaBoletos from '../components/ComparaBoletos'
 import ExtratoSicoob from '../components/ExtratoSicoob'
+import MontarBoleto from '../components/MontarBoleto'
 import { Abas, PainelAba, Segmentado, useAbas } from '../components/ui/Abas'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
 import Aviso from '../components/ui/Aviso'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { ArrowDownToLine, ArrowUpFromLine, ChevronRight, Landmark, Download, FileUp, Inbox, Pencil, Plus, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, ChevronRight, ClipboardCheck, Landmark, Download, FileUp, Inbox, Pencil, Plus, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
 import { boletosApi, clientesApi, formatBRL, type Boleto, type Cliente } from '../services/api'
 import {
   boletosContasApi as api,
@@ -408,6 +409,7 @@ function AReceber() {
   const [recebendo, setRecebendo] = useState<BoletoReceber | null>(null)
   const [editando, setEditando] = useState<BoletoReceber | 'novo' | null>(null)
   const [antigosAbertos, setAntigosAbertos] = useState(false)
+  const [montando, setMontando] = useState<{ data: string; placa: string | null } | null>(null)
   const [falhou, setFalhou] = useState(false)
   const confirmar = useConfirmar()
 
@@ -484,6 +486,10 @@ function AReceber() {
           <BotaoIcone icone={Download} rotulo={`Baixar o PDF d${nome}`}
                       onClick={() => api.baixarAReceber(b).catch(async e => toast.error(await erroApi(e, 'Não consegui baixar o PDF.')))} />
         )}
+        {b.dataCarga && (
+          <BotaoIcone icone={ClipboardCheck} rotulo={`Montar e comparar com ${nome}`}
+                      onClick={() => setMontando({ data: b.dataCarga!, placa: b.placa || null })} />
+        )}
         <BotaoIcone icone={Pencil} rotulo={`Editar ${nome}`} onClick={() => setEditando(b)} />
         <BotaoIcone icone={Trash2} rotulo={`Excluir ${nome}`} perigo
                     onClick={async () => await confirmar({
@@ -525,7 +531,10 @@ function AReceber() {
           <AreaSoltar compacta className="flex-1 min-w-0" aceita={['.pdf']} onArquivos={subir} icone={FileUp}
                       titulo={`Arraste os boletos de ${resumo?.rotulo ?? cliente} aqui`} textoBotao="Escolher PDFs"
                       carregando={subindo} textoCarregando="Lendo os boletos..." />
-          <Botao variante="secundario" icone={Plus} onClick={() => setEditando('novo')} className="sm:mt-1">Lançar à mão</Botao>
+          <div className="flex flex-col gap-2 sm:mt-1">
+            <Botao variante="secundario" icone={ClipboardCheck} onClick={() => setMontando({ data: hoje, placa: null })}>Montar boleto</Botao>
+            <Botao variante="secundario" icone={Plus} onClick={() => setEditando('novo')}>Lançar à mão</Botao>
+          </div>
         </div>
       </section>
 
@@ -620,6 +629,10 @@ function AReceber() {
         <DataModal titulo={`Recebimento do boleto ${recebendo.nossoNumero || ''}`.trim()} rotulo="Data do recebimento" inicial={null}
                    onClose={() => setRecebendo(null)}
                    onSalvar={d => tentar(() => api.marcarRecebido(recebendo.id, d), 'Não consegui marcar o recebimento.', 'Recebimento marcado.')} />
+      )}
+      {montando && (
+        <MontarBoleto cliente={cliente} rotuloCliente={resumo?.rotulo ?? cliente} dataInicial={montando.data}
+                      placaInicial={montando.placa} onClose={() => setMontando(null)} onEmitido={carregar} />
       )}
       {editando && (
         <ReceberModal boleto={editando === 'novo' ? null : editando} cliente={cliente} onClose={() => setEditando(null)}
