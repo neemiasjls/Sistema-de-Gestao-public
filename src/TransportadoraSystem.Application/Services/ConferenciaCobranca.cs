@@ -68,8 +68,8 @@ public static class ConferenciaCobranca
     private static int Distancia(Boleto b, DateOnly data) =>
         Math.Abs((b.RecebidoEm ?? b.Vencimento ?? data).DayNumber - data.DayNumber);
 
-    // Combinações que somam o alvo (centavos), candidatos do maior para o menor.
-    private static List<List<Boleto>> Somas(List<Boleto> c, decimal alvo)
+    // Combinações que somam o alvo (centavos), candidatos do maior para o menor. Também usada no Pix (PixBoletos).
+    public static List<List<Boleto>> Somas(List<Boleto> c, decimal alvo, int maxSolucoes = MaxSolucoes)
     {
         var res = new List<List<Boleto>>();
         var resto = new decimal[c.Count + 1];
@@ -77,7 +77,7 @@ public static class ConferenciaCobranca
         var atual = new List<Boleto>();
         void Ir(int i, decimal soma)
         {
-            if (res.Count >= MaxSolucoes) return;
+            if (res.Count >= maxSolucoes) return;
             if (Math.Abs(soma - alvo) < 0.005m) { res.Add([.. atual]); return; }
             if (i >= c.Count || soma > alvo + 0.005m || soma + resto[i] < alvo - 0.005m) return;
             atual.Add(c[i]); Ir(i + 1, soma + c[i].Valor); atual.RemoveAt(atual.Count - 1);

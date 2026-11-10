@@ -296,6 +296,66 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
         }
     }
 
+    // ───────────── Cobrança: baixar o boleto pago por fora (Pix, BOL-14) ─────────────
+
+    /// <summary>
+    /// POST /boletos/{nossoNumero}/baixar com {numeroCliente, codigoModalidade}. Ação REAL no banco: só chamar
+    /// depois da confirmação do Admin para estes boletos. O nosso número vai com o dígito no fim ("669-6" → 6696),
+    /// como o Sicoob devolveu na emissão (6711 → 671-1). 204 = baixado. Recusado (400/406) = mensagens do banco.
+    /// Incerto = o pedido saiu e a resposta não voltou: conferir no Sicoobnet.
+    /// </summary>
+    public async Task<(bool Baixou, string? Erro, bool Incerto)> BaixarBoletoAsync(string nossoNumero, CancellationToken ct = default)
+    {
+        if (FaltaConfigurar() is { } falta) return (false, falta, false);
+        if (NumeroCliente == null || !long.TryParse(NumeroCliente, out var numeroCliente))
+            return (false, "Falta Sicoob__NumeroCliente (código do beneficiário) no Render.", false);
+        var digitos = new string(nossoNumero.Where(char.IsDigit).ToArray());
+        if (!long.TryParse(digitos, out var nosso)) return (false, "Boleto sem nosso número.", false);
+        if (!int.TryParse(Modalidade, out var modalidade)) modalidade = 1;
+        var (token, erroToken) = await TokenAsync(ct, EscoposCobranca);
+        if (token == null) return (false, erroToken, false);
+
+        var corpo = JsonSerializer.Serialize(new { numeroCliente, codigoModalidade = modalidade });
+        HttpResponseMessage resp;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{UrlCobranca}/boletos/{nosso}/baixar")
+            {
+                Content = new StringContent(corpo, System.Text.Encoding.UTF8, "application/json"),
+            };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            req.Headers.Add("client_id", ClientId);
+            resp = await http.SendAsync(req, ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            log.LogError("Sicoob baixa {Nosso}: sem resposta {Tipo} {Msg}", nosso, ex.GetType().Name, ex.Message);
+            return (false, "O Sicoob não respondeu: não sei se baixou. Confira no Sicoobnet (Cobrança → Boletos) antes de tentar de novo.", true);
+        }
+        using (resp)
+        {
+            var texto = await resp.Content.ReadAsStringAsync(ct);
+            if (resp.IsSuccessStatusCode)
+            {
+                log.LogInformation("Sicoob baixa {Nosso}: {Status}", nosso, (int)resp.StatusCode);
+                return (true, null, false);
+            }
+            log.LogWarning("Sicoob baixa {Nosso}: {Status} {Corpo}", nosso, (int)resp.StatusCode, Curto(texto));
+            if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            {
+                lock (Tokens) Tokens.Remove(EscoposCobranca);
+                return (false, "O Sicoob não liberou a baixa de boletos para este aplicativo (escopo boletos_alteracao).", false);
+            }
+            if ((int)resp.StatusCode == 429)
+                return (false, "O Sicoob pediu um tempo (muitos pedidos seguidos). Tente de novo em alguns minutos.", false);
+            var msgs = MensagensSicoob(texto);
+            if ((int)resp.StatusCode >= 500)
+                return (false, $"O Sicoob deu erro ({(int)resp.StatusCode}){(msgs.Count > 0 ? ": " + string.Join(" · ", msgs) : "")}. Não sei se baixou: confira no Sicoobnet antes de tentar de novo.", true);
+            if (msgs.Count > 0) return (false, $"O Sicoob recusou a baixa: {string.Join(" · ", msgs)}", false);
+            return (false, $"O Sicoob recusou a baixa ({(int)resp.StatusCode}).", false);
+        }
+    }
+
     private static List<string> MensagensSicoob(string corpo)
     {
         var l = new List<string>();

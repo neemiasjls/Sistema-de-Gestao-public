@@ -11,6 +11,7 @@ import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
 import { sicoobApi, type BoletoSugerido, type ExtratoSicoob, type LancamentoSicoob } from '../services/sicoobApi'
 import { dataBr } from '../utils/formato'
 import ConferenciaBoletosPagos from './ConferenciaBoletosPagos'
+import PixBaixaBoletos from './PixBaixaBoletos'
 
 // Aba "Extrato do banco" de Boletos: o que entrou e saiu da conta PJ no Sicoob,
 // lido pela API do banco (só consulta, BOL-10). Entrada de mesmo valor que um
@@ -63,6 +64,7 @@ export default function ExtratoSicoob() {
   const lista = (extrato?.lancamentos ?? []).filter(l =>
     mostrar === 'tudo' ? true : mostrar === 'entradas' ? l.credito : !l.credito)
   const paraMarcar = (extrato?.lancamentos ?? []).filter(l => l.sugestoes.length > 0).length
+  const pixParaBaixar = (extrato?.lancamentos ?? []).filter(l => (l.pix?.opcoes.length ?? 0) > 0).length
 
   return (
     <div className="space-y-4">
@@ -105,6 +107,12 @@ export default function ExtratoSicoob() {
             </Aviso>
           )}
 
+          {pixParaBaixar > 0 && (
+            <Aviso tipo="info" titulo={pixParaBaixar === 1 ? '1 Pix de cliente bate com boletos a receber' : `${pixParaBaixar} Pix de clientes batem com boletos a receber`}>
+              Confira e dê baixa: o boleto é baixado no Sicoob e fica recebido na data do Pix.
+            </Aviso>
+          )}
+
           <Segmentado valor={mostrar} onChange={setMostrar} rotulo="Mostrar"
                       opcoes={[['entradas', 'Entradas'], ['saidas', 'Saídas'], ['tudo', 'Tudo']]} />
 
@@ -133,6 +141,7 @@ export default function ExtratoSicoob() {
                       Boleto {l.jaMarcado.nossoNumero} da {l.jaMarcado.rotulo} já marcado como recebido
                     </p>
                   )}
+                  {l.pix && <PixBaixaBoletos l={l} pix={l.pix} mudou={() => carregar(inicio, fim)} />}
                   {l.sugestoes.map(b => (
                     <div key={b.id} className="sm:ml-[60px] flex flex-wrap items-center gap-2 rounded-lg border border-tinta-200 bg-tinta-50 px-3 py-2">
                       <p className="flex-1 min-w-[200px] text-sm text-tinta-900">
