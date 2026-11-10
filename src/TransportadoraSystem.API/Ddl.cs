@@ -1651,6 +1651,13 @@ static class Ddl
         """
         ALTER TABLE "BoletosPosto" ADD COLUMN IF NOT EXISTS "AgendadoPara" date;
         """,
+        // ABA-07 (10/11/2026): agendado e pago achados no DDA do Sicoob; código de barras do boleto do posto
+        """
+        ALTER TABLE "BoletosPosto" ADD COLUMN IF NOT EXISTS "AgendadoPeloBanco" boolean NOT NULL DEFAULT false;
+        """,
+        """
+        ALTER TABLE "BoletosPosto" ADD COLUMN IF NOT EXISTS "CodigoBarras" text NOT NULL DEFAULT '';
+        """,
     ];
 
     /// <summary>
@@ -1677,5 +1684,6 @@ static class Ddl
         ("PlanilhasSeguro", "FaturaSeguro"), ("AliquotasSeguro", "Aliquota"),
         ("BoletosReceber", "LinhaDigitavel"),
         ("BoletosPosto", "PagoExtratoId"), ("BoletosPosto", "ExtratoRecusados"), ("BoletosPosto", "AgendadoPara"),
+        ("BoletosPosto", "AgendadoPeloBanco"), ("BoletosPosto", "CodigoBarras"),
     ];
 }

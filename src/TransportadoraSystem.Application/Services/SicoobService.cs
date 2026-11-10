@@ -10,7 +10,7 @@ using Microsoft.Extensions.Logging;
 namespace TransportadoraSystem.Application.Services;
 
 // Conta PJ no Sicoob: extrato e saldo (Conta Corrente v4); consulta e emissão do boleto a receber
-// (Cobrança Bancária v3). O aplicativo do Sicoob foi criado só com escopos de consulta e de boletos;
+// (Cobrança Bancária v3); consulta do DDA (Cobrança Bancária Pagamentos v3, só pagamentos_consulta). O aplicativo do Sicoob foi criado só com escopos de consulta e de boletos;
 // nada aqui paga, transfere ou devolve Pix (PEN-37, BOL-10).
 //
 // Configuração (variáveis de ambiente na Render):
@@ -27,6 +27,10 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
     private const string UrlCobranca = "https://api.sicoob.com.br/cobranca-bancaria/v3";
     // Todas as da Cobrança do aplicativo: o Sicoob recusou ("Not registered to plan") com só a de consulta
     private const string EscoposCobranca = "boletos_consulta boletos_inclusao boletos_alteracao webhooks_inclusao webhooks_consulta webhooks_alteracao";
+    // Cobrança Bancária Pagamentos: só a consulta do DDA (boletos emitidos contra o CNPJ da conta). O escopo de
+    // pagar NÃO está no aplicativo e não deve entrar (ABA-07, PEN-37).
+    private const string UrlPagamentos = "https://api.sicoob.com.br/pagamentos/v3";
+    private const string EscoposPagamentos = "pagamentos_consulta";
     private string? NumeroCliente => new string((config["Sicoob:NumeroCliente"] ?? "").Where(char.IsDigit).ToArray()) is { Length: > 0 } n ? n : null;
     private string Modalidade => config["Sicoob:CodigoModalidade"] ?? "1";
 
@@ -223,6 +227,64 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
         return (null, erro ?? "O Sicoob não achou o boleto.");
     }
 
+    // ───────────── DDA: boletos emitidos contra a conta (postos), só consulta ─────────────
+
+    /// <summary>
+    /// Boletos do DDA numa situação (2 agendado, 3 liquidado...) com vencimento no período. Erro vira texto
+    /// (app sem a API aprovada = 401/403), nunca exceção. 204 = lista vazia.
+    /// </summary>
+    public async Task<(List<PostosDda.Item>? Itens, string? Erro)> BoletosDdaAsync(int situacao, DateOnly inicio, DateOnly fim, CancellationToken ct = default)
+    {
+        if (FaltaConfigurar() is { } falta) return (null, falta);
+        if (!long.TryParse(Conta, out var conta)) return (null, "Conta do Sicoob inválida no Render.");
+        var url = $"{UrlPagamentos}/boletos?numeroConta={conta}&dataInicial={inicio:yyyy-MM-dd}&dataFinal={fim:yyyy-MM-dd}" +
+                  $"&situacao={situacao}&tipoData=1";
+        string? erro = null;
+        // 401/403 com token vencido: o token foi descartado; tenta uma vez com outro
+        for (var tentativa = 0; tentativa < 2; tentativa++)
+        {
+            var (token, erroToken) = await TokenAsync(ct, EscoposPagamentos);
+            if (token == null) return (null, erroToken);
+            var (json, e) = await GetAsync(url, token, ct);
+            if (json == null)
+            {
+                erro = e;
+                if (e == NaoLiberou) continue;
+                return (null, e);
+            }
+            using (json)
+            {
+                var raiz = json.RootElement;
+                if (raiz.ValueKind == JsonValueKind.Object)
+                    foreach (var nome in new[] { "resultado", "boletos", "itens" })
+                        if (raiz.TryGetProperty(nome, out var r) && r.ValueKind == JsonValueKind.Array) { raiz = r; break; }
+                if (raiz.ValueKind != JsonValueKind.Array) return ([], null);
+                var itens = raiz.EnumerateArray().Where(b => b.ValueKind == JsonValueKind.Object)
+                    .Select(b => LerItemDda(b, situacao)).Where(i => i != null).Select(i => i!).ToList();
+                log.LogInformation("Sicoob DDA situação {Situacao}: {N} boleto(s)", situacao, itens.Count);
+                return (itens, null);
+            }
+        }
+        return (null, erro == NaoLiberou
+            ? "o Sicoob não liberou a API de Pagamentos (DDA) para este aplicativo; confira se a aprovação saiu e o Client ID na Render."
+            : erro);
+    }
+
+    private static PostosDda.Item? LerItemDda(JsonElement b, int situacaoPedida)
+    {
+        var valor = Valor(b, "valorBoleto");
+        if (valor is not > 0) return null;
+        var venc = DataDe(Texto(b, "dataVencimentoBoleto"));
+        var codigo = PostosDda.CodigoDeBarras(Texto(b, "numeroCodigoBarras")) ?? "";
+        var nosso = Texto(b, "numeroNossoNumero");
+        // A situação do próprio boleto vale mais que a pedida (se vier)
+        var sit = int.TryParse(Texto(b, "codigoTipoSituacaoBoleto"), out var s) && s > 0 ? s : situacaoPedida;
+        return new PostosDda.Item(PostosDda.Chave(codigo, nosso, valor.Value, venc), sit,
+            new string(Texto(b, "numeroCpfCnpjBeneficiario").Where(char.IsDigit).ToArray()), Texto(b, "nomeRazaoSocialBeneficiario"),
+            valor.Value, venc, codigo, nosso, Texto(b, "numeroDocumento"),
+            DataDe(Texto(b, "dataPagamento")), Valor(b, "valorPagamento"));
+    }
+
     // ───────────── Cobrança: emitir o boleto a receber (CD e Girassol) ─────────────
 
     public record BoletoEmitido(string NossoNumero, string LinhaDigitavel, string CodigoBarras, byte[]? Pdf);
@@ -399,9 +461,12 @@ public class SicoobService(HttpClient http, IConfiguration config, ILogger<Sicoo
             if (!resp.IsSuccessStatusCode)
             {
                 log.LogWarning("Sicoob token: {Status} {Corpo}", (int)resp.StatusCode, Curto(corpo));
-                return (null, escopos == Escopos
-                    ? "O Sicoob recusou o acesso. Confira o Client ID, o certificado e se o aplicativo está aprovado."
-                    : "O Sicoob recusou a consulta de boletos: no portal do desenvolvedor, o aplicativo precisa ter a API de Cobrança Bancária (só consulta) liberada.");
+                return (null, escopos switch
+                {
+                    Escopos => "O Sicoob recusou o acesso. Confira o Client ID, o certificado e se o aplicativo está aprovado.",
+                    EscoposPagamentos => "o Sicoob recusou o acesso ao DDA: o aplicativo precisa ter a API Cobrança Bancária Pagamentos (pagamentos_consulta) aprovada.",
+                    _ => "O Sicoob recusou a consulta de boletos: no portal do desenvolvedor, o aplicativo precisa ter a API de Cobrança Bancária (só consulta) liberada.",
+                });
             }
             using var doc = JsonDocument.Parse(corpo);
             var token = Texto(doc.RootElement, "access_token");

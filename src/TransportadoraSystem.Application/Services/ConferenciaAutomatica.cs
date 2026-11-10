@@ -9,12 +9,13 @@ namespace TransportadoraSystem.Application.Services;
 /// e pelo agendamento de hora em hora no Supabase:
 ///  (a) boletos a receber CD/Perfil em aberto: consulta cada um na Cobrança; liquidado = marca recebido na data
 ///      da liquidação; baixado ou outra situação só relata. Para no 429 (o Sicoob limita as consultas seguidas);
-///  (b) boletos dos postos pagos pelo extrato dos últimos dias (PostosPagosExtratoService, só os exatos);
+///  (b) boletos dos postos agendados ou pagos pelo DDA do Sicoob (PostosDdaService; DDA fora do ar não para o resto)
+///      e pagos pelo extrato dos últimos dias (PostosPagosExtratoService, só os exatos);
 ///  (c) Pix de boleto (BOL-14): só IDENTIFICA e fica esperando a confirmação dele. Nada aqui dá baixa no banco,
 ///      paga, transfere ou devolve Pix.
 /// </summary>
 public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob, PostosPagosExtratoService postos,
-    BoletoMontagemService montagem, ILogger<ConferenciaAutomaticaService> log)
+    PostosDdaService dda, BoletoMontagemService montagem, ILogger<ConferenciaAutomaticaService> log)
 {
     public const int DiasExtrato = 10;
     public const int MaxConsultas = 40;
@@ -34,14 +35,20 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
     public record PartePostos(List<PostoMarcado> Marcados, int Duvidas, string? Erro);
     public record PixAguardando(string Id, DateOnly Data, decimal Valor, string Pagador, bool Duvida, List<string> Boletos);
     public record PartePix(List<PixAguardando> Aguardando, string? Erro);
-    public record Resumo(DateTime Em, DateOnly Inicio, DateOnly Fim, ParteReceber Receber, PartePostos Postos, PartePix Pix)
+    public record Resumo(DateTime Em, DateOnly Inicio, DateOnly Fim, ParteReceber Receber, PartePostos Postos, PartePix Pix,
+        PostosDdaService.Parte Dda)
     {
         // Para o log: só contagens, nada de conta, CNPJ ou nome
         public string Texto =>
             $"recebidos marcados {Receber.Marcados.Count} (consultados {Receber.Consultados}/{Receber.EmAberto}" +
             $"{(Receber.ParouNoLimite ? ", parou no limite do Sicoob" : "")}{(Receber.Erro != null ? ", erro" : "")}), " +
             $"não marcados {Receber.NaoMarcados.Count}; postos marcados {Postos.Marcados.Count}, dúvidas {Postos.Duvidas}" +
-            $"{(Postos.Erro != null ? ", erro" : "")}; Pix aguardando confirmação {Pix.Aguardando.Count}{(Pix.Erro != null ? ", erro" : "")}";
+            $"{(Postos.Erro != null ? ", erro" : "")}; " +
+            (Dda.Erro != null && Dda.Erro.StartsWith("DDA indisponível") ? Dda.Erro.TrimEnd('.')
+                : $"agendados marcados {Dda.Agendados.Count}, pagos pelo DDA {Dda.Pagos.Count}" +
+                  $"{(Dda.AgendamentosRetirados > 0 ? $", agendamentos retirados {Dda.AgendamentosRetirados}" : "")}" +
+                  $", dúvidas do DDA {Dda.Duvidas}, no DDA sem cadastro {Dda.NaoCadastrados.Count}{(Dda.Erro != null ? $" ({Dda.Erro.TrimEnd('.')})" : "")}") +
+            $"; Pix aguardando confirmação {Pix.Aguardando.Count}{(Pix.Erro != null ? ", erro" : "")}";
     }
 
     private static DateOnly Hoje() => DateOnly.FromDateTime(DateTime.UtcNow.AddHours(-3));
@@ -55,9 +62,20 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
             var hoje = Hoje();
             var de = hoje.AddDays(-DiasExtrato);
             if (sicoob.FaltaConfigurar() is { } falta)
-                return new(DateTime.UtcNow, de, hoje, new(0, 0, 0, false, [], [], falta), new([], 0, falta), new([], falta));
+                return new(DateTime.UtcNow, de, hoje, new(0, 0, 0, false, [], [], falta), new([], 0, falta), new([], falta),
+                    new([], [], 0, 0, [], $"DDA indisponível: {falta}"));
 
             var receber = await ConferirReceberAsync(hoje, ct);
+
+            // DDA antes do extrato: o agendado do banco já entra na janela do débito (PostosPagosExtrato.NaJanela)
+            PostosDdaService.Parte parteDda;
+            try { parteDda = await dda.ConferirAsync(hoje, ct); }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                log.LogWarning("Conferência automática: DDA falhou ({Tipo}: {Msg})", ex.GetType().Name, ex.Message);
+                db.ChangeTracker.Clear();
+                parteDda = new([], [], 0, 0, [], "DDA indisponível: erro ao conferir os boletos do DDA.");
+            }
 
             var (extrato, erroExtrato) = await sicoob.ExtratoAsync(de, hoje, ct);
             PartePostos partePostos;
@@ -75,7 +93,7 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
                     r.Duvidas.Count, null);
                 partePix = await IdentificarPixAsync(extrato.Lancamentos, de, ct);
             }
-            return new(DateTime.UtcNow, de, hoje, receber, partePostos, partePix);
+            return new(DateTime.UtcNow, de, hoje, receber, partePostos, partePix, parteDda);
         }
         finally { Trava.Release(); }
     }

@@ -86,7 +86,7 @@ public class CobrancaAbastecimentoService
 
     public record BoletoLido(
         string Posto, string NumeroDocumento, string NossoNumero, double? Valor,
-        DateOnly? Vencimento, DateOnly? DataDocumento, bool Lido, List<string> Avisos);
+        DateOnly? Vencimento, DateOnly? DataDocumento, bool Lido, List<string> Avisos, string CodigoBarras = "");
 
     public record Documento(TipoDocumento Tipo, FaturaLida? Fatura, BoletoLido? Boleto);
 
@@ -152,9 +152,12 @@ public class CobrancaAbastecimentoService
         // Linha digitável: os 14 últimos dígitos são o fator de vencimento e o valor
         double? valorLinha = null;
         int? fator = null;
+        var codigoBarras = "";
         var ml = LinhaDigitavel.Match(texto);
         if (ml.Success)
         {
+            // Código de barras (44 dígitos, dígito verificador conferido): casa o boleto com o DDA do Sicoob (ABA-07)
+            codigoBarras = PostosDda.CodigoDeBarras(ml.Value) ?? "";
             fator = int.Parse(ml.Groups[1].Value);
             var v = long.Parse(ml.Groups[2].Value) / 100.0;
             if (v > 0) valorLinha = v;
@@ -204,7 +207,7 @@ public class CobrancaAbastecimentoService
         if (posto == "") avisos.Add($"{nomeArquivo}: não reconheci o posto do boleto.");
 
         return new BoletoLido(posto, numero, nosso, valor is double x ? Math.Round(x, 2) : null,
-            vencimento, dataDoc, true, avisos);
+            vencimento, dataDoc, true, avisos, codigoBarras);
     }
 
     // Fator de vencimento do boleto (Febraban): dias desde 07/10/1997; chegou a

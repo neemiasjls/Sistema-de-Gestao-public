@@ -113,8 +113,11 @@ public static class PostosPagosExtrato
 
         foreach (var d in debitos.Where(d => !NaoEhBoleto(d) && !usados.Contains(d.Chave)).OrderBy(d => d.Data).ThenBy(d => d.Chave))
         {
-            // Boleto de mesmo valor já marcado pago à mão no dia do débito: esse débito já está contado
-            if (boletos.Any(b => b.PagoEm == d.Data && b.PagoExtratoId == "" && b.Valor == d.Valor)) continue;
+            // Boleto de mesmo valor já marcado pago à mão no dia do débito, ou pelo DDA perto dele (a data do
+            // pagamento no DDA pode diferir um dia do débito): esse débito já está contado
+            if (boletos.Any(b => b.Valor == d.Valor && b.PagoEm is { } p && (
+                    (b.PagoExtratoId == "" && p == d.Data) ||
+                    (PostosDda.PeloDda(b.PagoExtratoId) && p >= d.Data.AddDays(-2) && p <= d.Data.AddDays(2))))) continue;
 
             var abertos = boletos.Where(b => b.PagoEm == null && b.Valor == d.Valor && !b.Recusados.Contains(d.Chave)).ToList();
             if (abertos.Count == 0) continue;
@@ -165,7 +168,7 @@ public static class PostosPagosExtrato
         }
         b.PagoEm = pagoEm;
         b.PagoExtratoId = pagoEm == null ? "" : chaveExtrato ?? "";
-        if (pagoEm != null) b.AgendadoPara = null;
+        if (pagoEm != null) { b.AgendadoPara = null; b.AgendadoPeloBanco = false; }
         b.AtualizadoEm = DateTime.UtcNow;
     }
 }
