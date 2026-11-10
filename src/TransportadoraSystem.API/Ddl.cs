@@ -1641,6 +1641,16 @@ static class Ddl
         """
         ALTER TABLE "ConfigEmissaoBoleto" ENABLE ROW LEVEL SECURITY;
         """,
+        // ABA-07 (10/11/2026): boleto do posto pago pelo extrato do Sicoob e o agendado marcado à mão
+        """
+        ALTER TABLE "BoletosPosto" ADD COLUMN IF NOT EXISTS "PagoExtratoId" text NOT NULL DEFAULT '';
+        """,
+        """
+        ALTER TABLE "BoletosPosto" ADD COLUMN IF NOT EXISTS "ExtratoRecusados" text NOT NULL DEFAULT '';
+        """,
+        """
+        ALTER TABLE "BoletosPosto" ADD COLUMN IF NOT EXISTS "AgendadoPara" date;
+        """,
     ];
 
     /// <summary>
@@ -1666,5 +1676,6 @@ static class Ddl
         ("ViagemCaminhaoCargas", "Ligacao"), ("ViagemCaminhaoCargas", "LigacaoAviso"),
         ("PlanilhasSeguro", "FaturaSeguro"), ("AliquotasSeguro", "Aliquota"),
         ("BoletosReceber", "LinhaDigitavel"),
+        ("BoletosPosto", "PagoExtratoId"), ("BoletosPosto", "ExtratoRecusados"), ("BoletosPosto", "AgendadoPara"),
     ];
 }

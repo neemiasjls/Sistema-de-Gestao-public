@@ -364,7 +364,7 @@ public class CobrancasAbastecimentoController(
         b.Valor = req.Valor is decimal v ? Math.Round(v, 2) : null;
         b.Vencimento = vencimento;
         b.DataChegada = chegada.Value;
-        b.PagoEm = pagoEm;
+        PostosPagosExtrato.MudarPagamento(b, pagoEm);
         b.LigacaoManual = !req.LigacaoAutomatica;
         if (b.LigacaoManual) b.FaturaId = req.FaturaId;
         b.AtualizadoEm = DateTime.UtcNow;

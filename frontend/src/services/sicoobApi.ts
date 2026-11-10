@@ -96,7 +96,50 @@ export interface ConferenciaBoletos {
   creditos: { data: string; valor: number; achou: boolean; duvida: boolean; boletos: BoletoConferido[]; alternativas: BoletoConferido[][] }[]
 }
 
+// Boletos dos postos pagos pelo extrato (ABA-07): o que casou exato já vem marcado pago; o resto é dúvida
+export interface BoletoPostoVisto {
+  id: number
+  posto: string
+  numero: string
+  valor: number
+  vencimento: string | null
+  agendadoPara: string | null
+}
+
+export interface PostoMarcado {
+  boleto: BoletoPostoVisto
+  data: string
+  chave: string
+  descricao: string
+  motivo: string
+  agora: boolean
+}
+
+export interface DuvidaPosto {
+  chave: string
+  data: string
+  valor: number
+  descricao: string
+  motivo: string
+  opcoes: BoletoPostoVisto[]
+}
+
+export interface ConferenciaPostos {
+  inicio: string
+  fim: string
+  marcados: PostoMarcado[]
+  duvidas: DuvidaPosto[]
+}
+
 export const sicoobApi = {
+  conferirPostos: (inicio?: string, fim?: string) =>
+    api.post('/api/sicoob/postos/conferir', { inicio, fim }).then(r => comDados(r, d => {
+      const c = comoObjeto<ConferenciaPostos>(d, ['marcados', 'duvidas'], 'conferência dos postos')
+      c.duvidas = c.duvidas.map(x => comoObjeto<DuvidaPosto>(x, ['opcoes'], 'dúvida do posto'))
+      return c
+    })),
+  marcarPosto: (boletoId: number, chave: string, data: string) =>
+    api.post('/api/sicoob/postos/marcar', { boletoId, chave, data }),
   // Ação REAL no banco: só depois da confirmação na tela
   baixarPix: (boletos: number[], dataPix: string, valorPix: number) =>
     api.post('/api/sicoob/pix/baixar', { boletos, dataPix, valorPix, confirmado: true }).then(r => comDados(r, d =>

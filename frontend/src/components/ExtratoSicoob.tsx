@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { CheckCircle2, Landmark, RefreshCw } from 'lucide-react'
 import { Carregando, ErroCarga, Vazio } from './ui/Estados'
@@ -6,12 +6,14 @@ import { Segmentado } from './ui/Abas'
 import Aviso from './ui/Aviso'
 import Botao from './ui/Botao'
 import { formatBRL } from '../services/api'
-import { boletosContasApi } from '../services/boletosContasApi'
+import { boletosContasApi, type ConfigEmissao } from '../services/boletosContasApi'
 import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
 import { sicoobApi, type BoletoSugerido, type ExtratoSicoob, type LancamentoSicoob } from '../services/sicoobApi'
 import { dataBr } from '../utils/formato'
+import { limparDescricao } from '../utils/descricaoExtrato'
 import ConferenciaBoletosPagos from './ConferenciaBoletosPagos'
 import PixBaixaBoletos from './PixBaixaBoletos'
+import PostosPagosExtrato from './PostosPagosExtrato'
 
 // Aba "Extrato do banco" de Boletos: o que entrou e saiu da conta PJ no Sicoob,
 // lido pela API do banco (só consulta, BOL-10). Entrada de mesmo valor que um
@@ -26,6 +28,8 @@ const hojeLocal = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 const inicioDoMes = () => `${hojeLocal().slice(0, 8)}01`
+const ROTULO_CLIENTE: Record<string, string> = { GIRASSOL: 'Girassol (Horacio)', CD: 'CD (Cedro Frutas)' }
+const digitos = (s: string) => s.replace(/\D/g, '')
 
 export default function ExtratoSicoob() {
   const [inicio, setInicio] = useState(inicioDoMes)
@@ -35,6 +39,9 @@ export default function ExtratoSicoob() {
   const [carregando, setCarregando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
   const [marcando, setMarcando] = useState<number | null>(null)
+  // Período do extrato lido por último: a conferência dos postos usa o mesmo
+  const [lido, setLido] = useState({ de: '', ate: '', versao: 0 })
+  const [pagadores, setPagadores] = useState<ConfigEmissao[]>([])
 
   const carregar = useCallback(async (de: string, ate: string) => {
     setCarregando(true)
@@ -42,12 +49,21 @@ export default function ExtratoSicoob() {
       const { data } = await sicoobApi.extrato(de || undefined, ate || undefined)
       setExtrato(data)
       setErro(null)
+      if (data.configurado) setLido(l => ({ de, ate, versao: l.versao + 1 }))
     } catch (e) {
       setErro(await erroApi(e, 'Não consegui ler o extrato do Sicoob.'))
     } finally { setCarregando(false) }
   }, [])
 
   useEffect(() => { carregar(inicioDoMes(), hojeLocal()) }, [carregar])
+  // Só para dizer de qual cliente é o CNPJ do Pix; sem a configuração, a descrição sai sem o cliente
+  useEffect(() => {
+    boletosContasApi.configEmissao().then(r => setPagadores(r.data.clientes.map(c => c.config))).catch(() => {})
+  }, [])
+  const clienteDoCnpj = useMemo(() => {
+    const mapa = new Map(pagadores.filter(c => c.pagadorCnpj).map(c => [digitos(c.pagadorCnpj), ROTULO_CLIENTE[c.cliente] ?? c.cliente]))
+    return (doc: string) => mapa.get(doc) ?? null
+  }, [pagadores])
 
   const marcar = async (l: LancamentoSicoob, b: BoletoSugerido) => {
     if (!l.data) return
@@ -113,6 +129,8 @@ export default function ExtratoSicoob() {
             </Aviso>
           )}
 
+          {lido.versao > 0 && <PostosPagosExtrato inicio={lido.de} fim={lido.ate} versao={lido.versao} />}
+
           <Segmentado valor={mostrar} onChange={setMostrar} rotulo="Mostrar"
                       opcoes={[['entradas', 'Entradas'], ['saidas', 'Saídas'], ['tudo', 'Tudo']]} />
 
@@ -120,15 +138,16 @@ export default function ExtratoSicoob() {
             <Vazio icone={Landmark} titulo={mostrar === 'saidas' ? 'Nenhuma saída no período' : mostrar === 'entradas' ? 'Nenhuma entrada no período' : 'Nenhum lançamento no período'} />
           ) : (
             <ul className="bg-white border border-gray-200 rounded-xl divide-y divide-gray-100">
-              {lista.map((l, i) => (
+              {lista.map((l, i) => {
+                const pixCliente = l.pix?.cliente ? ROTULO_CLIENTE[l.pix.cliente] : null
+                const desc = limparDescricao(l.descricao, l.complemento, l.cpfCnpj, doc => clienteDoCnpj(doc) ?? pixCliente)
+                return (
                 <li key={`${l.id}-${i}`} className="px-4 py-3 space-y-2">
                   <div className="flex items-start gap-3">
                     <span className="w-12 shrink-0 text-sm text-gray-500 tabular-nums pt-0.5">{l.data ? dataBr(l.data).slice(0, 5) : '—'}</span>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-gray-900 break-words">{l.descricao || 'Sem descrição no banco'}</p>
-                      {(l.complemento || l.cpfCnpj) && (
-                        <p className="text-sm text-gray-500 break-words">{[l.complemento, l.cpfCnpj].filter(Boolean).join(' · ')}</p>
-                      )}
+                      <p className="text-sm font-medium text-gray-900 break-words">{desc.titulo || 'Sem descrição no banco'}</p>
+                      {desc.detalhe && <p className="text-sm text-gray-500 break-words">{desc.detalhe}</p>}
                     </div>
                     <span className={`shrink-0 text-sm tabular-nums whitespace-nowrap ${l.credito ? 'font-semibold text-gray-900' : 'text-gray-600'}`}>
                       {l.credito ? '+' : '−'} {formatBRL(l.valor)}
@@ -156,7 +175,8 @@ export default function ExtratoSicoob() {
                     </div>
                   ))}
                 </li>
-              ))}
+                )
+              })}
             </ul>
           )}
         </>

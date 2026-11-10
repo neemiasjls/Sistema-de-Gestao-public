@@ -12,7 +12,7 @@ import Aviso from '../components/ui/Aviso'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { ArrowDownToLine, ArrowUpFromLine, ChevronRight, ClipboardCheck, Landmark, Download, FileUp, Inbox, Pencil, Plus, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, CalendarClock, ChevronRight, ClipboardCheck, Landmark, Download, FileUp, Inbox, Pencil, Plus, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
 import { boletosApi, clientesApi, formatBRL, type Boleto, type Cliente } from '../services/api'
 import {
   boletosContasApi as api,
@@ -158,6 +158,7 @@ function APagar() {
   const [descricao, setDescricao] = useState('')
   const [subindo, setSubindo] = useState(false)
   const [pagando, setPagando] = useState<BoletoAPagar | null>(null)
+  const [agendando, setAgendando] = useState<BoletoAPagar | null>(null)
   const [editando, setEditando] = useState<BoletoAPagar | 'novo' | null>(null)
   const [falhou, setFalhou] = useState(false)
   const confirmar = useConfirmar()
@@ -209,7 +210,20 @@ function APagar() {
           <Botao variante="fantasma" tamanho="sm" icone={RotateCcw}
                  onClick={() => tentar(() => marcarPago(b, null), 'Não consegui desfazer o pagamento.')}>Desfazer</Botao>
         ) : (
-          <Botao tamanho="sm" className="whitespace-nowrap" onClick={() => setPagando(b)}>Marcar pago</Botao>
+          <>
+            <Botao tamanho="sm" className="whitespace-nowrap" onClick={() => setPagando(b)}>Marcar pago</Botao>
+            {/* Posto: pagamento agendado no banco, marcado à mão; vira pago quando o débito cai no extrato (ABA-07) */}
+            {b.origem === 'POSTO' && (b.agendadoPara ? (
+              <Botao variante="fantasma" tamanho="sm" className="whitespace-nowrap"
+                     onClick={() => tentar(() => api.agendarPosto(b.id, null), 'Não consegui tirar o agendado.', 'Agendado retirado.')}>
+                Tirar agendado
+              </Botao>
+            ) : (
+              <Botao variante="fantasma" tamanho="sm" icone={CalendarClock} className="whitespace-nowrap" onClick={() => setAgendando(b)}>
+                Agendado para…
+              </Botao>
+            ))}
+          </>
         )}
         {b.temPdf && (
           <BotaoIcone icone={Download} rotulo={`Baixar o PDF de ${nome}`}
@@ -236,6 +250,10 @@ function APagar() {
       {b.origem === 'POSTO' ? 'Posto' : 'Avulso'}
     </span>
   )
+  const notaPosto = (b: BoletoAPagar) => b.origem !== 'POSTO' ? null
+    : b.pagoEm && b.peloExtrato ? <p className="text-sm font-normal text-emerald-800 mt-0.5">Identificado no extrato do Sicoob em {dataBr(b.pagoEm).slice(0, 5)}</p>
+    : !b.pagoEm && b.agendadoPara ? <p className="text-sm font-normal text-tinta-800 mt-0.5">Agendado para {dataBr(b.agendadoPara).slice(0, 5)}</p>
+    : null
   const vencido = (b: BoletoAPagar) => !b.pagoEm && !!b.vencimento && b.vencimento < hoje
 
   return (
@@ -310,8 +328,9 @@ function APagar() {
                 <p className="text-sm text-gray-500 tabular-nums">
                   {b.numero && <>Número {b.numero} · </>}Chegou {dataBr(b.dataChegada)}
                 </p>
+                {notaPosto(b)}
                 <AvisosBoleto avisos={b.avisos} />
-                <div className="flex items-center gap-1 -ml-1 pt-0.5">{acoes(b)}</div>
+                <div className="flex flex-wrap items-center gap-1 -ml-1 pt-0.5">{acoes(b)}</div>
               </li>
             ))}
           </ul>
@@ -336,6 +355,7 @@ function APagar() {
                     <td className="px-3 py-2.5 font-medium text-gray-900">
                       <span className="mr-1.5">{b.beneficiario || '—'}</span>{origemEtiqueta(b)}
                       {b.descricao && <p className="text-sm font-normal text-gray-600 mt-0.5">{b.descricao}</p>}
+                      {notaPosto(b)}
                       <AvisosBoleto avisos={b.avisos} />
                     </td>
                     <td className="px-3 py-2.5 text-gray-600 tabular-nums">{b.numero || '—'}</td>
@@ -358,6 +378,12 @@ function APagar() {
         <DataModal titulo={`Pagamento: ${pagando.beneficiario || pagando.descricao}`} rotulo="Data do pagamento" inicial={null}
                    onClose={() => setPagando(null)}
                    onSalvar={d => tentar(() => marcarPago(pagando, d), 'Não consegui marcar o pagamento.', 'Pagamento marcado.')} />
+      )}
+      {agendando && (
+        <DataModal titulo={`Agendado: ${agendando.beneficiario || agendando.descricao}`} rotulo="Data do agendamento no banco"
+                   inicial={agendando.vencimento && agendando.vencimento >= hoje ? agendando.vencimento : null}
+                   onClose={() => setAgendando(null)}
+                   onSalvar={d => tentar(() => api.agendarPosto(agendando.id, d), 'Não consegui marcar o agendado.', 'Agendado marcado.')} />
       )}
       {editando && (
         <AvulsoModal boleto={editando === 'novo' ? null : editando} onClose={() => setEditando(null)}

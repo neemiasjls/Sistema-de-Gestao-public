@@ -36,7 +36,7 @@ public static class PixBoletos
 
     public static string Digitos(string? s) => new((s ?? "").Where(char.IsDigit).ToArray());
 
-    // CNPJ/CPF escrito no texto do Pix: "Recebimento Pix|@PRIMA TRANSPORTADORA LOG LTDA|@00.296.847 0001-65|@..."
+    // CNPJ/CPF escrito no texto do Pix: "Recebimento Pix|@TRANSPORTADORA EXEMPLO LTDA|@XX.XXX.XXX/0004-XX|@..."
     // (o Sicoob põe espaço no lugar da barra e às vezes deixa o campo CpfCnpj vazio)
     private static readonly System.Text.RegularExpressions.Regex DocNoTexto = new(
         @"(?<!\d)(\d{2}\.?\d{3}\.?\d{3}[/ ]?\d{4}-?\d{2}|\d{3}\.\d{3}\.\d{3}-\d{2})(?!\d)");

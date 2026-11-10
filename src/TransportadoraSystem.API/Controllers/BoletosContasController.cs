@@ -72,6 +72,7 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
             .Select(b => new
             {
                 b.Id, b.Posto, b.NumeroDocumento, b.NossoNumero, b.Valor, b.Vencimento, b.DataChegada, b.PagoEm,
+                b.AgendadoPara, PeloExtrato = b.PagoExtratoId != "",
                 b.LidoDoPdf, b.AvisosJson, b.NomeArquivo, TemPdf = b.Pdf != null,
                 Fatura = b.Fatura != null ? b.Fatura.Numero : null,
             })
@@ -87,10 +88,10 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
         var boletos = postos.Select(b => new BoletoAPagar(
                 "POSTO", b.Id, b.Posto, b.Fatura != null ? $"Fatura {b.Fatura}" : "Posto de combustível",
                 b.NumeroDocumento != "" ? b.NumeroDocumento : b.NossoNumero, b.Valor, b.Vencimento, b.DataChegada, b.PagoEm,
-                b.LidoDoPdf, Lista(b.AvisosJson), b.NomeArquivo, b.TemPdf))
+                b.LidoDoPdf, Lista(b.AvisosJson), b.NomeArquivo, b.TemPdf, b.AgendadoPara, b.PeloExtrato))
             .Concat(avulsos.Select(b => new BoletoAPagar(
                 "AVULSO", b.Id, b.Beneficiario, b.Descricao, b.Numero, b.Valor, b.Vencimento, b.DataChegada, b.PagoEm,
-                b.LidoDoPdf, Lista(b.AvisosJson), b.NomeArquivo, b.TemPdf)))
+                b.LidoDoPdf, Lista(b.AvisosJson), b.NomeArquivo, b.TemPdf, null, false)))
             .OrderBy(b => b.PagoEm != null)
             .ThenBy(b => b.Vencimento ?? DateOnly.MaxValue)
             .ThenByDescending(b => b.DataChegada)
@@ -118,7 +119,7 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
 
     public record BoletoAPagar(string Origem, int Id, string Beneficiario, string Descricao, string Numero, decimal? Valor,
         DateOnly? Vencimento, DateOnly DataChegada, DateOnly? PagoEm, bool LidoDoPdf, List<string> Avisos,
-        string NomeArquivo, bool TemPdf);
+        string NomeArquivo, bool TemPdf, DateOnly? AgendadoPara = null, bool PeloExtrato = false);
 
     public record PagoPedido(string? PagoEm);
 
@@ -128,9 +129,28 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
     public async Task<IActionResult> PagarPosto(int id, [FromBody] PagoPedido req)
     {
         if (!Data(req.PagoEm, out var pagoEm)) return BadRequest(new { erro = "Data do pagamento inválida." });
-        var n = await db.BoletosPosto.Where(b => b.Id == id)
-            .ExecuteUpdateAsync(s => s.SetProperty(b => b.PagoEm, pagoEm).SetProperty(b => b.AtualizadoEm, DateTime.UtcNow));
-        if (n == 0) return NotFound(new { erro = "Boleto não encontrado." });
+        var b = await db.BoletosPosto.FirstOrDefaultAsync(x => x.Id == id);
+        if (b == null) return NotFound(new { erro = "Boleto não encontrado." });
+        // Desfazer o pago achado no extrato guarda o débito como "não é este" (ABA-07)
+        PostosPagosExtrato.MudarPagamento(b, pagoEm);
+        await db.SaveChangesAsync();
+        return NoContent();
+    }
+
+    public record AgendadoPedido(string? Data);
+
+    // Pagamento agendado no banco, marcado à mão (ABA-07, opção a): data vazia tira o agendado.
+    // Quando o débito cair no extrato, a conferência marca pago e o agendado some.
+    [HttpPut("pagar/posto/{id:int}/agendado")]
+    public async Task<IActionResult> AgendarPosto(int id, [FromBody] AgendadoPedido req)
+    {
+        if (!Data(req.Data, out var data)) return BadRequest(new { erro = "Data do agendamento inválida." });
+        var b = await db.BoletosPosto.FirstOrDefaultAsync(x => x.Id == id);
+        if (b == null) return NotFound(new { erro = "Boleto não encontrado." });
+        if (data != null && b.PagoEm != null) return BadRequest(new { erro = "Este boleto já está pago." });
+        b.AgendadoPara = data;
+        b.AtualizadoEm = DateTime.UtcNow;
+        await db.SaveChangesAsync();
         return NoContent();
     }
 

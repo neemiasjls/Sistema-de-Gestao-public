@@ -183,6 +183,39 @@ public class SicoobController(AppDbContext db, SicoobService sicoob) : Controlle
     /// recebido; senão dá a BAIXA no banco (ação real, só com confirmado) e, se baixou, marca recebido na data do
     /// Pix e anota na observação. Recusado ou sem resposta = não marca. Resultado boleto por boleto.
     /// </summary>
+    // Boleto emitido errado: baixa no Sicoob e tira do sistema (Admin, 10/11/2026, caso 669-7).
+    // Só o dono, com confirmação. Liquidado (pago) não baixa nem exclui.
+    public record CancelarBoletoPedido(bool Confirmado);
+
+    [HttpPost("boletos/{id:int}/baixar-e-excluir")]
+    public async Task<IActionResult> BaixarEExcluir(int id, [FromBody] CancelarBoletoPedido req, CancellationToken ct)
+    {
+        if (User.FindFirst(AuthService.ClaimDono)?.Value != "true")
+            return StatusCode(StatusCodes.Status403Forbidden, new { erro = "Só o Admin pode dar baixa de boleto no banco." });
+        if (!req.Confirmado) return BadRequest(new { erro = "Confirme a baixa e a exclusão do boleto." });
+        if (sicoob.FaltaConfigurar() is { } falta) return BadRequest(new { erro = falta });
+        var b = await db.BoletosReceber.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (b == null) return NotFound(new { erro = "Boleto não encontrado." });
+        if (b.RecebidoEm != null) return BadRequest(new { erro = "Esse boleto está marcado como recebido: não excluo." });
+        if (string.IsNullOrWhiteSpace(b.NossoNumero)) return BadRequest(new { erro = "Esse boleto não tem nosso número." });
+
+        var (sit, erroConsulta) = await sicoob.ConsultarBoletoAsync(b.NossoNumero, b.Valor, ct);
+        if (sit == null) return StatusCode(StatusCodes.Status502BadGateway, new { erro = $"Não consegui consultar no Sicoob: {erroConsulta} Nada foi feito." });
+        if (sit.Liquidado) return BadRequest(new { erro = "Esse boleto já foi PAGO no Sicoob: não baixei nem excluí." });
+        string noBanco;
+        if ((sit.Situacao ?? "").Contains("baix", StringComparison.OrdinalIgnoreCase)) noBanco = "já estava baixado no Sicoob";
+        else
+        {
+            var (baixou, erroBaixa, incerto) = await sicoob.BaixarBoletoAsync(b.NossoNumero, ct);
+            if (!baixou)
+                return StatusCode(StatusCodes.Status502BadGateway, new { erro = (erroBaixa ?? "O Sicoob não baixou.") + (incerto ? " Confira no Sicoobnet." : "") + " Não excluí do sistema." });
+            noBanco = "baixado no Sicoob";
+        }
+        db.BoletosReceber.Remove(b);
+        await db.SaveChangesAsync(ct);
+        return Ok(new { b.NossoNumero, mensagem = $"Boleto {b.NossoNumero} {noBanco} e excluído do sistema." });
+    }
+
     [HttpPost("pix/baixar")]
     public async Task<IActionResult> BaixarPix([FromBody] BaixaPixPedido req, CancellationToken ct)
     {
@@ -248,6 +281,43 @@ public class SicoobController(AppDbContext db, SicoobService sicoob) : Controlle
             resultado.Add(Item(situacao, mensagem));
         }
         return Ok(new { Resultados = resultado });
+    }
+
+    public record PeriodoPedido(string? Inicio, string? Fim);
+
+    /// <summary>
+    /// Boletos dos postos pagos pelo extrato (ABA-07): o que casou exato vira pago com a data do débito; o resto
+    /// volta como dúvida. Usa o extrato guardado do período (a tela chama logo depois de ler o extrato).
+    /// Nada é pago no banco: só marca o que já foi pago.
+    /// </summary>
+    [HttpPost("postos/conferir")]
+    public async Task<IActionResult> ConferirPostos([FromBody] PeriodoPedido req, [FromServices] PostosPagosExtratoService postos,
+        CancellationToken ct)
+    {
+        var hoje = Hoje();
+        var ate = Data(req.Fim) ?? hoje;
+        if (ate > hoje) ate = hoje;
+        var de = Data(req.Inicio) ?? new DateOnly(ate.Year, ate.Month, 1);
+        if (de > ate) return BadRequest(new { erro = "A data inicial está depois da final." });
+        if (ate.DayNumber - de.DayNumber > 92) return BadRequest(new { erro = "Escolha um período de até 3 meses." });
+        if (sicoob.FaltaConfigurar() is { } falta) return BadRequest(new { erro = falta });
+        var (extrato, erro) = await sicoob.ExtratoAsync(de, ate, ct);
+        if (extrato == null) return StatusCode(StatusCodes.Status502BadGateway, new { erro });
+        var r = await postos.ConferirPostosAsync(extrato.Lancamentos, ct);
+        return Ok(new { Inicio = de, Fim = ate, r.Marcados, r.Duvidas });
+    }
+
+    public record EscolhaPostoPedido(int BoletoId, string? Chave, string? Data);
+
+    // Dúvida resolvida por ele: este débito pagou este boleto
+    [HttpPost("postos/marcar")]
+    public async Task<IActionResult> MarcarPosto([FromBody] EscolhaPostoPedido req, [FromServices] PostosPagosExtratoService postos,
+        CancellationToken ct)
+    {
+        var data = Data(req.Data);
+        if (data == null || string.IsNullOrWhiteSpace(req.Chave)) return BadRequest(new { erro = "Informe o débito do extrato." });
+        var erro = await postos.MarcarAsync(req.BoletoId, req.Chave.Trim(), data.Value, ct);
+        return erro == null ? NoContent() : BadRequest(new { erro });
     }
 
     // Situação de UM boleto na Cobrança do Sicoob (só consulta): pega o pago com juros ou desconto,

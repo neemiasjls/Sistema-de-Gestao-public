@@ -40,6 +40,9 @@ public class BoletoPosto
     public DateOnly? DataDocumento { get; set; }
     public DateOnly DataChegada { get; set; }          // o dia em que foi importado; editável
     public DateOnly? PagoEm { get; set; }
+    public string PagoExtratoId { get; set; } = "";    // débito do extrato do Sicoob que marcou o pago (vazio = marcado à mão), ABA-07
+    public string ExtratoRecusados { get; set; } = ""; // débitos que ele desfez ("não é este"), separados por ";"
+    public DateOnly? AgendadoPara { get; set; }        // pagamento agendado no banco, marcado à mão; some quando vira pago
     public int? FaturaId { get; set; }
     public FaturaPosto? Fatura { get; set; }
     public bool LigacaoManual { get; set; }            // ligado (ou desligado) à mão: a ligação automática não mexe

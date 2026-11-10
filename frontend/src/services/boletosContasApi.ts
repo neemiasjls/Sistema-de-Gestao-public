@@ -19,6 +19,8 @@ export interface BoletoAPagar {
   avisos: string[]
   nomeArquivo: string
   temPdf: boolean
+  agendadoPara: string | null   // só posto: pagamento agendado no banco, marcado à mão (ABA-07)
+  peloExtrato: boolean          // só posto: pago identificado no extrato do Sicoob
 }
 
 export interface ListaAPagar {
@@ -174,6 +176,8 @@ export const boletosContasApi = {
     return l
   })),
   pagarPosto: (id: number, pagoEm: string | null) => api.put(`${base}/pagar/posto/${id}/pago`, { pagoEm }),
+  // data null tira o agendado
+  agendarPosto: (id: number, data: string | null) => api.put(`${base}/pagar/posto/${id}/agendado`, { data }),
   pagarAvulso: (id: number, pagoEm: string | null) => api.put(`${base}/pagar/avulsos/${id}/pago`, { pagoEm }),
   importarAvulsos: (arquivos: File[], descricao: string) =>
     api.post<{ boletos: unknown[]; paraReceber?: number; avisos: string[] }>(`${base}/pagar/avulsos`, pdfs(arquivos, { descricao }), multipart),
