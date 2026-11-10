@@ -31,11 +31,11 @@ import { Modal, Campo, BotoesModal } from '../components/ModalBase'
 // junto com o Montar boleto que emite (a confirmação a cada boleto continua lá).
 type AbaSicoob = 'emissao' | 'extrato'
 function Sicoob() {
-  const [aba, setAba] = useState<AbaSicoob>('emissao')
+  const [aba, setAba] = useState<AbaSicoob>('extrato')
   return (
     <div className="space-y-4">
       <Segmentado valor={aba} onChange={setAba} rotulo="Sicoob"
-                  opcoes={[['emissao', 'Emissão de boletos'], ['extrato', 'Extrato']]} />
+                  opcoes={[['extrato', 'Extrato'], ['emissao', 'Emissão de boletos']]} />
       {aba === 'emissao' ? <ConfigEmissaoBoletos /> : <ExtratoSicoob />}
     </div>
   )
