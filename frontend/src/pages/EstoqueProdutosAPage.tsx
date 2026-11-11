@@ -235,6 +235,7 @@ export default function EstoqueProdutosAPage() {
                         key={v.id} id={v.id} cliente={v.cliente} data={v.data}
                         aberta={aberta === v.id} onAlternar={() => setAberta(a => a === v.id ? null : v.id)}
                         valor={v.valor} comissao={v.comissao}
+                        faltaPreco={!/^EMBALAD/.test(v.cliente.toUpperCase().replace(/\s/g, '')) && (v.precoKg <= 0 || Math.abs(v.precoKg - v.custoKg) < 0.005)}
                         resumo={<>
                           {plural(v.qtdeProdutosA, 'produtoA', 'produtosA')} · {num(v.pesoKg)} kg
                           <span className="block sm:inline font-medium text-gray-800"><span className="hidden sm:inline font-normal text-gray-500" aria-hidden> · </span>{brlKg(v.precoKg)}</span>

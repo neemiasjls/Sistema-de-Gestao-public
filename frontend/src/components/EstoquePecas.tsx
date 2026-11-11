@@ -135,7 +135,7 @@ export function CabecalhoSaidas({ quantidade, acao }: { quantidade: number; acao
  * Uma saída: cliente, o que levou e o valor. Tocar abre o detalhe ali mesmo
  * (preço, custo, romaneio e apagar).
  */
-export function CartaoSaida({ id, cliente, data, resumo, valor, nota, comissao, aberta, onAlternar, children }: {
+export function CartaoSaida({ id, cliente, data, resumo, valor, nota, comissao, faltaPreco, aberta, onAlternar, children }: {
   id: number
   cliente: string
   data: string
@@ -145,6 +145,8 @@ export function CartaoSaida({ id, cliente, data, resumo, valor, nota, comissao, 
   /** Embaixo do valor (ex.: "com R$ 49,50 de frete") */
   nota?: ReactNode
   comissao: number
+  /** EST-12: sem preço próprio (zero ou igual ao custo): no lugar do lucro, avisa que falta o preço */
+  faltaPreco?: boolean
   aberta: boolean
   onAlternar: () => void
   children: ReactNode
@@ -169,9 +171,13 @@ export function CartaoSaida({ id, cliente, data, resumo, valor, nota, comissao, 
         <div className="text-right shrink-0">
           <p className="font-semibold text-gray-900 tabular-nums">{brl(valor)}</p>
           {nota && <p className="text-xs text-gray-500 tabular-nums max-w-[8.5rem] sm:max-w-none">{nota}</p>}
-          <p className={`text-sm tabular-nums ${comissao < 0 ? 'text-red-700' : 'text-emerald-700'}`}>
-            <span className="sr-only">Comissão </span>{comissao < 0 ? `−${brl(-comissao)}` : `+${brl(comissao)}`}
-          </p>
+          {faltaPreco ? (
+            <p className="text-sm font-medium text-amber-800">Falta o preço da produtoA</p>
+          ) : (
+            <p className={`text-sm tabular-nums ${comissao < 0 ? 'text-red-700' : 'text-emerald-700'}`}>
+              <span className="sr-only">Comissão </span>{comissao < 0 ? `−${brl(-comissao)}` : `+${brl(comissao)}`}
+            </p>
+          )}
         </div>
         <ChevronDown size={18} aria-hidden
                      className={`mt-0.5 text-gray-500 shrink-0 transition-transform duration-200 ${aberta ? 'rotate-180' : ''}`} />
