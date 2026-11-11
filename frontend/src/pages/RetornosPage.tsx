@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowLeftRight, Download, Link2, Pencil, Plus, Trash2, Upload } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -24,6 +24,19 @@ import {
 // dúvida, para ligar à mão. A planilha sai em Exportar Excel.
 
 type Filtro = 'todos' | 'conferir' | 'semViagem'
+
+// VIA-33: dois retornos com tudo igual (data, placa, motorista, destino, transportadora, frete) são erro de lançamento.
+// Placa que difere só por O/0 ou I/1 conta como igual (XAK-3451 × XAK-3B51).
+const normal = (t: string | null | undefined) => (t ?? '').toUpperCase().normalize('NFD').replace(/[^A-Z0-9]/g, '')
+const placaNormal = (p: string | null | undefined) => normal(p).replace(/O/g, '0').replace(/I/g, '1')
+function gruposDuplicados(retornos: Retorno[]): Retorno[][] {
+  const grupos = new Map<string, Retorno[]>()
+  for (const r of retornos) {
+    const chave = [r.data, placaNormal(r.placa), normal(r.motorista), normal(r.destino), normal(r.transportadora), r.valorFrete.toFixed(2)].join('|')
+    grupos.set(chave, [...(grupos.get(chave) ?? []), r])
+  }
+  return [...grupos.values()].filter(g => g.length > 1)
+}
 
 export default function RetornosPage() {
   const [params, setParams] = useSearchParams()
@@ -81,6 +94,8 @@ export default function RetornosPage() {
     catch (e) { toast.error(await erroDaApi(e, 'Não consegui ligar.')) }
   }
 
+  const duplicados = useMemo(() => gruposDuplicados(dados?.retornos.map(x => x.retorno) ?? []), [dados])
+  const idsDuplicados = useMemo(() => new Set(duplicados.flat().map(r => r.id)), [duplicados])
   const lista = (dados?.retornos ?? []).filter(x =>
     filtro === 'conferir' ? !x.retorno.conferido : filtro === 'semViagem' ? !x.retorno.viagemId && !x.retorno.foraDoControle : true)
 
@@ -135,6 +150,16 @@ export default function RetornosPage() {
           {dados.aConferir > 0 && filtro !== 'conferir' && (
             <Aviso tipo="atencao" acao={<Botao variante="secundario" tamanho="sm" onClick={() => setFiltro('conferir')}>Ver os que faltam</Botao>}>
               {dados.aConferir} {dados.aConferir === 1 ? 'retorno lançado pelo motorista falta' : 'retornos lançados pelos motoristas faltam'} conferir.
+            </Aviso>
+          )}
+          {duplicados.length > 0 && (
+            <Aviso tipo="atencao">
+              <p className="font-medium">{duplicados.length === 1 ? 'Um retorno parece lançado duas vezes' : `${duplicados.length} retornos parecem lançados mais de uma vez`}: tudo igual (data, placa, motorista, destino, transportadora e frete). Apague o que sobra.</p>
+              <ul className="mt-1 list-disc pl-5 text-sm">
+                {duplicados.map(g => (
+                  <li key={g[0].id}>{dataBr(g[0].data)} · {g[0].transportadora ?? 'Sem transportadora'} · {g[0].destino ?? 'sem destino'} · {brl(g[0].valorFrete)} · placas {g.map(r => r.placa ?? 'sem placa').join(' e ')}</li>
+                ))}
+              </ul>
             </Aviso>
           )}
           {dados.anotacoesPendentes.length > 0 && (
@@ -194,6 +219,7 @@ export default function RetornosPage() {
                     </dl>
                     <div className="flex flex-wrap gap-1">
                       {!r.conferido && <Selo tom="atencao">A conferir</Selo>}
+                            {idsDuplicados.has(r.id) && <Selo tom="atencao">Duplicado?</Selo>}
                       {r.foraDoControle && <Selo>Fora do controle</Selo>}
                       {r.origem === 'motorista' && <Selo tom="info">Do motorista</Selo>}
                       {anotacao && <Selo tom="info">Ligado à anotação do motorista ({brl(anotacao.valor)})</Selo>}
@@ -254,6 +280,7 @@ export default function RetornosPage() {
                             {viagem ? <Link to={`/viagens-caminhoes/${viagem.id}`} className="font-medium text-tinta-700 underline underline-offset-2">{viagem.dataSaida ? dataBr(viagem.dataSaida) : 'Abrir'}</Link>
                               : !r.foraDoControle && <span className="text-gray-500">Sem viagem</span>}
                             {!r.conferido && <Selo tom="atencao">A conferir</Selo>}
+                            {idsDuplicados.has(r.id) && <Selo tom="atencao">Duplicado?</Selo>}
                             {r.foraDoControle && <Selo>Fora do controle</Selo>}
                             {anotacao && <Selo tom="info">Anotação do motorista: {brl(anotacao.valor)}</Selo>}
                           </div>

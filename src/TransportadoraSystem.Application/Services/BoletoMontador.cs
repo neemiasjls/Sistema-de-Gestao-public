@@ -393,6 +393,22 @@ public class BoletoMontagemService(AppDbContext db)
         var impede = BoletoMontador.ImpedeEmitir(boleto);
         var mesmo = feitos.FirstOrDefault(b => boleto.Placa == null || string.IsNullOrWhiteSpace(b.Placa)
             || EmailClienteService.Placa(b.Placa) == boleto.Placa);
+        // Placa errada nas NFs (Admin, 11/11/2026: .txt VOLUME, boleto emitido certo com XAC): boleto do dia cuja placa não é
+        // de nenhuma carga do dia vale para a única carga do dia que ficou sem boleto
+        if (mesmo == null && feitos.Count > 0 && boleto.Placa != null && cliente == BoletoReceberLeitor.Perfil)
+        {
+            var placasDoDia = (await db.PlanilhasCarga.AsNoTracking().Select(p => p.Nome).ToListAsync())
+                .Select(RomaneioClienteLeitor.LerNome)
+                .Where(i => i.Tipo == "frete" && i.Data is { } d && DateOnly.FromDateTime(d) == data && !string.IsNullOrWhiteSpace(i.Placa))
+                .Select(i => EmailClienteService.Placa(i.Placa!)).ToHashSet();
+            var cargasSemBoleto = placasDoDia.Where(p => !feitos.Any(f => EmailClienteService.Placa(f.Placa) == p)).ToList();
+            var boletosSemCarga = feitos.Where(f => !string.IsNullOrWhiteSpace(f.Placa) && !placasDoDia.Contains(EmailClienteService.Placa(f.Placa))).ToList();
+            if (cargasSemBoleto is [var unica] && unica == boleto.Placa && boletosSemCarga is [var outro])
+            {
+                mesmo = outro;
+                faltando.Add($"O boleto {outro.Sequencia} desta data saiu com a placa {outro.Placa} e a carga está com {boleto.Placa}: conta como o boleto desta carga.");
+            }
+        }
         if (mesmo != null)
             impede.Insert(0, $"Esta carga já tem boleto: {(string.IsNullOrWhiteSpace(mesmo.NomeArquivo) ? $"Boleto {mesmo.Sequencia}" : mesmo.NomeArquivo)}"
                 + (string.IsNullOrWhiteSpace(mesmo.NossoNumero) ? "." : $" (nosso número {mesmo.NossoNumero})."));

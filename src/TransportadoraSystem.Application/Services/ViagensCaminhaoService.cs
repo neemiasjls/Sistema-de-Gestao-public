@@ -1507,8 +1507,8 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
     /// <summary>
     /// Traz as abas VIAGEMn do acerto mensal do caminhão. Idempotente pela chave
     /// placa|ano-mês|aba (a viagem já trazida é refeita só com substituir). Os retornos
-    /// da aba casam com os da tela Retornos (mesma placa, mesmo frete total, perto das
-    /// datas); sem par, entram como retorno "fora do controle" só desta viagem.
+    /// da aba juntam com a linha da tela Retornos só com candidato único (VIA-32); sem par
+    /// ou com vários, só aviso: o acerto nunca cria retorno.
     /// A sobra anterior da planilha entra como informada só quando não há viagem
     /// anterior do caminhão no sistema (começo da cadeia).
     /// </summary>
@@ -1565,7 +1565,8 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
                 ManterOQueAPlanilhaNaoTraz(novo, existente);
                 var trocarRetornos = a.Retornos.Count > 0;
                 var difs = CompararComAcerto(existente, retsSistema, novo, a);
-                if (!trocarRetornos) difs.RemoveAll(d => d.Campo == "Retornos");
+                // VIA-32: o retorno não troca a viagem (vale a planilha de retornos); só junta com candidato único
+                difs.RemoveAll(d => d.Campo == "Retornos");
                 object Situacao(string s) => new
                 {
                     aba = a.Aba, situacao = s, grau, viagemId = existente.Id, origem = existente.Origem, status = existente.Status,
@@ -1593,6 +1594,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
                         existente.ChaveImportacao = chave;
                         await db.SaveChangesAsync();
                     }
+                    await LigarRetornosDoAcertoAsync(existente, a, lido, avisos);
                     iguais++; puladas++; viagens.Add(Situacao("IGUAL")); continue;
                 }
                 // UI-22 (Admin, 10/11/2026): casou pela chave ou pela data = preenche sozinho o que falta e
@@ -1849,40 +1851,45 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
              || x.AnoReferencia == lido.Ano && x.MesReferencia == lido.Mes && x.DataSaida < saida));
 
     /// <summary>
-    /// Retornos da aba (dois fretes iguais na mesma viagem casam com duas linhas diferentes). Casa com
-    /// a linha livre da tela Retornos (ou já desta viagem); sem par, entra "fora do controle".
+    /// VIA-32: cada retorno da aba junta com a linha da planilha de retornos só com candidato único
+    /// (<see cref="RetornoAcertoCasamento"/>); a linha que já está nesta viagem (inclusive a ligada à mão) fica.
+    /// Dois ou mais candidatos ou nenhum: só aviso. O acerto nunca cria retorno; vale o valor da planilha.
     /// </summary>
     private async Task<HashSet<int>> LigarRetornosDoAcertoAsync(ViagemCaminhao v, ViagemLida a, AcertoLido lido, List<string> avisos)
     {
         var usados = new HashSet<int>();
+        if (a.Retornos.Count == 0) return usados;
+        // A aba não traz data do retorno: vale a saída da viagem
+        var data = a.Saida ?? v.DataSaida ?? new DateOnly(lido.Ano, lido.Mes, 1);
+        var ini = data.AddDays(-RetornoAcertoCasamento.Dias); var fim = data.AddDays(RetornoAcertoCasamento.Dias);
+        var placa = v.Placa ?? lido.Placa;
+        var linhas = await db.RetornosFrete.Where(x => x.ViagemId == v.Id || x.ViagemId == null && x.Data >= ini && x.Data <= fim).ToListAsync();
+        var modelo = linhas.Select(x => new RetornoAcertoCasamento.Linha(x.Id, x.Placa, x.Transportadora, x.Data, x.ValorFrete, x.Adicional,
+            x.FreteTotal, x.ViagemId, x.ViagemLigacao, x.ForaDoControle, x.ValorContrato)).ToList();
         foreach (var r in a.Retornos)
         {
-            var ini = (a.Saida ?? DateOnly.MinValue).AddDays(-5);
-            var fim = (a.Chegada ?? a.Saida ?? DateOnly.MaxValue.AddDays(-30)).AddDays(5);
-            var cands = await db.RetornosFrete.Where(x => (x.ViagemId == null || x.ViagemId == v.Id) && x.Placa == lido.Placa && x.Data >= ini && x.Data <= fim).ToListAsync();
-            var par = cands.Where(x => (x.ViagemId == null || x.ViagemId == v.Id) && !usados.Contains(x.Id) && Math.Abs(x.FreteTotal - r.Valor) < 0.01m)
-                .OrderBy(x => x.ViagemId == v.Id ? 0 : 1).ThenBy(x => x.Data).FirstOrDefault();
-            if (par != null)
+            var res = RetornoAcertoCasamento.Escolher(r.Valor, r.Transportadora, data, placa, v.PlacaCarreta, v.Id, modelo, usados);
+            if (res.Escolhida is { } e)
             {
-                usados.Add(par.Id);
-                par.ViagemId = v.Id;
+                usados.Add(e.Id);
+                var par = linhas.First(x => x.Id == e.Id);
+                if (!res.JaNaViagem)
+                {
+                    par.ViagemId = v.Id;
+                    par.ViagemLigacao = ViagemPeriodoLigador.Auto;
+                    if (v.MotoristaId != null) par.MotoristaId = v.MotoristaId;
+                    par.AtualizadoEm = DateTime.UtcNow;
+                }
                 if (r.PorcentagemIcms != 0) par.PorcentagemIcms = r.PorcentagemIcms;
             }
+            else if (res.Candidatos.Count > 1)
+                avisos.Add($"{a.Aba}: retorno de R$ {r.Valor:N2} cabe em {res.Candidatos.Count} retornos ({string.Join(", ", res.Candidatos.Select(c => $"{c.Data:dd/MM} R$ {c.ValorFrete + c.Adicional:N2}"))}): escolha na viagem.");
             else
-            {
-                var partes = System.Text.RegularExpressions.Regex.Split((r.OrigemDestino ?? "").Trim(), @"\s*/+\s*|\s+X\s+", System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-                    .Select(x => x.Trim()).Where(x => x.Length > 0).ToArray();
-                db.RetornosFrete.Add(new RetornoFrete
-                {
-                    Data = a.Saida ?? new DateOnly(lido.Ano, lido.Mes, 1), Transportadora = r.Transportadora, ValorFrete = r.Valor,
-                    Observacoes = partes.Length > 0 && partes[0].Length > 0 ? partes[0] : null,
-                    Destino = partes.Length > 1 ? partes[1] : r.OrigemDestino,
-                    Placa = lido.Placa, Motorista = v.MotoristaNome, MotoristaId = v.MotoristaId, ViagemId = v.Id,
-                    PorcentagemIcms = r.PorcentagemIcms, ForaDoControle = true, Origem = "importacao", Conferido = true,
-                });
-                avisos.Add($"{a.Aba}: retorno {r.Transportadora} R$ {r.Valor:N2} não está na tela Retornos; entrou só na viagem (fora do total mensal). Importe os retornos do mês antes para casar.");
-            }
+                avisos.Add($"{a.Aba}: retorno de R$ {r.Valor:N2} da planilha do acerto não está nos Retornos.");
         }
+        // Retorno criado por importação antiga do acerto (antes da VIA-32): fica, mas avisa para conferir a dobra
+        foreach (var x in linhas.Where(x => x.ViagemId == v.Id && x.ForaDoControle && x.Origem == "importacao"))
+            avisos.Add($"{a.Aba}: a viagem tem o retorno R$ {x.FreteTotal:N2} criado por importação antiga do acerto (fora do controle); se repete um da planilha de retornos, apague-o à mão.");
         await db.SaveChangesAsync();
         return usados;
     }
@@ -1911,18 +1918,11 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         // Aba sem retorno nenhum (UI-22): os retornos da viagem ficam como estão
         if (!trocarRetornos) { await db.SaveChangesAsync(); return; }
 
-        // Retornos: os da importação anterior "fora do controle" saem (voltam se a aba ainda os tiver);
-        // os da folha antiga do motorista não conferidos saem, como no excluir; o resto se solta e
-        // casa de novo pela aba. O ligado a uma anotação do motorista fica (VIA-22).
+        // Retornos (VIA-32): os já ligados à viagem ficam (inclusive o escolhido à mão e o anotado pelo
+        // motorista, VIA-22); a aba só junta a linha livre da planilha de retornos com candidato único.
+        await db.SaveChangesAsync();
         var anotados = v.Cargas.Where(c => c.RetornoId != null).Select(c => c.RetornoId!.Value).ToHashSet();
         var ligados = await db.RetornosFrete.Where(r => r.ViagemId == v.Id).ToListAsync();
-        foreach (var r in ligados)
-        {
-            if (anotados.Contains(r.Id)) continue;
-            if (r.ForaDoControle && r.Origem == "importacao" || r.Origem == "motorista" && !r.Conferido) db.RetornosFrete.Remove(r);
-            else r.ViagemId = null;
-        }
-        await db.SaveChangesAsync();
         var usados = await LigarRetornosDoAcertoAsync(v, a, lido, avisos);
         foreach (var id in anotados.Where(id => !usados.Contains(id)))
             if (ligados.FirstOrDefault(r => r.Id == id) is { } r)
