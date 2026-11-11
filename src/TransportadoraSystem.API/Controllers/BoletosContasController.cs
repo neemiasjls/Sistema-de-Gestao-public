@@ -378,6 +378,7 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
             saldoALevar = p?.SaldoALevar ?? 0m,
             temBoleto = c.TemBoleto,
             comQueda = c.Descontos.Count > 0,
+            houveQueda = c.HouveQueda,
             descontos = c.Descontos,
             emitido = c.Emitido,
             atualizadoEm = c.AtualizadoEm,
@@ -401,7 +402,7 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
         return Ok(CalculoDto(c, await PodeLancarQueda()));
     }
 
-    // Grava a queda do volume por caixa de cada tipo normal da carga (descontos vazios = tira a queda) e
+    // Grava a queda do volume por caixa de cada tipo normal da carga (descontos vazios = marca "não houve queda") e
     // devolve o cálculo novo. O cálculo das notas não se edita (Admin, 11/11/2026).
     [HttpPut("receber/frete-perfil")]
     public async Task<IActionResult> GravarFretePerfil([FromBody] QuedaPedido req, [FromServices] FretePerfilService frete)

@@ -24,7 +24,7 @@ public class FretePerfilService(AppDbContext db, TiposVolumeService tiposVolume)
     public record CalculoCarga(DateOnly Data, string Placa, string? Arquivo, RelatorioFreteLeitor.Relatorio? Relatorio,
         Calculo Calculo, TotaisCarga Totais, PosicaoCadeia? Posicao, bool TemBoleto,
         IReadOnlyDictionary<string, decimal> Descontos, Emitido? Emitido, DateTime? AtualizadoEm, string? AtualizadoPor,
-        List<string> Avisos);
+        List<string> Avisos, bool? HouveQueda = null);
 
     // Uma carga = o .txt de frete mais recente da data + placa
     private record Carga(DateOnly Data, string Placa, int PlanilhaId, string Nome);
@@ -57,7 +57,7 @@ public class FretePerfilService(AppDbContext db, TiposVolumeService tiposVolume)
         {
             var vazio = new Calculo(new(), new());
             return new CalculoCarga(data, pl, null, null, vazio, Totais(vazio), null, false, descontos, emitido,
-                ajuste?.AtualizadoEm, ajuste?.AtualizadoPor, avisos);
+                ajuste?.AtualizadoEm, ajuste?.AtualizadoPor, avisos, Marcacao(ajuste, descontos));
         }
 
         var m = await MontarAsync(carga, comTipos: true);
@@ -67,7 +67,23 @@ public class FretePerfilService(AppDbContext db, TiposVolumeService tiposVolume)
         avisos.AddRange(calc.Avisos);
         avisos.AddRange(pos.Avisos);
         return new CalculoCarga(data, carga.Placa, carga.Nome, m.Rel, calc, Totais(calc), pos, pos.TemBoleto,
-            descontos, emitido, ajuste?.AtualizadoEm, ajuste?.AtualizadoPor, avisos.Distinct().ToList());
+            descontos, emitido, ajuste?.AtualizadoEm, ajuste?.AtualizadoPor, avisos.Distinct().ToList(),
+            Marcacao(ajuste, descontos));
+    }
+
+    // "Houve queda do volume?": queda lançada = sim; senão o que foi marcado (nulo = ainda não marcado)
+    private static bool? Marcacao(FretePerfilAjuste? ajuste, IReadOnlyDictionary<string, decimal> descontos) =>
+        descontos.Count > 0 ? true : ajuste?.HouveQueda;
+
+    private List<FretePerfilAjuste>? marcacoes;
+
+    /// <summary>A marcação "Houve queda do volume?" da carga, sem montar o cálculo (lista Para emitir).</summary>
+    public async Task<bool?> HouveQuedaAsync(DateOnly data, string? placa)
+    {
+        marcacoes ??= await db.FretePerfilAjustes.AsNoTracking().ToListAsync();
+        var pl = Norm(placa);
+        var a = marcacoes.FirstOrDefault(x => x.DataCarga == data && x.Placa == pl);
+        return Marcacao(a, LerDescontos(a?.DescontosJson));
     }
 
     /// <summary>
@@ -128,11 +144,13 @@ public class FretePerfilService(AppDbContext db, TiposVolumeService tiposVolume)
         var ajuste = await db.FretePerfilAjustes.FirstOrDefaultAsync(a => a.DataCarga == carga.Data && a.Placa == carga.Placa);
         if (ajuste == null) db.FretePerfilAjustes.Add(ajuste = new FretePerfilAjuste { DataCarga = carga.Data, Placa = carga.Placa });
         ajuste.DescontosJson = validos.Count == 0 ? null : JsonSerializer.Serialize(validos);
+        ajuste.HouveQueda = validos.Count > 0;   // salvar sem queda = marcou "não houve"
         ajuste.AtualizadoEm = DateTime.UtcNow;
         ajuste.AtualizadoPor = usuario ?? "";
         await db.SaveChangesAsync();
 
         cadeia = null;
+        marcacoes = null;
         await RegravarTxtAsync(carga);
         var res = await ObterAsync(carga.Data, carga.Placa);
         // Os avisos de tipo ignorado só aparecem aqui (o que foi guardado já vem limpo)

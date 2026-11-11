@@ -205,6 +205,8 @@ export interface CalculoFretePerfil {
   saldoALevar: number
   temBoleto: boolean
   comQueda: boolean
+  // "Houve queda do volume?": null = ainda não marcado
+  houveQueda: boolean | null
   descontos: Record<string, number>
   emitido: EmitidoFretePerfil | null
   atualizadoEm: string | null
@@ -272,7 +274,7 @@ export const boletosContasApi = {
   // Cálculo do frete da Girassol da carga (data aaaa-mm-dd + placa)
   fretePerfil: (data: string, placa: string) =>
     api.get(`${base}/receber/frete-perfil`, { params: { data, placa } }).then(r => comDados(r, d => comoCalculoFretePerfil(d))),
-  // Grava a queda por caixa de cada tipo; lista vazia tira a queda. Devolve o cálculo novo.
+  // Grava a queda por caixa de cada tipo; lista vazia marca "não houve queda". Devolve o cálculo novo.
   gravarQuedaFretePerfil: (data: string, placa: string, descontos: { tipo: string; quedaPorCaixa: number }[]) =>
     api.put(`${base}/receber/frete-perfil`, { data, placa, descontos }).then(r => comDados(r, d => comoCalculoFretePerfil(d))),
   // Cobrança REAL no Sicoob: só depois da confirmação do Admin para este boleto
@@ -316,5 +318,6 @@ export interface BoletoMontagem {
   // Perfil (BOL-17): frete das notas − queda − saldo anterior; semBoleto = o desconto cobriu o frete. Nulo na CD.
   fretePerfil: {
     freteBruto: number; descontoTotal: number; saldoAnteriorAbatido: number; semBoleto: boolean; saldoALevar: number
+    houveQueda: boolean | null   // "Houve queda do volume?": null = ainda não marcado
   } | null
 }

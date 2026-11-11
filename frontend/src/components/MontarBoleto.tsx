@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { Check, Copy, Download, Landmark, X } from 'lucide-react'
+import { Calculator, Check, Copy, Download, Landmark, X } from 'lucide-react'
 import { Modal } from './ModalBase'
+import CalculoFretePerfil from './CalculoFretePerfil'
 import Campo from './ui/Campo'
 import Aviso from './ui/Aviso'
 import Botao, { BotaoIcone } from './ui/Botao'
@@ -21,6 +22,21 @@ const inputCls = 'w-full min-h-11 sm:min-h-0 text-sm border border-gray-300 roun
 async function copiar(texto: string) {
   try { await navigator.clipboard.writeText(texto); toast.success('Copiado.') }
   catch { toast.error('Não consegui copiar; selecione o texto.') }
+}
+
+type FretePerfilMontado = NonNullable<BoletoMontagem['fretePerfil']>
+export const temDescontoPerfil = (fp: FretePerfilMontado) => fp.descontoTotal > 0 || fp.saldoAnteriorAbatido > 0
+// "Frete R$ X − queda R$ Y − saldo anterior R$ Z"
+export function contaPerfil(fp: FretePerfilMontado) {
+  const partes = [`Frete ${formatBRL(fp.freteBruto)}`]
+  if (fp.descontoTotal > 0) partes.push(`queda ${formatBRL(fp.descontoTotal)}`)
+  if (fp.saldoAnteriorAbatido > 0) partes.push(`saldo anterior ${formatBRL(fp.saldoAnteriorAbatido)}`)
+  return partes.join(' − ')
+}
+// A marcação "Houve queda do volume?" da carga (BOL-17)
+export function textoQueda(fp: FretePerfilMontado) {
+  if (fp.houveQueda == null) return 'ainda não marcada (o boleto sai sem desconto)'
+  return fp.houveQueda ? `houve, desconto de ${formatBRL(fp.descontoTotal)}` : 'não houve'
 }
 
 export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, placaInicial, onClose, onEmitido }: {
@@ -44,16 +60,19 @@ export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, plac
   // A data, a placa e as caixas que valem são as da última montagem (o que está na tela), não o que foi digitado depois
   const [montado, setMontado] = useState<{ data: string; placa: string; caixas: number | null }>({ data: dataInicial, placa: placaInicial ?? '', caixas: null })
   const ehCd = cliente === 'CD'
+  // Perfil (BOL-17): a queda do volume é marcada na carga (Sim / Não, pode mudar depois); emitir usa o que está marcado
+  const [painelQueda, setPainelQueda] = useState(false)
 
-  const montar = useCallback(async (d: string, p: string, cx: number | null = null) => {
-    if (!d) return
+  const montar = useCallback(async (d: string, p: string, cx: number | null = null): Promise<BoletoMontagem | null> => {
+    if (!d) return null
     setCarregando(true); setErro(null)
     try {
       const m = (await api.montarAReceber(cliente, d, p, cx)).data
       setRes(m); setMontado({ data: d, placa: p, caixas: m.caixas })
       setCaixas(m.caixas != null ? String(m.caixas).replace('.', ',') : '')
+      return m
     }
-    catch (e) { setRes(null); setErro(await erroApi(e, 'Não consegui montar o boleto.')) }
+    catch (e) { setRes(null); setErro(await erroApi(e, 'Não consegui montar o boleto.')); return null }
     finally { setCarregando(false) }
   }, [cliente])
   useEffect(() => { montar(dataInicial, placaInicial ?? '') }, [montar, dataInicial, placaInicial])
@@ -74,8 +93,9 @@ export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, plac
 
 
   async function emitir() {
-    if (!res || res.boleto.valor == null) return
+    if (!res || res.boleto.valor == null || res.impedeEmitir.length > 0) return
     const b = res.boleto
+    const fp = res.fretePerfil
     const ok = await confirmar({
       titulo: 'Emitir este boleto no Sicoob?',
       texto: (
@@ -89,6 +109,14 @@ export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, plac
                 {String(res.caixas).replace('.', ',')}
                 {res.caixasRomaneio != null && res.caixasRomaneio !== res.caixas && ` (o romaneio tem ${String(res.caixasRomaneio).replace('.', ',')})`}
               </dd>
+            </>)}
+            {fp && temDescontoPerfil(fp) && (<>
+              <dt className="text-gray-600">Conta</dt>
+              <dd className="text-gray-900 tabular-nums">{contaPerfil(fp)}</dd>
+            </>)}
+            {fp && (<>
+              <dt className="text-gray-600">Queda do volume</dt>
+              <dd className={fp.houveQueda == null ? 'text-amber-800' : 'text-gray-900'}>{textoQueda(fp)}</dd>
             </>)}
             <dt className="text-gray-600">Valor</dt><dd className="text-gray-900 font-semibold tabular-nums">{formatBRL(b.valor!)}</dd>
             <dt className="text-gray-600">Vencimento</dt><dd className="text-gray-900 tabular-nums">{dataBr(b.vencimento)}</dd>
@@ -170,7 +198,8 @@ export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, plac
                 )}
               </section>
             ) : res.impedeEmitir.length > 0 ? (
-              <Aviso tipo="info" titulo="Emitir no Sicoob não disponível" itens={res.impedeEmitir} />
+              <Aviso tipo={res.fretePerfil?.semBoleto ? 'atencao' : 'info'} itens={res.impedeEmitir}
+                     titulo={res.fretePerfil?.semBoleto ? 'Não precisa fazer o boleto' : 'Emitir no Sicoob não disponível'} />
             ) : (
               <section aria-labelledby="mb-emitir" className="border border-gray-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center gap-3">
                 <div className="flex-1 min-w-0">
@@ -179,8 +208,28 @@ export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, plac
                     Confira os campos abaixo. O boleto vai como {res.nomeArquivo}, sem Pix, com o PDF guardado aqui.
                   </p>
                 </div>
-                <Botao variante="primario" icone={Landmark} carregando={emitindo} onClick={emitir}
+                <Botao variante="primario" icone={Landmark} carregando={emitindo}
+                       onClick={emitir}
                        disabled={carregando || emitindo || caixasMudaram}>Emitir no Sicoob</Botao>
+              </section>
+            )}
+
+            {res.fretePerfil && (
+              <section aria-labelledby="mb-frete" className="border border-gray-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center gap-2">
+                <div className="flex-1 min-w-0">
+                  <h3 id="mb-frete" className="text-sm font-semibold text-gray-900">Cálculo do frete</h3>
+                  <p className="text-sm text-gray-600 tabular-nums">
+                    {temDescontoPerfil(res.fretePerfil) ? contaPerfil(res.fretePerfil) : `Frete ${formatBRL(res.fretePerfil.freteBruto)}`}
+                    {res.fretePerfil.semBoleto && res.fretePerfil.saldoALevar > 0 && ` · saldo de ${formatBRL(res.fretePerfil.saldoALevar)} para o próximo boleto`}
+                  </p>
+                  <p className={`text-sm ${res.fretePerfil.houveQueda == null ? 'text-amber-800' : 'text-gray-600'}`}>
+                    Queda do volume: {textoQueda(res.fretePerfil)}
+                  </p>
+                </div>
+                {res.boleto.placa && (
+                  <Botao variante="secundario" tamanho="sm" icone={Calculator} className="self-start sm:self-center"
+                         onClick={() => setPainelQueda(true)}>{res.fretePerfil.houveQueda == null ? 'Marcar a queda' : 'Mudar a queda'}</Botao>
+                )}
               </section>
             )}
 
@@ -240,6 +289,15 @@ export default function MontarBoleto({ cliente, rotuloCliente, dataInicial, plac
             </div>
           </div>
         )}
+      {painelQueda && res && (res.boleto.placa || montado.placa) && (
+        <CalculoFretePerfil data={montado.data} placa={(res.boleto.placa || montado.placa)!}
+                            onClose={() => setPainelQueda(false)}
+                            onSalvo={() => {
+                              setPainelQueda(false)
+                              onEmitido?.()   // a lista Para emitir mostra a marcação nova
+                              montar(montado.data, montado.placa, montado.caixas)
+                            }} />
+      )}
     </Modal>
   )
 }

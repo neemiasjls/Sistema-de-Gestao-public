@@ -13,7 +13,7 @@ import Aviso from '../components/ui/Aviso'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { ArrowDownToLine, ArrowUpFromLine, Ban, CalendarClock, ChevronRight, ClipboardCheck, Landmark, Download, FileUp, Inbox, Pencil, Plus, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, Ban, Calculator, CalendarClock, ChevronRight, ClipboardCheck, Landmark, Download, FileUp, Inbox, Pencil, Plus, RotateCcw, Trash2, TriangleAlert } from 'lucide-react'
 import { boletosApi, clientesApi, formatBRL, type Boleto, type Cliente } from '../services/api'
 import {
   boletosContasApi as api,
@@ -24,6 +24,8 @@ import { dataBr, lerNum, num } from '../utils/formato'
 import { useAuth } from '../contexts/AuthContext'
 import { sicoobApi } from '../services/sicoobApi'
 import { Modal, Campo, BotoesModal } from '../components/ModalBase'
+import CalculoFretePerfil from '../components/CalculoFretePerfil'
+import { useSearchParams } from 'react-router-dom'
 
 // Boletos em duas abas. "A pagar": os dos postos (os mesmos da tela
 // Abastecimentos) e os avulsos subidos aqui. "A receber": os que a
@@ -60,8 +62,20 @@ const diasAte = (venc: string, hoje: string) =>
 
 type Aba = 'pagar' | 'receber' | 'sicoob'
 
+// Link de Viagens (BOL-17): /boletos?aba=receber&cliente=GIRASSOL&carga=aaaa-mm-dd&placa=XXX abre o cálculo do frete
+type CargaDoLink = { cliente: ClienteReceber; carga: { data: string; placa: string } | null }
+function lerLink(p: URLSearchParams): CargaDoLink | null {
+  if (p.get('aba') !== 'receber') return null
+  const cliente: ClienteReceber = p.get('cliente')?.toUpperCase() === 'GIRASSOL' ? 'GIRASSOL' : 'CD'
+  const data = p.get('carga') ?? '', placa = (p.get('placa') ?? '').trim().toUpperCase()
+  const carga = cliente === 'GIRASSOL' && /^\d{4}-\d{2}-\d{2}$/.test(data) && /^[A-Z0-9-]{1,10}$/.test(placa) ? { data, placa } : null
+  return { cliente, carga }
+}
+
 export default function BoletosPage() {
-  const [aba, setAba] = useState<Aba>('pagar')
+  const [params] = useSearchParams()
+  const [link] = useState(() => lerLink(params))
+  const [aba, setAba] = useState<Aba>(link ? 'receber' : 'pagar')
   const idAbas = useAbas('boletos')
   return (
     <div className="space-y-5">
@@ -71,7 +85,7 @@ export default function BoletosPage() {
             opcoes={[['pagar', 'A pagar', ArrowUpFromLine], ['receber', 'A receber', ArrowDownToLine], ['sicoob', 'Sicoob', Landmark]]} />
 
       <PainelAba id={idAbas} valor={aba}>
-        {aba === 'pagar' ? <APagar /> : aba === 'receber' ? <AReceber /> : <Sicoob />}
+        {aba === 'pagar' ? <APagar /> : aba === 'receber' ? <AReceber link={link} /> : <Sicoob />}
       </PainelAba>
     </div>
   )
@@ -444,10 +458,12 @@ function AvulsoModal({ boleto, onClose, onSalvo }: { boleto: BoletoAPagar | null
 
 type FiltroReceber = 'abertos' | 'recebidos' | 'todos'
 
-function AReceber() {
+function AReceber({ link }: { link?: CargaDoLink | null }) {
   const [lista, setLista] = useState<ListaAReceber | null>(null)
   const [carregando, setCarregando] = useState(false)
-  const [cliente, setCliente] = useState<ClienteReceber>('CD')
+  const [cliente, setCliente] = useState<ClienteReceber>(link?.cliente ?? 'CD')
+  // Perfil: cálculo do frete e queda do volume da carga (BOL-17)
+  const [calculando, setCalculando] = useState<{ data: string; placa: string } | null>(link?.carga ?? null)
   // BRZ (produtosC) é outro cliente, separado da CD (Cedro Frutas): não tem boleto, só as produtosC a receber
   const [verProdutosC, setVerProdutosC] = useState(false)
   const [filtro, setFiltro] = useState<FiltroReceber>('todos')
@@ -535,6 +551,10 @@ function AReceber() {
           <BotaoIcone icone={Download} rotulo={`Baixar o PDF d${nome}`}
                       onClick={() => api.baixarAReceber(b).catch(async e => toast.error(await erroApi(e, 'Não consegui baixar o PDF.')))} />
         )}
+        {b.cliente === 'GIRASSOL' && b.dataCarga && b.placa && (
+          <BotaoIcone icone={Calculator} rotulo={`Cálculo do frete da carga de ${dataBr(b.dataCarga)}`}
+                      onClick={() => setCalculando({ data: b.dataCarga!, placa: b.placa! })} />
+        )}
         {b.dataCarga && (
           <BotaoIcone icone={ClipboardCheck} rotulo={`Montar e comparar com ${nome}`}
                       onClick={() => setMontando({ data: b.dataCarga!, placa: b.placa || null })} />
@@ -588,7 +608,8 @@ function AReceber() {
       ) : !lista && !falhou && <Carregando forma="cartoes" linhas={4} rotulo="Carregando os totais" />}
 
       <ParaEmitirBoletos cliente={cliente} rotuloCliente={resumo?.rotulo ?? cliente} versao={versaoParaEmitir}
-                         onEmitir={(data, placa) => setMontando({ data, placa })} />
+                         onEmitir={(data, placa) => setMontando({ data, placa })}
+                         onCalculo={(data, placa) => setCalculando({ data, placa })} />
 
       <section aria-labelledby="receber-subir" className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
         <div>
@@ -708,6 +729,10 @@ function AReceber() {
         <MontarBoleto cliente={cliente} rotuloCliente={resumo?.rotulo ?? cliente} dataInicial={montando.data}
                       placaInicial={montando.placa} onClose={() => setMontando(null)}
                       onEmitido={() => { carregar(); setVersaoParaEmitir(v => v + 1) }} />
+      )}
+      {calculando && (
+        <CalculoFretePerfil data={calculando.data} placa={calculando.placa} onClose={() => setCalculando(null)}
+                            onSalvo={() => { carregar(); setVersaoParaEmitir(v => v + 1) }} />
       )}
       {editando && (
         <ReceberModal boleto={editando === 'novo' ? null : editando} cliente={cliente} onClose={() => setEditando(null)}

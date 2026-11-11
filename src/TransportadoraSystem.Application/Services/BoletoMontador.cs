@@ -226,7 +226,7 @@ public class BoletoMontagemService(AppDbContext db, FretePerfilService? fretePer
     /// <c>SemBoleto</c> = a queda (com o saldo anterior) cobriu o frete: não precisa fazer o boleto.
     /// </summary>
     public record FretePerfilResumo(decimal FreteBruto, decimal DescontoTotal, decimal SaldoAnteriorAbatido,
-        bool SemBoleto, decimal SaldoALevar);
+        bool SemBoleto, decimal SaldoALevar, bool? HouveQueda = null);
 
     public record Resultado(BoletoMontador.Boleto Boleto, List<Fonte> Fontes, List<string> Faltando,
         int? FeitoId, string? FeitoNome, string? FeitoNossoNumero, List<BoletoMontador.Diferenca>? Comparacao,
@@ -351,7 +351,7 @@ public class BoletoMontagemService(AppDbContext db, FretePerfilService? fretePer
                 var pos = (await frete.CadeiaAsync()).FirstOrDefault(x => x.Data == data && x.Placa == placaCarga);
                 if (pos == null)
                 {
-                    resumoPerfil = new(rel.TotalFrete ?? 0m, 0m, 0m, false, 0m);
+                    resumoPerfil = new(rel.TotalFrete ?? 0m, 0m, 0m, false, 0m, await frete.HouveQuedaAsync(data, placaCarga));
                     fontes.Add(new(esc.Nome, "Valor = TOTAL FRETE do relatório; placa = nome do arquivo"));
                 }
                 else
@@ -360,7 +360,7 @@ public class BoletoMontagemService(AppDbContext db, FretePerfilService? fretePer
                     var t = calc.Totais;
                     // Já emitido = carga fechada: o cálculo serve só para comparar com o boleto feito
                     valor = pos.TemBoleto ? t.Devido - pos.SaldoAbatido : pos.ValorBoleto;
-                    resumoPerfil = new(t.FreteBruto, t.DescontoTotal, pos.SaldoAbatido, pos.SemBoleto, pos.SaldoALevar);
+                    resumoPerfil = new(t.FreteBruto, t.DescontoTotal, pos.SaldoAbatido, pos.SemBoleto, pos.SaldoALevar, calc.HouveQueda);
                     faltando.AddRange(calc.Avisos.Where(a => !faltando.Contains(a)));
                     fontes.Add(new(esc.Nome, $"Valor = frete {Reais(t.FreteBruto)} − desconto da queda {Reais(t.DescontoTotal)}"
                         + $" − saldo anterior {Reais(pos.SaldoAbatido)}; placa = nome do arquivo"));

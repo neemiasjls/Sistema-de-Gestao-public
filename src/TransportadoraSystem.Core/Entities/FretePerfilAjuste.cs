@@ -11,6 +11,7 @@ public class FretePerfilAjuste
     public DateOnly DataCarga { get; set; }
     public string Placa { get; set; } = "";             // "XAH-2I15" (EmailClienteService.Placa); vazia = carga sem placa
     public string? DescontosJson { get; set; }          // tipo → queda por caixa (só tipos normais); nulo = sem queda
+    public bool? HouveQueda { get; set; }               // "Houve queda do volume?": nulo = ainda não marcado; false = não houve; true = houve
     public string? EmitidoJson { get; set; }            // o que saiu no boleto (FretePerfilService.Emitido)
     public DateTime AtualizadoEm { get; set; } = DateTime.UtcNow;
     public string AtualizadoPor { get; set; } = "";

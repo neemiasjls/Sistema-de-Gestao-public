@@ -1777,6 +1777,13 @@ static class Ddl
         """
         ALTER TABLE "FretePerfilAjustes" ENABLE ROW LEVEL SECURITY;
         """,
+        // BOL-17: a marcação "Houve queda do volume?" da carga (nulo = ainda não marcado)
+        """
+        ALTER TABLE "FretePerfilAjustes" ADD COLUMN IF NOT EXISTS "HouveQueda" boolean;
+        """,
+        """
+        UPDATE "FretePerfilAjustes" SET "HouveQueda" = true WHERE "HouveQueda" IS NULL AND "DescontosJson" IS NOT NULL;
+        """,
         // USU-11 (11/11/2026): permissões por caixinha. Chaves de área separadas por vírgula,
         // "*" = acesso total, NULL = sem acesso. A virada só preenche quem está nulo
         // (repetir não muda nada) e mantém o acesso de hoje: escritório = total.
@@ -1826,6 +1833,6 @@ static class Ddl
         ("RetornosFrete", "ContratoLigacao"), ("RetornosFrete", "ContratoAviso"), ("RetornosFrete", "ViagemLigacao"),
         ("StradaContratos", "DataContrato"), ("StradaContratos", "RetornoId"),
         ("VendasProdutoB", "RecebidoEm"), ("VendasProdutoB", "RecebidoPix"),
-        ("Usuarios", "Permissoes"), ("MotoristasFrota", "Email"),
+        ("Usuarios", "Permissoes"), ("MotoristasFrota", "Email"), ("FretePerfilAjustes", "HouveQueda"),
     ];
 }
