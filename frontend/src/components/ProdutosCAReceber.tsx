@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import { CheckCircle2, Grid3x3, Pencil, Plus, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
@@ -31,7 +32,12 @@ type ResultadoPix = { pix: PixRelato[]; marcadas: number; erro?: string | null }
 const quantidade = (v: Venda) =>
   `${num(v.pacotes, 0)} ${v.pacotes === 1 ? 'pacote' : 'pacotes'}` + (v.unidades > 0 ? ` e ${num(v.unidades, 0)} produtosC` : '')
 
-export default function ProdutosCAReceber() {
+/**
+ * modo "vendas" (aba ProdutosC): todas as vendas de todos os clientes, com o valor; sem preço aparece "Sem valor".
+ * modo "brz" (Boletos → A receber → BRZ): só a BRZ, com o recebido e a baixa pelo Pix (EST-08).
+ */
+export default function ProdutosCAReceber({ modo }: { modo: 'vendas' | 'brz' }) {
+  const ehBrz = modo === 'brz'
   const [resumo, setResumo] = useState<Resumo | null>(null)
   const [falhou, setFalhou] = useState(false)
   const [pix, setPix] = useState<ResultadoPix | null>(null)
@@ -89,45 +95,51 @@ export default function ProdutosCAReceber() {
   }
 
   const avisosPix = (pix?.pix ?? []).filter(p => p.situacao === 'sem-casamento' || p.situacao === 'duvida')
+  const grupos = (resumo?.grupos ?? []).filter(g => !ehBrz || g.brz)
+  const todas = grupos.flatMap(g => g.vendas)
+  const totalVendido = todas.reduce((t, v) => t + (v.semPreco ? 0 : v.valor), 0)
+  const semValor = todas.filter(v => v.semPreco).length
 
   return (
     <section aria-labelledby="produtosC-receber" className="rounded-xl border-2 border-dashed border-gema-300 bg-gema-50/40 p-4 space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
         <div className="min-w-0">
           <h2 id="produtosC-receber" className="flex items-center gap-2 text-base font-semibold text-gray-900">
-            <Grid3x3 size={18} aria-hidden className="text-gema-700 shrink-0" /> ProdutosC a receber
+            <Grid3x3 size={18} aria-hidden className="text-gema-700 shrink-0" /> {ehBrz ? 'ProdutosC a receber da BRZ' : 'Vendas de produtosC'}
           </h2>
           <p className="text-sm text-gray-600 max-w-[68ch]">
-            Não é boleto: são as produtosC vazias (pacote de 100) que saem no controle de carregamento. A BRZ paga por Pix e a baixa
-            é sozinha na conferência com o banco; os outros clientes se marcam à mão.
+            {ehBrz
+              ? 'Não é boleto: a BRZ paga as produtosC por Pix e a baixa é sozinha na conferência com o banco. Aqui você vê o que falta receber.'
+              : <>Todas as vendas de produtosC vazias, com o valor. Saem sozinhas do controle de carregamento (coluna U). O recebimento da BRZ fica em <Link to="/boletos" className="font-medium text-tinta-700 hover:underline">Boletos → A receber → BRZ (produtosC)</Link>.</>}
           </p>
         </div>
         <div className="flex flex-col sm:flex-row gap-2 shrink-0">
-          <Botao variante="secundario" icone={RefreshCw} carregando={conferindo} textoCarregando="Conferindo..." onClick={conferirPix}>Conferir Pix da BRZ</Botao>
-          <Botao variante="secundario" icone={Plus} onClick={() => setEditando('nova')}>Lançar à mão</Botao>
+          {ehBrz
+            ? <Botao variante="secundario" icone={RefreshCw} carregando={conferindo} textoCarregando="Conferindo..." onClick={conferirPix}>Conferir Pix da BRZ</Botao>
+            : <Botao variante="secundario" icone={Plus} onClick={() => setEditando('nova')}>Lançar à mão</Botao>}
         </div>
       </div>
 
       {resumo && (
         <div className="grid grid-cols-2 gap-3">
           <div className="rounded-lg bg-white border border-gray-200 px-3 py-2">
-            <p className="text-xs text-gray-500">A receber</p>
-            <p className="font-display text-xl font-semibold text-gray-900 tabular-nums">{brl(resumo.aReceber)}</p>
+            <p className="text-xs text-gray-500">{ehBrz ? 'A receber da BRZ' : 'Total vendido'}</p>
+            <p className="font-display text-xl font-semibold text-gray-900 tabular-nums">{brl(ehBrz ? resumo.aReceberBrz : totalVendido)}</p>
           </div>
           <div className="rounded-lg bg-white border border-gray-200 px-3 py-2">
-            <p className="text-xs text-gray-500">Da BRZ</p>
-            <p className="font-display text-xl font-semibold text-gray-900 tabular-nums">{brl(resumo.aReceberBrz)}</p>
+            <p className="text-xs text-gray-500">{ehBrz ? 'Vendas em aberto' : 'Vendas sem valor'}</p>
+            <p className="font-display text-xl font-semibold text-gray-900 tabular-nums">{ehBrz ? todas.filter(v => !v.recebidoEm).length : semValor}</p>
           </div>
         </div>
       )}
 
-      {resumo && resumo.semPreco > 0 && (
+      {semValor > 0 && (
         <Aviso tipo="atencao">
-          {resumo.semPreco === 1 ? '1 venda está' : `${resumo.semPreco} vendas estão`} sem o preço da produtoC do cliente: cadastre em Clientes → Venda.
+          {semValor === 1 ? '1 venda está' : `${semValor} vendas estão`} sem o preço da produtoC do cliente: cadastre em Clientes → Venda.
         </Aviso>
       )}
 
-      {avisosPix.map(p => (
+      {ehBrz && avisosPix.map(p => (
         <Aviso key={p.chave} tipo="atencao" titulo={`Pix da BRZ de ${brl(p.valor)} em ${dataBr(p.data)}`}>
           {p.situacao === 'sem-casamento' ? (
             <>Pix da BRZ sem produtosC que somem {brl(p.valor)}. Confira as quantidades no controle ou lance à mão.</>
@@ -149,17 +161,19 @@ export default function ProdutosCAReceber() {
         <ErroCarga mensagem="Não consegui carregar as produtosC a receber." onTentar={carregar} />
       ) : !resumo ? (
         <Carregando linhas={3} rotulo="Carregando as produtosC" />
-      ) : resumo.grupos.length === 0 ? (
-        <Vazio icone={Grid3x3} titulo="Nenhuma venda de produtosC" compacto>
+      ) : grupos.length === 0 ? (
+        <Vazio icone={Grid3x3} titulo={ehBrz ? 'Nenhuma produtoC da BRZ' : 'Nenhuma venda de produtosC'} compacto>
           As vendas entram sozinhas quando o controle de carregamento tem produtosC (coluna U).
         </Vazio>
       ) : (
         <div className="space-y-4">
-          {resumo.grupos.map(g => (
+          {grupos.map(g => (
             <div key={g.clienteId} className="bg-white border border-gray-200 rounded-xl">
               <div className="flex flex-wrap items-baseline justify-between gap-x-3 px-4 py-3 border-b border-gray-100">
                 <h3 className="font-semibold text-gray-900">{g.cliente}</h3>
-                <p className="text-sm text-gray-600 tabular-nums">a receber <b className="text-gray-900">{brl(g.aReceber)}</b></p>
+                <p className="text-sm text-gray-600 tabular-nums">{ehBrz
+                  ? <>a receber <b className="text-gray-900">{brl(g.aReceber)}</b></>
+                  : <>vendido <b className="text-gray-900">{brl(g.vendas.reduce((t, v) => t + (v.semPreco ? 0 : v.valor), 0))}</b></>}</p>
               </div>
               <ul className="divide-y divide-gray-100">
                 {g.vendas.map(v => (
@@ -168,10 +182,12 @@ export default function ProdutosCAReceber() {
                       <p className="flex flex-wrap items-baseline gap-x-2">
                         <span className="font-medium text-gray-900 tabular-nums">{dataBr(v.data)}</span>
                         <span className="text-sm text-gray-600 tabular-nums">{quantidade(v)}</span>
-                        <span className="font-semibold text-gray-900 tabular-nums">{brl(v.valor)}</span>
+                        {v.semPreco
+                          ? <span className="font-semibold text-amber-800">Sem valor</span>
+                          : <span className="font-semibold text-gray-900 tabular-nums">{brl(v.valor)}</span>}
                       </p>
                       <p className="flex flex-wrap gap-1 mt-1">
-                        {v.recebidoEm
+                        {!ehBrz ? null : v.recebidoEm
                           ? <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-800"><CheckCircle2 size={14} aria-hidden />Recebido em {dataBr(v.recebidoEm)}{v.recebidoPix ? ' (Pix)' : ''}</span>
                           : <Selo tom="atencao">A receber</Selo>}
                         {v.semPreco && <Selo tom="atencao">Falta o preço da produtoC</Selo>}
@@ -181,7 +197,7 @@ export default function ProdutosCAReceber() {
                       {v.observacao && <p className="text-xs text-gray-500 mt-1">{v.observacao}</p>}
                     </div>
                     <div className="flex items-center gap-1 sm:shrink-0">
-                      {v.recebidoEm
+                      {!ehBrz ? null : v.recebidoEm
                         ? <BotaoIcone icone={RotateCcw} rotulo="Voltar para a receber" onClick={() => voltarAReceber(v)} />
                         : <Botao variante="secundario" tamanho="sm" icone={CheckCircle2} onClick={() => setRecebendo(v)}>Recebido</Botao>}
                       <BotaoIcone icone={Pencil} rotulo="Editar venda" onClick={() => setEditando(v)} />

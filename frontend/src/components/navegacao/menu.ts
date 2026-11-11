@@ -1,7 +1,7 @@
 import {
   House, Truck, ClipboardList, Fuel, Mail, PackageOpen, Disc3, Boxes, Banknote, Receipt,
   Landmark, HandCoins, FileText, Route as Rota, Egg, FolderArchive, Milestone, ArrowLeftRight,
-  Tags, EggOff, ShoppingBag, Wallet, Split, IdCard, Container,
+  Grid3x3, Tags, EggOff, ShoppingBag, Wallet, Split, IdCard, Container,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -58,6 +58,7 @@ export const secoesMenu: SecaoMenu[] = [
       { to: '/barracao/comissoes', label: 'Comissões',      icon: HandCoins },
       { to: '/estoque/produtosB', label: 'ProdutosB',     icon: Boxes },
       { to: '/estoque/produtosA',    label: 'ProdutosA',        icon: Disc3 },
+      { to: '/estoque/produtosC',   label: 'ProdutosC',       icon: Grid3x3 },
     ],
   },
   {

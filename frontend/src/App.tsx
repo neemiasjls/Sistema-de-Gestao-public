@@ -48,6 +48,7 @@ const EmbaladosSalariosPage = tela(() => import('./pages/EmbaladosSalariosPage')
 const BarracaoPage = tela(() => import('./pages/BarracaoPage'))
 const DespesasDivididasPage = tela(() => import('./pages/DespesasDivididasPage'))
 const MotoristasPage = tela(() => import('./pages/MotoristasPage'))
+const EstoqueProdutosCPage = tela(() => import('./pages/EstoqueProdutosCPage'))
 const PlacasPage = tela(() => import('./pages/PlacasPage'))
 const VolumesAnotarPage =tela(() => import('./pages/VolumesAnotarPage'))
 const VolumesControlePage = tela(() => import('./pages/VolumesControlePage'))
@@ -201,7 +202,7 @@ function Layout() {
             {/* Portal das produtosA (EST-09): o escritório anota com o login dele, dentro do sistema (USU-05) */}
             <Route path="/produtosA" element={<PortalProdutosAPage dentroDoSistema />} />
             <Route path="/estoque/produtosB" element={<EstoqueProdutosBPage key="produtosB" />} />
-            <Route path="/estoque/produtosC" element={<Navigate to="/boletos" replace />} />
+            <Route path="/estoque/produtosC" element={<EstoqueProdutosCPage />} />
             <Route path="/precos" element={<PrecosPage />} />
             <Route path="/estoque/volumes" element={<VolumesEmbaladosPage />} />
             <Route path="/embalados/quebras" element={<EmbaladosQuebrasPage />} />

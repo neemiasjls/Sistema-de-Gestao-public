@@ -448,6 +448,8 @@ function AReceber() {
   const [lista, setLista] = useState<ListaAReceber | null>(null)
   const [carregando, setCarregando] = useState(false)
   const [cliente, setCliente] = useState<ClienteReceber>('CD')
+  // BRZ (produtosC) é outro cliente, separado da CD (Cedro Frutas): não tem boleto, só as produtosC a receber
+  const [verProdutosC, setVerProdutosC] = useState(false)
   const [filtro, setFiltro] = useState<FiltroReceber>('todos')
   const [avisos, setAvisos] = useState<string[]>([])
   const [subindo, setSubindo] = useState(false)
@@ -563,10 +565,17 @@ function AReceber() {
   const vencido = (b: BoletoReceber) => !b.recebidoEm && !!b.vencimento && b.vencimento < hoje
   const opcoesCliente = (lista?.clientes ?? [{ chave: 'CD' as const, rotulo: 'CD (Cedro Frutas)' }, { chave: 'GIRASSOL' as const, rotulo: 'Girassol (Horacio)' }])
     .map(c => [c.chave, c.rotulo] as const)
+  const opcoesTela = [...opcoesCliente, ['BRZ', 'BRZ (produtosC)'] as const]
+  const escolherCliente = (v: string) => {
+    if (v === 'BRZ') { setVerProdutosC(true); return }
+    setVerProdutosC(false); setCliente(v as ClienteReceber)
+  }
 
   return (
     <div className="space-y-4">
-      <Segmentado valor={cliente} onChange={setCliente} rotulo="Cliente" opcoes={opcoesCliente} />
+      <Segmentado valor={verProdutosC ? 'BRZ' : cliente} onChange={escolherCliente} rotulo="Cliente" opcoes={opcoesTela} />
+
+      {verProdutosC ? <ProdutosCAReceber modo="brz" /> : <>
 
       {resumo ? (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -679,7 +688,6 @@ function AReceber() {
 
       {/* A lista antiga (boletos digitados por cliente do cadastro) continua
           aqui até ser trocada de vez pela de cima */}
-      <ProdutosCAReceber />
 
       <div className="bg-white border border-gray-200 rounded-xl">
         <button onClick={() => setAntigosAbertos(a => !a)} aria-expanded={antigosAbertos}
@@ -689,6 +697,7 @@ function AReceber() {
         </button>
         {antigosAbertos && <div className="px-4 pb-4"><BoletosAntigos /></div>}
       </div>
+      </>}
 
       {recebendo && (
         <DataModal titulo={`Recebimento do boleto ${recebendo.nossoNumero || ''}`.trim()} rotulo="Data do recebimento" inicial={null}
