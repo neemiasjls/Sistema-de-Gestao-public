@@ -77,6 +77,9 @@ public class StradaContrato : BaseEntity
     public decimal? Seguro { get; set; }
     public DateOnly? DataTransferencia { get; set; }
     public string Origem { get; set; } = "fatura";     // fatura, planilha ou pdf
+    // VIA-27: data lida do PDF e o retorno lançado à mão que este contrato paga
+    public DateOnly? DataContrato { get; set; }
+    public int? RetornoId { get; set; }
 }
 
 /// <summary>Arquivo original guardado como veio (txt, detalhamento, pdf ou agrotrade).</summary>

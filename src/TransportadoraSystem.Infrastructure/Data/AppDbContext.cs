@@ -276,7 +276,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
         modelBuilder.Entity<RetornoFrete>()
             .Ignore(r => r.Desconto)
-            .Ignore(r => r.FreteTotal);
+            .Ignore(r => r.FreteTotal)
+            .Ignore(r => r.AdiantamentoDescarga)
+            .Ignore(r => r.ReembolsoDescarga);
+        modelBuilder.Entity<StradaContrato>()
+            .HasOne<RetornoFrete>().WithMany()
+            .HasForeignKey(c => c.RetornoId)
+            .OnDelete(DeleteBehavior.SetNull);
         modelBuilder.Entity<RetornoFrete>()
             .HasOne(r => r.Viagem).WithMany()
             .HasForeignKey(r => r.ViagemId)

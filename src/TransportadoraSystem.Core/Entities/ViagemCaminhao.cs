@@ -218,6 +218,21 @@ public class RetornoFrete
     public string? ChaveImportacao { get; set; }
     public DateTime CriadoEm { get; set; } = DateTime.UtcNow;
     public DateTime AtualizadoEm { get; set; } = DateTime.UtcNow;
+    // VIA-27: descarga paga (digitada; nulo = não lançada) e o contrato da Strada ligado sozinho
+    public decimal? Descarga { get; set; }
+    public string? Contrato { get; set; }
+    // Cópia do "Valor Contrato" do PDF (valor cheio, antes do seguro)
+    public decimal? ValorContrato { get; set; }
+    public string? ContratoLigacao { get; set; }   // ligado, manual, conferir, sem_par, solto
+    public string? ContratoAviso { get; set; }
+    public string? ViagemLigacao { get; set; }     // auto, manual, solto (VIA-25)
+
+    /// <summary>Contrato (PDF) − frete contratado; nulo sem contrato.</summary>
+    public decimal? AdiantamentoDescarga => ValorContrato is decimal c ? c - ValorFrete : null;
+
+    /// <summary>Descarga − adiantamento, nunca abaixo de 0; nulo sem descarga, sem contrato ou com adiantamento negativo.</summary>
+    public decimal? ReembolsoDescarga => Descarga is decimal d && AdiantamentoDescarga is decimal a && a >= 0
+        ? Math.Max(0, d - a) : null;
 
     public decimal Desconto => DescontoManual ?? Math.Round((ValorFrete + Adicional - Pedagio) / 100m * (PorcentagemTip ?? 0), 4);
     public decimal FreteTotal => ValorFrete + Adicional - Pedagio - Desconto - DescontoSeguro;

@@ -370,7 +370,7 @@ public sealed class StradaService(AppDbContext db)
     private static void CopiarPdf(StradaContrato de, StradaContrato para)
     {
         para.Placa = de.Placa; para.Nf = de.Nf; para.Motorista = de.Motorista;
-        para.ValorContratoPdf = de.ValorContratoPdf; para.Seguro = de.Seguro;
+        para.ValorContratoPdf = de.ValorContratoPdf; para.Seguro = de.Seguro; para.DataContrato = de.DataContrato;
     }
 
     private static List<Mudanca> DiferencasFatura(StradaFatura e, StradaRepasseLeitor.Fatura f)
@@ -449,7 +449,7 @@ public sealed class StradaService(AppDbContext db)
             foreach (var c in alvos)
             {
                 c.Placa = p.Placa ?? c.Placa; c.Nf = nfs; c.Motorista = p.Motorista;
-                c.ValorContratoPdf = p.ValorContrato; c.Seguro = p.Seguro; c.AtualizadoEm = agora;
+                c.ValorContratoPdf = p.ValorContrato; c.Seguro = p.Seguro; c.DataContrato = p.DataContrato; c.AtualizadoEm = agora;
             }
             await GuardarArquivoAsync("pdf", nome, bytes, p.Contrato, ct);
             await db.SaveChangesAsync(ct);
@@ -459,6 +459,7 @@ public sealed class StradaService(AppDbContext db)
                 comPdf == null ? 1 : 0, comPdf == null ? 0 : 1, 0, [], p.Avisos));
         }
         if (resultado.Any(r => r.Status is "criado" or "substituido")) await ReconciliarAsync(ct);
+        else await StradaRetornos.SincronizarAsync(db, ct);   // VIA-27: Reconciliar já sincroniza no fim
         return resultado;
     }
 
@@ -641,6 +642,8 @@ public sealed class StradaService(AppDbContext db)
             c.AtualizadoEm = agora;
         }
         await db.SaveChangesAsync(ct);
+        // VIA-27: o contrato que paga um retorno lançado à mão volta a ficar ligado a ele
+        await StradaRetornos.SincronizarAsync(db, ct);
     }
 
     private static void LigarPeloPdf(StradaContrato c, List<AgrotradeViagem> viagens, Dictionary<string, string> socios)
@@ -926,7 +929,9 @@ public sealed class StradaService(AppDbContext db)
         v.DataOcorrenciaDescarga, v.DescargaRecebidaPlanilha ? "SIM" : null, v.DataDescargaRecebidaPlanilha,
         v.ProtocoloDiaria, v.DataDiaria, v.ValorDiaria, v.Observacao, []);
 
-    private async Task<Dictionary<string, string>> SociosPorPlacaAsync(CancellationToken ct)
+    private Task<Dictionary<string, string>> SociosPorPlacaAsync(CancellationToken ct) => SociosPorPlacaAsync(db, ct);
+
+    internal static async Task<Dictionary<string, string>> SociosPorPlacaAsync(AppDbContext db, CancellationToken ct)
     {
         var veiculos = await db.Veiculos.AsNoTracking().Select(v => new { v.Placa, v.Socio }).ToListAsync(ct);
         var mapa = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -935,7 +940,7 @@ public sealed class StradaService(AppDbContext db)
         return mapa;
     }
 
-    private static string? SocioDe(string? placa, Dictionary<string, string> socios) =>
+    internal static string? SocioDe(string? placa, Dictionary<string, string> socios) =>
         placa != null && socios.TryGetValue(ViagemCaminhaoCalculo.NormalizarPlaca(placa), out var s) ? s : null;
 
     // Guarda o arquivo de origem, se ainda não guardado (mesmo nome e tamanho = o mesmo). Não salva.

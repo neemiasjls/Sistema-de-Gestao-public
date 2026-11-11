@@ -1704,6 +1704,45 @@ static class Ddl
         """
         ALTER TABLE "PortalProdutosAConfig" ENABLE ROW LEVEL SECURITY;
         """,
+        // VIA-27 (10/11/2026): retorno lançado à mão com descarga e o contrato da Strada que paga o frete
+        // (adiantamento = valor do PDF − frete; reembolso esperado = descarga − adiantamento)
+        """
+        ALTER TABLE "RetornosFrete" ADD COLUMN IF NOT EXISTS "Descarga" numeric(18,4);
+        """,
+        """
+        ALTER TABLE "RetornosFrete" ADD COLUMN IF NOT EXISTS "Contrato" text;
+        """,
+        """
+        ALTER TABLE "RetornosFrete" ADD COLUMN IF NOT EXISTS "ValorContrato" numeric(18,4);
+        """,
+        """
+        ALTER TABLE "RetornosFrete" ADD COLUMN IF NOT EXISTS "ContratoLigacao" text;
+        """,
+        """
+        ALTER TABLE "RetornosFrete" ADD COLUMN IF NOT EXISTS "ContratoAviso" text;
+        """,
+        """
+        ALTER TABLE "RetornosFrete" ADD COLUMN IF NOT EXISTS "ViagemLigacao" text;
+        """,
+        """
+        ALTER TABLE "StradaContratos" ADD COLUMN IF NOT EXISTS "DataContrato" date;
+        """,
+        """
+        ALTER TABLE "StradaContratos" ADD COLUMN IF NOT EXISTS "RetornoId" integer;
+        """,
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'FK_StradaContratos_Retorno') THEN
+                ALTER TABLE "StradaContratos" ADD CONSTRAINT "FK_StradaContratos_Retorno" FOREIGN KEY ("RetornoId")
+                    REFERENCES "RetornosFrete" ("Id") ON DELETE SET NULL;
+            END IF;
+        END
+        $$;
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS "IX_StradaContratos_RetornoId" ON "StradaContratos" ("RetornoId") WHERE "RetornoId" IS NOT NULL;
+        """,
     ];
 
     /// <summary>
@@ -1731,5 +1770,8 @@ static class Ddl
         ("BoletosReceber", "LinhaDigitavel"),
         ("BoletosPosto", "PagoExtratoId"), ("BoletosPosto", "ExtratoRecusados"), ("BoletosPosto", "AgendadoPara"),
         ("VendasProdutoA", "AnotadaPorUsuarioId"), ("VendasProdutoA", "AnotadaEm"),
+        ("RetornosFrete", "Descarga"), ("RetornosFrete", "Contrato"), ("RetornosFrete", "ValorContrato"),
+        ("RetornosFrete", "ContratoLigacao"), ("RetornosFrete", "ContratoAviso"), ("RetornosFrete", "ViagemLigacao"),
+        ("StradaContratos", "DataContrato"), ("StradaContratos", "RetornoId"),
     ];
 }
