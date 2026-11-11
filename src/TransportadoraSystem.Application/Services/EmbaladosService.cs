@@ -87,6 +87,7 @@ public class EmbaladosService(AppDbContext db)
         var controles = await db.VolumesControles.AsNoTracking().Include(c => c.Linhas)
             .Where(c => (de == null || c.Data >= de) && (ate == null || c.Data <= ate)).ToListAsync();
         var precos = await PrecosDosRomaneiosAsync();
+        var doAcerto = await RomaneiosDosAcertosAsync();
 
         var lista = new List<QuebraLinha>();
         var usadas = new HashSet<int>();
@@ -96,6 +97,24 @@ public class EmbaladosService(AppDbContext db)
             if (q == null) continue;   // sem quebra anotada: vale a linha guardada (controles 319 e 321)
             var entradas = c.Linhas.Where(l => l.Grupo == ControleVolumesLinha.Entrada)
                 .Select(l => RomaneiosEmbalarService.NumeroDaOrigem(l.Origem)).OfType<int>().ToHashSet();
+            // Entrada sem o número do romaneio (controles de set/2026 vindos da planilha): acha a linha do
+            // acerto Alfa com as mesmas caixas e data do dia ou até 3 dias antes (VOLUME-17)
+            foreach (var e in c.Linhas.Where(l => l.Grupo == ControleVolumesLinha.Entrada && l.Origem == null && l.Data != null))
+                foreach (var (corE, band) in new[] { (QuebraVolumes.Branco, e.Ab + e.Ab20 + e.Bb), (QuebraVolumes.Vermelho, e.Av) })
+                {
+                    if (band <= 0 || band % 12 != 0) continue;
+                    var cx = band / 12;
+                    var achados = doAcerto.Where(r => r.Caixas == cx && r.Data <= e.Data!.Value && r.Data >= e.Data.Value.AddDays(-3)).ToList();
+                    if (achados.Count == 0) continue;
+                    var maisPerto = achados.Max(r => r.Data);
+                    achados = achados.Where(r => r.Data == maisPerto).ToList();
+                    if (achados.Count != 1) continue;
+                    var r = achados[0];
+                    var daCorE = precos.TryGetValue(corE, out var l0) ? l0 : precos[corE] = [];
+                    if (!daCorE.Any(x => x.Numero == r.Numero))
+                        daCorE.Add(new PrecoDoRomaneio(r.Numero, r.Data, Math.Round(r.Valor / r.Caixas, 2), r.Desconto, r.AcertoNumero));
+                    entradas.Add(r.Numero);
+                }
             foreach (var (cor, produtosC) in new[] { (QuebraVolumes.Branco, q.Ab + q.Ab20 + q.Bb), (QuebraVolumes.Vermelho, q.Av) })
             {
                 var g = guardadas.FirstOrDefault(x => x.Data == c.Data && x.Cor == cor);
@@ -181,6 +200,35 @@ public class EmbaladosService(AppDbContext db)
         "Ab" or "Bb" => QuebraVolumes.Branco,
         _ => null,
     };
+
+    private record RomaneioDoAcerto(int Numero, DateOnly Data, decimal Valor, decimal Caixas, decimal? Desconto, int AcertoNumero);
+
+    /// <summary>Linhas de romaneio dos acertos Alfa (número, data, valor, caixas, desconto por caixa).</summary>
+    private async Task<List<RomaneioDoAcerto>> RomaneiosDosAcertosAsync()
+    {
+        var acertos = await db.AcertosAlfa.AsNoTracking().Select(a => new { a.Numero, a.DadosJson }).ToListAsync();
+        var lista = new List<RomaneioDoAcerto>();
+        foreach (var a in acertos)
+        {
+            JsonDocument doc;
+            try { doc = JsonDocument.Parse(a.DadosJson); }
+            catch (JsonException) { continue; }
+            using (doc)
+            {
+                if (!doc.RootElement.TryGetProperty("romaneios", out var roms) || roms.ValueKind != JsonValueKind.Array) continue;
+                foreach (var r in roms.EnumerateArray())
+                {
+                    if (!r.TryGetProperty("numero", out var n) || !n.TryGetInt32(out var numero) || numero <= 0) continue;
+                    if (!r.TryGetProperty("data", out var d) || !DateOnly.TryParse(d.GetString(), CultureInfo.InvariantCulture, out var data)) continue;
+                    if (!r.TryGetProperty("valor", out var v) || v.ValueKind != JsonValueKind.Number) continue;
+                    if (!r.TryGetProperty("caixas", out var c) || c.ValueKind != JsonValueKind.Number || c.GetDecimal() <= 0) continue;
+                    decimal? desc = r.TryGetProperty("descontoCaixa", out var dc) && dc.ValueKind == JsonValueKind.Number ? dc.GetDecimal() : null;
+                    lista.Add(new RomaneioDoAcerto(numero, data, v.GetDecimal(), c.GetDecimal(), desc, a.Numero));
+                }
+            }
+        }
+        return lista;
+    }
 
     private static IEnumerable<(int Numero, decimal? Desconto)> DescontosDoAcerto(string dadosJson)
     {
