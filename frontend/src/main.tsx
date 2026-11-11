@@ -4,6 +4,7 @@ import { Toaster } from 'react-hot-toast'
 import App from './App'
 import { acordarServidor } from './services/api'
 import { registrarSW } from './pwa/registrarSW'
+import { acompanharAlturaTela } from './utils/alturaTela'
 import './index.css'
 
 // A API dorme na Render grátis: já pede para ela acordar enquanto a tela de
@@ -37,6 +38,8 @@ function Avisos() {
     />
   )
 }
+
+acompanharAlturaTela()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

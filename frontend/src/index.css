@@ -112,6 +112,7 @@
   .h-tela {
     height: 100vh;
     height: 100dvh;
+    height: var(--altura-tela, 100dvh); /* utils/alturaTela.ts: dvh do iPhone fica preso depois do teclado */
   }
 
   /* Folga para a barra do iPhone embaixo (rodapés fixos) */
