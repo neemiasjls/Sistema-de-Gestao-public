@@ -129,6 +129,8 @@ function TabelaFrete({ linhas, onEditar }: { linhas: LinhaPreco[]; onEditar: (l:
                 <dt className="text-gray-600">ProdutoE</dt><dd className="text-right"><Valor v={l.produtoE} /></dd>
                 <dt className="text-gray-600">ProdutoD</dt><dd className="text-right"><Valor v={l.produtoD} /></dd>
               </>}
+              <dt className="text-gray-600">ProdutoB</dt><dd className="text-right"><Pacote l={l} v={l.produtoB} /></dd>
+              <dt className="text-gray-600">ProdutoC</dt><dd className="text-right"><Pacote l={l} v={l.produtoC} /></dd>
             </dl>
           </li>
         ))}
@@ -141,6 +143,8 @@ function TabelaFrete({ linhas, onEditar }: { linhas: LinhaPreco[]; onEditar: (l:
               <th className="px-3 py-2 font-medium text-right">Caixa normal</th>
               <th className="px-3 py-2 font-medium text-right">ProdutoE</th>
               <th className="px-3 py-2 font-medium text-right">ProdutoD</th>
+              <th className="px-3 py-2 font-medium text-right">ProdutoB</th>
+              <th className="px-3 py-2 font-medium text-right">ProdutoC</th>
               <th className="px-3 py-2"><span className="sr-only">Editar</span></th>
             </tr>
           </thead>
@@ -151,6 +155,8 @@ function TabelaFrete({ linhas, onEditar }: { linhas: LinhaPreco[]; onEditar: (l:
                 <td className="px-3 py-2 text-right"><Valor v={l.caixa} /></td>
                 <td className="px-3 py-2 text-right"><Valor v={l.produtoE} /></td>
                 <td className="px-3 py-2 text-right"><Valor v={l.produtoD} /></td>
+                <td className="px-3 py-2 text-right whitespace-nowrap"><Pacote l={l} v={l.produtoB} /></td>
+                <td className="px-3 py-2 text-right whitespace-nowrap"><Pacote l={l} v={l.produtoC} /></td>
                 <td className="px-1 py-1 text-right"><BotaoIcone icone={Pencil} rotulo={`Editar ${l.cliente}`} onClick={() => onEditar(l)} /></td>
               </tr>
             ))}
@@ -361,6 +367,13 @@ function ModalPreco({ linha, painel, onClose, onSalvou }: {
 
       {temEstoque ? (
         <>
+          <fieldset className="space-y-2">
+            <legend className="font-display text-base font-semibold text-gray-900">Frete por pacote</legend>
+            <div className="grid grid-cols-2 gap-3">
+              <CampoPreco rotulo="ProdutoB (150)" valor={produtoB} onChange={setProdutoB} dica="0 = não paga" />
+              <CampoPreco rotulo="ProdutoC (100)" valor={produtoC} onChange={setProdutoC} dica="0 = não paga" />
+            </div>
+          </fieldset>
           <fieldset className="space-y-2">
             <legend className="font-display text-base font-semibold text-gray-900">Venda</legend>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
