@@ -39,7 +39,7 @@ public sealed class BarracaoService(AppDbContext db)
                 continue;
             }
             anterior = null;
-            if (data?.Year != 2026 || cliente == null) continue;
+            if (data is not { Year: >= 2000 } || cliente == null) continue;
             // De abril em diante a mesma linha traz "ProdutosB" com as amarelas na
             // coluna C e as brancas na D: total = (C + D) × valor
             var brancas = com.N(r, 4);
@@ -61,7 +61,7 @@ public sealed class BarracaoService(AppDbContext db)
         {
             var data = desp.Data(r, 1);
             var descricao = Nulo(desp.Texto(r, 2));
-            if (data?.Year != 2026 || descricao == null) continue;
+            if (data is not { Year: >= 2000 } || descricao == null) continue;
             despesas.Add(new()
             {
                 Data = data.Value, Descricao = descricao, Valor = desp.Numero(r, 4),
@@ -70,7 +70,7 @@ public sealed class BarracaoService(AppDbContext db)
         }
         var semValor = comissoes.Count(c => c.Valor == null) + despesas.Count(d => d.Valor == null);
         if (semValor > 0) avisos.Add($"{semValor} linha(s) sem valor na planilha; confira os campos marcados como falta.");
-        if (comissoes.Count + despesas.Count == 0) avisos.Add("A planilha não tem lançamentos de 2026.");
+        if (comissoes.Count + despesas.Count == 0) avisos.Add("A planilha não tem lançamentos.");
         return new(comissoes, despesas, avisos);
     }
 
@@ -78,17 +78,25 @@ public sealed class BarracaoService(AppDbContext db)
     {
         var p = LerPlanilha(bytes);
         var resumo = new ImportacaoLancamentos(db, aplicar);
-        var ini = new DateOnly(2026, 1, 1); var fim = new DateOnly(2026, 12, 31);
+        // Cada grupo compara só com o período que a planilha traz (menor e maior data lidas)
+        if (p.Comissoes.Count > 0)
+        {
+        var ini = p.Comissoes.Min(c => c.Data); var fim = p.Comissoes.Max(c => c.Data);
         resumo.Comparar("Comissões barracão", p.Comissoes,
             await db.ComissoesBarracao.Where(c => c.Data >= ini && c.Data <= fim).ToListAsync(),
             c => $"{c.Data}|{Normalizar(c.Cliente)}|{Normalizar(c.Produto)}|{Normalizar(c.Fornecedor)}",
             c => $"{c.Data:dd/MM/yyyy} · {c.Cliente}",
             c => $"{c.Quantidade:0.####} × {c.Valor:0.####} · {c.Produto} · {c.Fornecedor} · {c.Observacao}",
             c => c.Origem == "planilha", db.ComissoesBarracao);
+        }
+        if (p.Despesas.Count > 0)
+        {
+        var ini = p.Despesas.Min(d => d.Data); var fim = p.Despesas.Max(d => d.Data);
         resumo.Comparar("Despesas barracão", p.Despesas,
             await db.DespesasDoBarracao.Where(d => d.Data >= ini && d.Data <= fim).ToListAsync(),
             d => $"{d.Data}|{Normalizar(d.Descricao)}", d => $"{d.Data:dd/MM/yyyy} · {d.Descricao}",
             d => $"{d.Valor:0.####} · {d.Observacao}", d => d.Origem == "planilha", db.DespesasDoBarracao);
+        }
         if (aplicar) await db.SaveChangesAsync();
         return resumo.Resultado(p.Avisos);
     }

@@ -303,7 +303,7 @@ public class EmbaladosService(AppDbContext db)
                 var tipo = Normalizar(aq.Texto(r, 2));
                 var cor = tipo.Contains("VERMELHO") ? QuebraVolumes.Vermelho : tipo.Contains("BRANCO") ? QuebraVolumes.Branco : null;
                 var produtosC = aq.Numero(r, 4);
-                if (cor == null || dia?.Year != 2026 || produtosC is null or <= 0) continue;
+                if (cor == null || dia is not { Year: >= 2000 } || produtosC is null or <= 0) continue;
                 quebras.Add(new QuebraVolumes { Data = dia.Value, Cor = cor, ProdutosC = produtosC, PrecoCaixa = NaoZero(aq.Numero(r, 3)), Origem = OrigemPlanilha });
             }
             var semPreco = quebras.Count(q => q.PrecoCaixa == null);
@@ -321,7 +321,7 @@ public class EmbaladosService(AppDbContext db)
                 if (Normalizar(ac.Texto(r, 8)).StartsWith("SALARIO")) break;
                 var data = ac.Data(r, 1);
                 var cliente = Nulo(ac.Texto(r, 2));
-                if (data?.Year != 2026 || cliente == null) continue;
+                if (data is not { Year: >= 2000 } || cliente == null) continue;
                 var c = new ComissaoEmbalados
                 {
                     Data = data.Value, Cliente = cliente, Tipo = Nulo(ac.Texto(r, 3)), Caixas = ac.N(r, 4),
@@ -349,7 +349,7 @@ public class EmbaladosService(AppDbContext db)
                 var referencia = Nulo(asl.Texto(r, 2));
                 if (referencia != null && Normalizar(referencia).StartsWith("VALOR TOTAL")) break;
                 if (asl.Data(r, 1) is { } d) mes = new DateOnly(d.Year, d.Month, 1);
-                if (referencia == null || mes?.Year != 2026) continue;
+                if (referencia == null || mes is not { Year: >= 2000 }) continue;
                 var obs = string.Join(" · ", new[] { asl.Texto(r, 6), asl.Texto(r, 7) }.Where(t => t.Trim().Length > 0));
                 salarios.Add(new SalarioEmbalados
                 {
@@ -369,7 +369,7 @@ public class EmbaladosService(AppDbContext db)
                 var descricao = Nulo(ad.Texto(r, 2));
                 if (descricao != null && Normalizar(descricao).StartsWith("SOMA TOTAL")) break;
                 var data = ad.Data(r, 1);
-                if (data?.Year != 2026 || descricao == null) continue;
+                if (data is not { Year: >= 2000 } || descricao == null) continue;
                 var obs = Nulo(ad.Texto(r, 4));
                 var valor = ad.Numero(r, 3);
                 // "NÃO ANOTOU O VALOR" com zero: fica sem valor, para a tela avisar
@@ -382,34 +382,50 @@ public class EmbaladosService(AppDbContext db)
         return new PlanilhaLida(quebras, despesas, comissoes, salarios, avisos);
     }
 
-    /// <summary>Prévia e atualização de 2026: mantém IDs, linhas manuais e o que só está no site.</summary>
+    /// <summary>Prévia e atualização pelo período que a planilha traz: mantém IDs, linhas manuais e o que só está no site.</summary>
     public async Task<object> ImportarAsync(byte[] bytes, bool aplicar = true)
     {
         var p = LerPlanilha(bytes);
         if (p.Quebras.Count + p.Despesas.Count + p.Comissoes.Count + p.Salarios.Count == 0)
-            throw new InvalidOperationException("A planilha não tem lançamentos de 2026 nas abas esperadas.");
+            throw new InvalidOperationException("A planilha não tem lançamentos nas abas esperadas.");
         var z = new ImportacaoLancamentos(db, aplicar);
-        var ini = new DateOnly(2026, 1, 1); var fim = new DateOnly(2026, 12, 31);
+        // Cada grupo compara só com o período que a planilha traz (menor e maior data lidas)
+        if (p.Quebras.Count > 0)
+        {
+        var ini = p.Quebras.Min(q => q.Data); var fim = p.Quebras.Max(q => q.Data);
         z.Comparar("Quebras", p.Quebras,
             await db.QuebrasVolumes.Where(q => q.Data >= ini && q.Data <= fim).ToListAsync(),
             q => $"{q.Data}|{q.Cor}", q => $"{q.Data:dd/MM/yyyy} · {q.Cor}",
             q => $"{q.ProdutosC:0.####} produtosC · caixa {q.PrecoCaixa:0.####} · {q.Observacao}",
             q => q.Origem == OrigemPlanilha, db.QuebrasVolumes);
+        }
+        if (p.Despesas.Count > 0)
+        {
+        var ini = p.Despesas.Min(d => d.Data); var fim = p.Despesas.Max(d => d.Data);
         z.Comparar("Despesas embalados", p.Despesas,
             await db.DespesasEmbalados.Where(d => d.Data >= ini && d.Data <= fim).ToListAsync(),
             d => $"{d.Data}|{Normalizar(d.Descricao)}", d => $"{d.Data:dd/MM/yyyy} · {d.Descricao}",
             d => $"{d.Valor:0.####} · {d.Observacao}", d => d.Origem == OrigemPlanilha, db.DespesasEmbalados);
+        }
+        if (p.Comissoes.Count > 0)
+        {
+        var ini = p.Comissoes.Min(c => c.Data); var fim = p.Comissoes.Max(c => c.Data);
         z.Comparar("Comissões embalados", p.Comissoes,
             await db.ComissoesEmbalados.Where(c => c.Data >= ini && c.Data <= fim).ToListAsync(),
             c => $"{c.Data}|{Normalizar(c.Cliente)}|{Normalizar(c.Tipo)}|{Normalizar(c.Fornecedor)}",
             c => $"{c.Data:dd/MM/yyyy} · {c.Cliente} · {c.Tipo}",
             c => $"{c.Caixas:0.####} caixas · compra {c.PrecoCompra:0.####} · venda {c.PrecoVenda:0.####} · frete {c.Frete:0.####} · {c.Observacao}",
             c => c.Origem == OrigemPlanilha, db.ComissoesEmbalados);
+        }
+        if (p.Salarios.Count > 0)
+        {
+        var ini = p.Salarios.Min(x => x.Mes); var fim = p.Salarios.Max(x => x.Mes);
         z.Comparar("Salários", p.Salarios,
             await db.SalariosEmbalados.Where(s => s.Mes >= ini && s.Mes <= fim).ToListAsync(),
             s => $"{s.Mes}|{Normalizar(s.Referencia)}", s => $"{s.Mes:MM/yyyy} · {s.Referencia}",
             s => $"{s.Valor:0.####} · INSS {s.Inss:0.####} · FGTS {s.Fgts:0.####} · {s.Observacao}",
             s => s.Origem == OrigemPlanilha, db.SalariosEmbalados);
+        }
         if (aplicar)
         {
             await db.SaveChangesAsync();
@@ -420,7 +436,7 @@ public class EmbaladosService(AppDbContext db)
         {
             quebras = p.Quebras.Count, despesas = p.Despesas.Count, comissoes = p.Comissoes.Count, salarios = p.Salarios.Count,
             avisos = p.Avisos, novas = z.Novas, mudadas = z.Mudadas, mantidas = z.Mantidas,
-            soNoSite = z.SoNoSite, iguais = z.Iguais, ano = 2026,
+            soNoSite = z.SoNoSite, iguais = z.Iguais,
         };
     }
     public static string Dinheiro(decimal v) => v.ToString("N2", CultureInfo.GetCultureInfo("pt-BR"));

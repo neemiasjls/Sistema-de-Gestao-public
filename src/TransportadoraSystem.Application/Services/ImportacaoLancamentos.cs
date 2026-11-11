@@ -55,6 +55,6 @@ public sealed class ImportacaoLancamentos(AppDbContext db, bool aplicar)
     public object Resultado(IEnumerable<string> avisos) => new
     {
         novas = Novas, mudadas = Mudadas, mantidas = Mantidas, soNoSite = SoNoSite,
-        iguais = Iguais, avisos, ano = 2026,
+        iguais = Iguais, avisos,
     };
 }
