@@ -349,6 +349,8 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
 
         // Viagem sem volumes ainda: tenta o controle de carregamento da placa e do dia
         if (v.Volumes.Count == 0) await CasarCarregamentoAsync(v);
+        // Viagem que já tem volumes e não tem controle: só liga o controle solto (VIA-25)
+        else if (v.DataSaida is { } saidaV) await LigarCarregamentoSemTrocarAsync(v, $"viagem de {saidaV:dd/MM}", []);
         return v;
     }
 
@@ -1054,7 +1056,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         if (!ligarViagem) { }
         else if (viagemId == null)
         {
-            var v = await ViagemDoCarregamentoAsync(c);
+            var v = await ViagemDoCarregamentoAsync(c, avisos);
             if (v != null && !await db.ViagemCaminhaoVolumes.AnyAsync(o => o.ViagemId == v.Id))
             {
                 avisos.AddRange(await AplicarCarregamentoAsync(v.Id, c.Id));
@@ -1294,30 +1296,117 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         return brz.Count == 0 ? null : brz.Sum(i => i.produtosC);
     }
 
-    private async Task<ViagemCaminhao?> ViagemDoCarregamentoAsync(CarregamentoVolumes c)
+    // VIA-09/VIA-25: viagens da placa (cavalo) com saída de ini − 60 a fim + 12 (a próxima saída fecha o período da
+    // viagem sem chegada), os dias das anotações de carga VOLUMES e as que já têm controle ligado
+    private record ViagemParaCarga(ViagemPeriodoLigador.Viagem V, List<DateOnly> DiasVolumes, string Status, bool TemVolumes);
+
+    private async Task<(List<ViagemParaCarga> Viagens, Dictionary<int, int> ControleDaViagem)> ViagensParaCargaAsync(string? placa, DateOnly ini, DateOnly fim)
     {
-        var cand = await db.ViagensCaminhao.Include(v => v.Cargas)
-            // Saída perto do dia, ou o dia dentro da viagem (carga no meio: XAA de 03 a 13/09 carregou em 11/09)
-            .Where(v => v.Placa == c.Placa && v.DataSaida != null && ((v.DataSaida >= c.Data.AddDays(-1) && v.DataSaida <= c.Data.AddDays(2))
-                || (v.DataSaida <= c.Data && v.DataChegada != null && v.DataChegada >= c.Data)))
-            .ToListAsync();
-        var exatos = cand.Where(v => v.DataSaida == c.Data || v.Cargas.Any(x => x.Tipo == "VOLUMES" && x.Data == c.Data)).ToList();
-        if (exatos.Count == 1) return exatos[0];
-        return exatos.Count == 0 && cand.Count == 1 ? cand[0] : null;
+        var chave = RetornoAnotacaoLigador.ChavePlaca(placa);
+        var lista = (await db.ViagensCaminhao.AsNoTracking()
+                .Where(v => v.DataSaida != null && v.DataSaida >= ini.AddDays(-60) && v.DataSaida <= fim.AddDays(ViagemPeriodoLigador.DiasSemChegada + 2))
+                .Select(v => new
+                {
+                    v.Id, v.Placa, v.PlacaCarreta, v.DataSaida, v.DataChegada, v.MotoristaId, v.Status,
+                    Dias = v.Cargas.Where(x => x.Tipo == "VOLUMES" && x.Data != null).Select(x => x.Data!.Value).ToList(),
+                    TemVolumes = v.Volumes.Any(),
+                })
+                .ToListAsync())
+            .Where(v => RetornoAnotacaoLigador.ChavePlaca(v.Placa) == chave)
+            .Select(v => new ViagemParaCarga(new ViagemPeriodoLigador.Viagem(v.Id, v.Placa, v.PlacaCarreta, v.DataSaida, v.DataChegada, v.MotoristaId), v.Dias, v.Status, v.TemVolumes))
+            .ToList();
+        var ids = lista.Select(v => v.V.Id).ToList();
+        var controles = await db.CarregamentosVolumes.AsNoTracking().Where(c => c.ViagemId != null && ids.Contains(c.ViagemId.Value))
+            .Select(c => new { c.Id, ViagemId = c.ViagemId!.Value }).ToListAsync();
+        return (lista, controles.GroupBy(c => c.ViagemId).ToDictionary(g => g.Key, g => g.First().Id));
+    }
+
+    private async Task<ViagemCaminhao?> ViagemDoCarregamentoAsync(CarregamentoVolumes c, List<string> avisos)
+    {
+        var (viagens, comControle) = await ViagensParaCargaAsync(c.Placa, c.Data, c.Data);
+        var e = CarregamentoPeriodoLigador.EscolherViagem(new(c.Id, c.Placa, c.Data), viagens.Select(x => x.V).ToList(),
+            id => viagens.First(x => x.V.Id == id).DiasVolumes,
+            comControle.Where(k => k.Value != c.Id).Select(k => k.Key).ToHashSet());
+        if (e.Aviso != null) avisos.Add(e.Aviso);
+        return e.ViagemId is { } vid ? await db.ViagensCaminhao.FirstOrDefaultAsync(v => v.Id == vid) : null;
+    }
+
+    // Controle solto da janela da viagem (CarregamentoPeriodoLigador.EscolherCarga); nulo se a viagem já tem controle
+    private async Task<CarregamentoVolumes?> CarregamentoDaViagemAsync(ViagemCaminhao v, List<string>? avisos)
+    {
+        if (v.DataSaida is not { } saida) return null;
+        if (await db.CarregamentosVolumes.AnyAsync(c => c.ViagemId == v.Id)) return null; // um controle por viagem
+        var (viagens, comControle) = await ViagensParaCargaAsync(v.Placa, saida, saida);
+        var esta = new ViagemPeriodoLigador.Viagem(v.Id, v.Placa, v.PlacaCarreta, v.DataSaida, v.DataChegada, v.MotoristaId);
+        var todas = viagens.Select(x => x.V).Where(x => x.Id != v.Id).Append(esta).ToList();
+        if (CarregamentoPeriodoLigador.Janela(esta, todas) is not { } j) return null;
+        var chave = RetornoAnotacaoLigador.ChavePlaca(v.Placa);
+        var soltas = (await db.CarregamentosVolumes.Where(c => c.ViagemId == null && c.Data >= j.Ini && c.Data <= j.Fim).ToListAsync())
+            .Where(c => RetornoAnotacaoLigador.ChavePlaca(c.Placa) == chave).ToList();
+        if (soltas.Count == 0) return null;
+        var dias = v.Cargas.Where(x => x.Tipo == "VOLUMES" && x.Data != null).Select(x => x.Data!.Value);
+        var (cargaId, aviso) = CarregamentoPeriodoLigador.EscolherCarga(esta, todas, dias,
+            soltas.Select(c => new CarregamentoPeriodoLigador.Carga(c.Id, c.Placa, c.Data)).ToList(), comControle.Keys.ToHashSet(),
+            id => viagens.FirstOrDefault(x => x.V.Id == id)?.DiasVolumes ?? []);
+        if (aviso != null) avisos?.Add(aviso);
+        return cargaId is { } id ? soltas.First(c => c.Id == id) : null;
     }
 
     private async Task CasarCarregamentoAsync(ViagemCaminhao v)
     {
         if (v.DataSaida == null) return;
         if ((await DonosDasPlacas.CarregarAsync(db)).Dono(v.Placa) != DonosDasPlacas.Bento) return; // VIA-24
-        var cands = await db.CarregamentosVolumes
-            .Where(c => c.ViagemId == null && c.Placa == v.Placa && c.Data >= v.DataSaida.Value.AddDays(-2)
-                && c.Data <= (v.DataChegada > v.DataSaida.Value.AddDays(1) ? v.DataChegada.Value : v.DataSaida.Value.AddDays(1)))
-            .ToListAsync();
-        var datasVolumes = v.Cargas.Where(x => x.Tipo == "VOLUMES" && x.Data != null).Select(x => x.Data!.Value).ToList();
-        var exatos = cands.Where(c => c.Data == v.DataSaida || datasVolumes.Contains(c.Data)).ToList();
-        var escolhido = exatos.Count == 1 ? exatos[0] : exatos.Count == 0 && cands.Count == 1 ? cands[0] : null;
+        var escolhido = await CarregamentoDaViagemAsync(v, null);
         if (escolhido != null) await AplicarCarregamentoAsync(v.Id, escolhido.Id);
+    }
+
+    /// <summary>
+    /// VIA-25: controles soltos das placas do Bento com data entre ini e fim vão para a viagem da placa pela janela
+    /// (CarregamentoPeriodoLigador). Só liga; viagem "lancada" sem volumes recebe os volumes do controle (como
+    /// DepoisDeGravarAsync). Conferida ou fechada: só liga. Devolve quantos ligou; os avisos vão para a lista.
+    /// </summary>
+    public async Task<int> LigarCarregamentosPeloPeriodoAsync(DateOnly ini, DateOnly fim, List<string>? avisos = null)
+    {
+        var donos = await DonosDasPlacas.CarregarAsync(db);
+        var soltas = (await db.CarregamentosVolumes.Where(c => c.ViagemId == null && c.Data >= ini && c.Data <= fim).OrderBy(c => c.Data).ToListAsync())
+            .Where(c => donos.Dono(c.Placa) == DonosDasPlacas.Bento).ToList();
+        var n = 0;
+        foreach (var grupo in soltas.GroupBy(c => RetornoAnotacaoLigador.ChavePlaca(c.Placa)))
+        {
+            var (viagens, controleDaViagem) = await ViagensParaCargaAsync(grupo.First().Placa, ini, fim);
+            var comControle = controleDaViagem.Keys.ToHashSet();
+            var lista = viagens.Select(x => x.V).ToList();
+            var escolhas = grupo.Select(c => (c, e: CarregamentoPeriodoLigador.EscolherViagem(new(c.Id, c.Placa, c.Data), lista,
+                id => viagens.First(x => x.V.Id == id).DiasVolumes, comControle))).ToList();
+            foreach (var (_, e) in escolhas.Where(x => x.e.Duvida)) avisos?.Add(e.Aviso!);
+            foreach (var porViagem in escolhas.Where(x => x.e.ViagemId != null).GroupBy(x => x.e.ViagemId!.Value))
+            {
+                var vid = porViagem.Key;
+                var v = viagens.First(x => x.V.Id == vid);
+                // Dois controles para a mesma viagem: vale o do dia da saída ou da anotação; senão nenhum (como EscolherCarga)
+                var c = porViagem.Count() == 1 ? porViagem.First().c
+                    : porViagem.Where(x => x.c.Data == v.V.Saida || v.DiasVolumes.Contains(x.c.Data)).Select(x => x.c).ToList() is [var unico] ? unico : null;
+                if (c == null)
+                {
+                    avisos?.Add($"{porViagem.Count()} controles possíveis para a viagem de {v.V.Saida:dd/MM} ({string.Join(", ", porViagem.Select(x => x.c.Data).Order().Select(d => d.ToString("dd/MM")))}): escolha na viagem.");
+                    continue;
+                }
+                if (porViagem.First(x => x.c == c).e.Aviso is { } aviso) avisos?.Add(aviso);
+                if (!v.TemVolumes && v.Status == "lancada")
+                {
+                    var aplicados = await AplicarCarregamentoAsync(vid, c.Id);
+                    avisos?.AddRange(aplicados);
+                }
+                else
+                {
+                    c.ViagemId = vid;
+                    await db.SaveChangesAsync();
+                }
+                comControle.Add(vid);
+                n++;
+            }
+        }
+        return n;
     }
 
     private async Task<object> CarregamentosCandidatosAsync(ViagemCaminhao v)
@@ -1443,6 +1532,8 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         var placaArquivo = NormalizarPlaca(lido.Placa);
         var jaAchadas = new HashSet<int>();
         var motoristasDasAbas = new List<(string Aba, string Nome, MotoristaFrota? Mot)>();
+        // VIA-25: o controle de carregamento liga depois de todas as abas gravadas (a viagem seguinte também conta)
+        var ligarControle = new List<(ViagemCaminhao V, string Aba)>();
 
         // Antes: o que casa pela chave ou pela data fica reservado para a sua aba (a regra "provável"
         // de outra aba não pode tomar a viagem que é exatamente de uma aba deste arquivo).
@@ -1489,7 +1580,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
                     if (trocar?.Contains(NormalizarAba(a.Aba)) != true) { puladas++; viagens.Add(Situacao("CONFIRMAR")); continue; }
                     await LiberarChaveAsync(chave, existente.Id, a.Aba, avisos);
                     await SubstituirPeloAcertoAsync(existente, novo, a, lido, avisos, trocarRetornos);
-                    await LigarCarregamentoSemTrocarAsync(existente, a.Aba, avisos);
+                    ligarControle.Add((existente, a.Aba));
                     substituidas++; viagens.Add(Situacao("SUBSTITUIDA"));
                     continue;
                 }
@@ -1515,7 +1606,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
                     avisos.Add($"{a.Aba}: a viagem {existente.Id} estava {NomeSituacao(existente.Status)} no sistema e foi atualizada pela planilha.");
                 await LiberarChaveAsync(chave, existente.Id, a.Aba, avisos);
                 await SubstituirPeloAcertoAsync(existente, novo, a, lido, avisos, trocarRetornos);
-                await LigarCarregamentoSemTrocarAsync(existente, a.Aba, avisos);
+                ligarControle.Add((existente, a.Aba));
                 if (trocas.Count == 0) { completadas++; viagens.Add(Situacao("COMPLETADA")); }
                 else { substituidas++; viagens.Add(Situacao("SUBSTITUIDA")); }
                 continue;
@@ -1527,7 +1618,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
             db.ViagensCaminhao.Add(novo);
             await db.SaveChangesAsync();
             await LigarRetornosDoAcertoAsync(novo, a, lido, avisos);
-            await LigarCarregamentoSemTrocarAsync(novo, a.Aba, avisos);
+            ligarControle.Add((novo, a.Aba));
             criadas++;
             jaAchadas.Add(novo.Id);
             viagens.Add(new { aba = a.Aba, situacao = "NOVA", grau = (string?)null, viagemId = novo.Id, origem = novo.Origem, status = novo.Status, saida = a.Saida, diferencas = new List<object>() });
@@ -1537,6 +1628,14 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         var inicioAcerto = new DateOnly(lido.Ano, lido.Mes, 1);
         var ligadosPeriodo = await LigarRetornosPeloPeriodoAsync(inicioAcerto.AddDays(-7), inicioAcerto.AddMonths(1).AddDays(6));
         if (ligadosPeriodo > 0) avisos.Add($"{ligadosPeriodo} retorno(s) sem viagem entraram na viagem pela placa e pelo período.");
+        // VIA-09/VIA-25: controle de carregamento de cada aba gravada; depois os soltos do mesmo intervalo
+        foreach (var (vc, aba) in ligarControle) await LigarCarregamentoSemTrocarAsync(vc, aba, avisos);
+        var avisosCarga = new List<string>();
+        var ligadosCarga = await LigarCarregamentosPeloPeriodoAsync(inicioAcerto.AddDays(-7), inicioAcerto.AddMonths(1).AddDays(6), avisosCarga);
+        // As dúvidas das viagens das abas já foram avisadas acima (com o nome da aba); as outras entram aqui
+        var jaAvisadas = ligarControle.Where(x => x.V.DataSaida != null).Select(x => $"para a viagem de {x.V.DataSaida:dd/MM}").ToHashSet();
+        avisos.AddRange(avisosCarga.Where(a => !a.Contains("controles possíveis") || !jaAvisadas.Any(a.Contains)));
+        if (ligadosCarga > 0) avisos.Add($"{ligadosCarga} controle(s) de carregamento sem viagem entraram na viagem pela placa e pelo período.");
 
         // Confere: o que o sistema calcula contra os totais guardados na planilha
         var viagensMes = await ComTudo().AsNoTracking().Where(v => v.Placa == lido.Placa && v.AnoReferencia == lido.Ano && v.MesReferencia == lido.Mes).ToListAsync();
@@ -1725,31 +1824,20 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
 
     /// <summary>
     /// VIA-09/VIA-24: a viagem que veio do acerto (nova ou substituída) e ainda não tem controle de
-    /// carregamento ganha o controle solto da mesma placa (só placas do Bento) com data de saída − 1
-    /// até a chegada (sem chegada: saída + 1). Vale o do dia da saída ou de uma anotação de carga VOLUMES;
-    /// sem nenhum desses, o único da janela. Só LIGA (ViagemId): os volumes da planilha não mudam.
-    /// Mais de um possível: não liga e avisa.
+    /// carregamento ganha o controle solto da mesma placa (só placas do Bento) pela janela de
+    /// CarregamentoPeriodoLigador (saída − 2 até o fim do período; VIA-25). Só LIGA (ViagemId): os volumes da
+    /// planilha não mudam. Mais de um possível: não liga e avisa.
     /// </summary>
     private async Task LigarCarregamentoSemTrocarAsync(ViagemCaminhao v, string aba, List<string> avisos)
     {
-        if (v.DataSaida is not { } saida) return;
-        if (await db.CarregamentosVolumes.AnyAsync(c => c.ViagemId == v.Id)) return;
+        if (v.DataSaida == null) return;
         var donos = await DonosDasPlacas.CarregarAsync(db);
         if (donos.Dono(v.Placa) != DonosDasPlacas.Bento) return;
-        var placa = NormalizarPlaca(v.Placa);
-        var ini = saida.AddDays(-1); var fim = v.DataChegada ?? saida.AddDays(1);
-        var janela = (await db.CarregamentosVolumes.Where(c => c.ViagemId == null && c.Data >= ini && c.Data <= fim).ToListAsync())
-            .Where(c => NormalizarPlaca(c.Placa) == placa).ToList();
-        if (janela.Count == 0) return;
-        var diasVolumes = v.Cargas.Where(c => c.Tipo == "VOLUMES" && c.Data != null).Select(c => c.Data!.Value).Append(saida).ToHashSet();
-        var exatos = janela.Where(c => diasVolumes.Contains(c.Data)).ToList();
-        var escolhido = exatos.Count == 1 ? exatos[0] : exatos.Count == 0 && janela.Count == 1 ? janela[0] : null;
-        if (escolhido == null)
-        {
-            var possiveis = exatos.Count > 1 ? exatos : janela;
-            avisos.Add($"{possiveis.Count} controles possíveis para a {aba} ({string.Join(", ", possiveis.OrderBy(c => c.Data).Select(c => c.Data.ToString("dd/MM")))}): escolha na viagem.");
-            return;
-        }
+        var meus = new List<string>();
+        var escolhido = await CarregamentoDaViagemAsync(v, meus);
+        var trechoViagem = $"para a viagem de {v.DataSaida:dd/MM}";
+        avisos.AddRange(meus.Select(a => a.Contains(trechoViagem) ? a.Replace(trechoViagem, $"para a {aba}") : $"{aba}: {a}"));
+        if (escolhido == null) return;
         escolhido.ViagemId = v.Id;
         await db.SaveChangesAsync();
     }
