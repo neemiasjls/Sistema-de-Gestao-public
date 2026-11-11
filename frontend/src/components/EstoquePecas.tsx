@@ -105,7 +105,7 @@ export function PainelCarga({ estoque, total, unidade, casas = 0, saiu, aReceber
         </div>
         <div className="px-4 py-3 sm:px-5">
           <dt className="text-xs text-gray-500">Comissão</dt>
-          <dd className="mt-0.5 font-display text-lg font-semibold text-emerald-700 tabular-nums leading-tight">{brl(comissao)}</dd>
+          <dd className={`mt-0.5 font-display text-lg font-semibold tabular-nums leading-tight ${comissao < 0 ? 'text-red-700' : comissao > 0 ? 'text-emerald-700' : 'text-gray-900'}`}>{brl(comissao)}</dd>
         </div>
         <div className="col-span-2 sm:col-span-1 px-4 py-3 sm:px-5 border-t border-gray-100 sm:border-t-0 flex sm:block items-baseline justify-between gap-3">
           <dt className="text-xs text-gray-500">Custo da carga</dt>
