@@ -71,6 +71,34 @@ export interface ContratoFatura {
   temPdf: boolean
   viagem: ViagemResumo | null
   candidatos: ViagemResumo[]
+  /** VIA-27: retornos da mesma placa com reembolso de descarga em aberto (só dica). */
+  retornos?: RetornoDica[]
+}
+
+/** Retorno sugerido para um reembolso de descarga sem viagem (VIA-27). */
+export interface RetornoDica {
+  id: number; data: string; placa: string | null; motorista: string | null; destino: string | null
+  contrato: string | null; reembolsoDescarga: number | null
+}
+
+export type SituacaoDescarga = 'a receber' | 'recebido com diferença' | 'aguardando PDF do contrato' | 'descarga não lançada' | 'recebido' | 'nada a receber'
+
+/** GET api/strada/descargas: por retorno, quanto esperar no TIP e o que já caiu. */
+export interface Descargas {
+  ano: number
+  mes: number
+  socios: { socio: string | null; nome: string; esperado: number; recebido: number; aReceber: number; retornos: number }[]
+  retornos: {
+    retornoId: number; data: string; placa: string | null; socio: string | null; nomeSocio: string; motorista: string | null
+    destino: string | null; transportadora: string | null; contrato: string | null; nf: string | null
+    freteContratado: number; valorContrato: number | null; adiantamentoDescarga: number | null; descarga: number | null
+    reembolsoEsperado: number | null; recebido: number; diferenca: number | null; situacao: SituacaoDescarga; aviso: string | null
+    reembolsos: { id: number; contrato: string; valor: number; situacao: string; fatura: string | null; vencimento: string | null; caiuNoBanco: boolean; dataCredito: string | null }[]
+  }[]
+  contratosSemRetorno: {
+    id: number; contrato: string; valor: number; placa: string | null; socio: string | null; nomeSocio: string; nf: string | null
+    dataContrato: string | null; fatura: string | null; vencimento: string | null; dicas: RetornoDica[]
+  }[]
 }
 
 export interface FaturaDetalhe {
@@ -121,7 +149,7 @@ export interface Painel {
   totais: { recebido: number; taxa: number; repasse: number; aReceber: number }
   incompletas: { numero: string; dataPagamento: string | null; total: number; taxa: number; repasse: number }[]
   divergencias: Divergencia[]
-  aReceber: { viagemId: number; data: string; nf: string | null; placa: string | null; motorista: string | null; contrato: string | null; socio: string | null; nomeSocio: string; tipo: string; valor: number; motivo: string }[]
+  aReceber: { viagemId: number | null; retornoId?: number | null; data: string; nf: string | null; placa: string | null; motorista: string | null; contrato: string | null; socio: string | null; nomeSocio: string; tipo: string; valor: number; motivo: string }[]
   contratosSemFatura: { id: number; contrato: string; valor: number; placa: string | null; nf: string | null; situacao: string; nfSugerida: string | null }[]
 }
 
@@ -168,4 +196,9 @@ export const stradaApi = {
   ligar: (id: number, pedido: { viagemId?: number; placa?: string }) => api.put(`/api/strada/contratos/${id}/ligar`, pedido),
   desligar: (id: number) => api.delete(`/api/strada/contratos/${id}/ligar`),
   confirmar: (id: number) => api.put(`/api/strada/contratos/${id}/confirmar`),
+  descargas: (ano: number, mes: number) =>
+    api.get('/api/strada/descargas', { params: { ano, mes } })
+      .then(r => comDados(r, d => comoObjeto<Descargas>(d, ['socios', 'retornos', 'contratosSemRetorno'], 'descargas'))),
+  /** Reembolso de descarga ligado à mão ao retorno; null solta. */
+  ligarRetorno: (id: number, retornoId: number | null) => api.put(`/api/strada/contratos/${id}/retorno`, { retornoId }),
 }

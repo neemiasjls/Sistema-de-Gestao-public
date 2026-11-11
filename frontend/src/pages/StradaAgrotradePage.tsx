@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { AlertTriangle, Landmark, ChevronLeft, ChevronRight, FileText, Inbox, LayoutDashboard, Link2, ListChecks, Search, Truck, Unlink } from 'lucide-react'
+import { AlertTriangle, Landmark, ChevronLeft, ChevronRight, FileText, HandCoins, Inbox, LayoutDashboard, Link2, ListChecks, Search, Truck, Unlink } from 'lucide-react'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
 import { Abas, PainelAba, useAbas } from '../components/ui/Abas'
 import AreaSoltar from '../components/ui/AreaSoltar'
@@ -13,16 +13,17 @@ import { formatBRL } from '../services/api'
 import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
 import {
   stradaApi, type ContratoFatura, type FaturaDetalhe, type FaturaResumo, type Modo, type Painel,
-  type ResultadoArquivo, type ViagemBase, type ViagemResumo, type ConferenciaBanco,
+  type ResultadoArquivo, type ViagemBase, type ViagemResumo, type ConferenciaBanco, type Descargas, type SituacaoDescarga,
 } from '../services/stradaApi'
 import { dataBr } from '../utils/formato'
 
 // Agrotrade / TIP Bank (PEN-39): sobe os arquivos da Strada (.txt de repasse e PDFs "Baixar contrato")
 // e a planilha AGROTRADE; o sistema dá baixa nos fretes e reembolsos e divide cada transferência por sócio.
 
-type Aba = 'painel' | 'faturas' | 'base'
+type Aba = 'painel' | 'descargas' | 'faturas' | 'base'
 const ABAS = [
   ['painel', 'Painel', LayoutDashboard],
+  ['descargas', 'Descargas', HandCoins],
   ['faturas', 'Faturas', ListChecks],
   ['base', 'Base de viagens', Truck],
 ] as const
@@ -80,6 +81,7 @@ export default function StradaAgrotradePage() {
       <Abas id={id} valor={aba} opcoes={ABAS} onChange={setAba} rotulo="Partes da tela" />
       <PainelAba id={id} valor={aba}>
         {aba === 'painel' && <AbaPainel ano={periodo.ano} mes={periodo.mes} versao={versao} abrir={setFaturaAberta} />}
+        {aba === 'descargas' && <AbaDescargas ano={periodo.ano} mes={periodo.mes} versao={versao} mudou={recarregar} />}
         {aba === 'faturas' && <AbaFaturas ano={periodo.ano} mes={periodo.mes} versao={versao} mudou={recarregar} abrir={setFaturaAberta} />}
         {aba === 'base' && <AbaBase ano={periodo.ano} mes={periodo.mes} versao={versao} mudou={recarregar} />}
       </PainelAba>
@@ -204,6 +206,193 @@ function AbaPainel({ ano, mes, versao, abrir }: { ano: number; mes: number; vers
         </section>
       )}
     </div>
+  )
+}
+
+// ───────────────────────── Descargas dos retornos (VIA-27) ─────────────────────────
+
+type LinhaDescarga = Descargas['retornos'][number]
+
+// Ordem dos grupos: o que falta receber primeiro
+const GRUPOS: { situacao: SituacaoDescarga; titulo: string; tom: string }[] = [
+  { situacao: 'a receber', titulo: 'A receber no TIP', tom: 'text-gray-900' },
+  { situacao: 'recebido com diferença', titulo: 'Recebido com diferença', tom: 'text-amber-800' },
+  { situacao: 'aguardando PDF do contrato', titulo: 'Aguardando o PDF do contrato', tom: 'text-amber-800' },
+  { situacao: 'descarga não lançada', titulo: 'Descarga não lançada no retorno', tom: 'text-amber-800' },
+  { situacao: 'recebido', titulo: 'Recebido', tom: 'text-gray-900' },
+  { situacao: 'nada a receber', titulo: 'Nada a receber', tom: 'text-gray-900' },
+]
+
+function AbaDescargas({ ano, mes, versao, mudou }: { ano: number; mes: number; versao: number; mudou: () => void }) {
+  const [dados, setDados] = useState<Descargas | null>(null)
+  const [carregando, setCarregando] = useState(true)
+  const [erro, setErro] = useState<string | null>(null)
+  const [gravando, setGravando] = useState<number | null>(null)
+
+  const carregar = useCallback(async () => {
+    setCarregando(true)
+    try {
+      const { data: d } = await stradaApi.descargas(ano, mes)
+      setDados(d); setErro(null)
+    } catch (e) { setErro(await erroApi(e, 'Não consegui carregar as descargas.')) }
+    finally { setCarregando(false) }
+  }, [ano, mes])
+  useEffect(() => { carregar() }, [carregar, versao])
+
+  const ligar = async (contratoId: number, retornoId: number | null, texto: string) => {
+    setGravando(contratoId)
+    try {
+      await stradaApi.ligarRetorno(contratoId, retornoId)
+      toast.success(texto)
+      mudou()
+    } catch (e) { toast.error(await erroApi(e, 'Não consegui ligar o reembolso ao retorno.')) }
+    finally { setGravando(null) }
+  }
+
+  if (carregando && !dados) return <Carregando forma="cartoes" linhas={3} rotulo="Carregando as descargas" />
+  if (erro) return <ErroCarga mensagem={erro} onTentar={carregar} />
+  if (!dados) return null
+
+  const semRetorno = dados.contratosSemRetorno
+  if (dados.retornos.length === 0 && semRetorno.length === 0)
+    return <Vazio icone={Inbox} titulo="Nenhum retorno neste mês">Nenhum retorno da Agrotrade ou com contrato em {MESES[mes - 1]} de {ano}.</Vazio>
+
+  return (
+    <div className="space-y-5">
+      <section aria-label="Descarga por sócio" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        {dados.socios.map(s => (
+          <div key={s.socio ?? 'sem'} className="bg-white border border-gray-200 rounded-xl p-4 space-y-2">
+            <p className="font-semibold text-gray-900">{s.nome}</p>
+            <dl className="text-sm space-y-1">
+              <div className="flex justify-between gap-2"><dt className="text-gray-600">Esperado no TIP</dt><dd className="tabular-nums">{formatBRL(s.esperado)}</dd></div>
+              <div className="flex justify-between gap-2"><dt className="text-gray-600">Recebido</dt><dd className="tabular-nums font-medium">{formatBRL(s.recebido)}</dd></div>
+              <div className="flex justify-between gap-2 pt-1 border-t border-gray-100">
+                <dt className="text-gray-600">A receber ({s.retornos} {s.retornos === 1 ? 'retorno' : 'retornos'})</dt>
+                <dd className="tabular-nums font-semibold">{formatBRL(s.aReceber)}</dd>
+              </div>
+            </dl>
+          </div>
+        ))}
+      </section>
+
+      {semRetorno.length > 0 && (
+        <section aria-label="Reembolsos sem retorno" className="bg-white border border-amber-200 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 bg-amber-50 border-b border-amber-200 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-700" aria-hidden />
+            <h3 className="text-sm font-semibold text-amber-900">Reembolsos sem retorno ({semRetorno.length})</h3>
+          </div>
+          <ul className="divide-y divide-gray-100">
+            {semRetorno.map(c => (
+              <li key={c.id} className="px-4 py-3 space-y-2 text-sm">
+                <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-1">
+                  <p className="min-w-0">
+                    <span className="font-medium text-gray-900">Contrato {c.contrato}</span>
+                    {' · '}{c.placa ?? 'sem placa'} · NF {c.nf ?? 'sem NF no PDF'} · {c.nomeSocio}
+                    <span className="block text-gray-600">
+                      {c.fatura ? `Fatura ${c.fatura} de ${data(c.vencimento)}` : `PDF de ${data(c.dataContrato)}, fatura ainda não subiu`}
+                    </span>
+                  </p>
+                  <span className="tabular-nums font-medium">{formatBRL(c.valor)}</span>
+                </div>
+                {c.dicas.length === 0 ? (
+                  <p className="text-gray-600">Nenhum retorno desta placa com reembolso em aberto. A NF do contrato não bate com a de nenhum frete.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {c.dicas.map(r => (
+                      <li key={r.id} className="flex flex-col sm:flex-row sm:items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
+                        <span className="flex-1 min-w-0 text-gray-700">
+                          Retorno de {data(r.data)} · {r.motorista ?? 'sem motorista'}{r.destino ? ` · ${r.destino}` : ''} · esperar {dinheiro(r.reembolsoDescarga)}
+                        </span>
+                        <Botao tamanho="sm" icone={Link2} carregando={gravando === c.id}
+                               onClick={() => ligar(c.id, r.id, `Contrato ${c.contrato} ligado ao retorno de ${data(r.data)}.`)}>
+                          Ligar a este retorno
+                        </Botao>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {GRUPOS.map(g => {
+        const linhas = dados.retornos.filter(l => l.situacao === g.situacao)
+        if (linhas.length === 0) return null
+        const total = linhas.reduce((t, l) => t + (g.situacao === 'recebido' ? l.recebido : l.reembolsoEsperado ?? 0), 0)
+        return (
+          <section key={g.situacao} aria-label={g.titulo} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+            <h3 className={`px-4 py-3 text-sm font-semibold border-b border-gray-200 flex justify-between gap-2 ${g.tom}`}>
+              <span>{g.titulo} ({linhas.length})</span>
+              {total > 0 && <span className="tabular-nums">{formatBRL(total)}</span>}
+            </h3>
+            <ul className="divide-y divide-gray-100">
+              {linhas.map(l => <LinhaRetorno key={l.retornoId} l={l} gravando={gravando} ligar={ligar} />)}
+            </ul>
+          </section>
+        )
+      })}
+    </div>
+  )
+}
+
+function LinhaRetorno({ l, gravando, ligar }: {
+  l: LinhaDescarga; gravando: number | null; ligar: (contratoId: number, retornoId: number | null, texto: string) => void
+}) {
+  const recebeu = l.recebido > 0
+  return (
+    <li className="px-4 py-3 grid grid-cols-1 sm:grid-cols-[6rem_1fr_auto] gap-1 sm:gap-4 text-sm">
+      <span className="text-gray-600 tabular-nums">{data(l.data)}</span>
+      <div className="min-w-0 space-y-1">
+        <p>
+          <span className="font-medium text-gray-900">{l.placa ?? 'sem placa'}</span>
+          {' · '}{l.motorista ?? 'sem motorista'} · {l.destino ?? 'sem destino'} · {l.nomeSocio}
+        </p>
+        <p className="text-gray-600">
+          {l.contrato ? `Contrato ${l.contrato}${l.nf ? ` (NF ${l.nf})` : ''}` : 'Sem o PDF do contrato'}
+          {' · '}frete {formatBRL(l.freteContratado)}
+          {l.valorContrato != null && <> · contrato {formatBRL(l.valorContrato)} · adiantamento {dinheiro(l.adiantamentoDescarga)}</>}
+          {' · '}descarga {l.descarga == null ? 'não lançada' : formatBRL(l.descarga)}
+        </p>
+        {l.aviso && <p className="text-amber-800">{l.aviso}</p>}
+        {l.reembolsos.map(c => (
+          <p key={c.id} className="text-gray-600 flex flex-wrap items-center gap-x-2">
+            <span>
+              Reembolso {c.contrato}: {formatBRL(c.valor)}
+              {c.fatura
+                ? ` · fatura ${c.fatura} de ${data(c.vencimento)}${c.caiuNoBanco ? ` · caiu no banco em ${data(c.dataCredito)}` : ' · ainda não caiu no banco'}`
+                : ' · só o PDF, a fatura ainda não subiu'}
+            </span>
+            {c.situacao === 'manual' && (
+              <button type="button" disabled={gravando === c.id}
+                      onClick={() => ligar(c.id, null, `Contrato ${c.contrato} solto do retorno.`)}
+                      className="inline-flex items-center gap-1 min-h-10 sm:min-h-0 text-tinta-700 hover:underline disabled:opacity-50">
+                <Unlink className="w-3.5 h-3.5" aria-hidden /> Soltar
+              </button>
+            )}
+          </p>
+        ))}
+      </div>
+      <dl className="sm:text-right tabular-nums space-y-0.5">
+        <div className="flex sm:block justify-between gap-2">
+          <dt className="text-gray-600 sm:sr-only">Esperar no TIP</dt>
+          <dd className="font-medium">{l.reembolsoEsperado == null ? 'sem cálculo' : formatBRL(l.reembolsoEsperado)}</dd>
+        </div>
+        {recebeu && (
+          <div className="flex sm:block justify-between gap-2">
+            <dt className="text-gray-600 sm:inline sm:mr-1">Recebido</dt>
+            <dd className="sm:inline">{formatBRL(l.recebido)}</dd>
+          </div>
+        )}
+        {l.diferenca != null && l.diferenca !== 0 && (
+          <div className="flex sm:block justify-between gap-2 text-amber-800">
+            <dt className="sm:inline sm:mr-1">Diferença</dt>
+            <dd className="sm:inline">{formatBRL(l.diferenca)}</dd>
+          </div>
+        )}
+      </dl>
+    </li>
   )
 }
 

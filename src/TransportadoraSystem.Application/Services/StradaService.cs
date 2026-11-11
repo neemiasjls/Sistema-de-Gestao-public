@@ -543,8 +543,44 @@ public sealed class StradaService(AppDbContext db)
         c.Socio = SocioDe(placaLigada, socios);
         c.Situacao = Manual;
         c.NfSugerida = null;
+        c.RetornoId = null;   // ligado à base ou à placa: deixa de ser reembolso de retorno (o frete volta no Sincronizar)
         c.AtualizadoEm = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
+        await StradaRetornos.SincronizarAsync(db, ct);
+        return null;
+    }
+
+    /// <summary>
+    /// VIA-27 Parte 6: liga à mão o contrato de reembolso de descarga a um retorno (todas as linhas do mesmo
+    /// número). Nulo solta e refaz as ligações. Esperado e diferença saem do retorno no Sincronizar.
+    /// </summary>
+    public async Task<string?> LigarRetornoAsync(int contratoId, int? retornoId, CancellationToken ct = default)
+    {
+        var c = await db.StradaContratos.FindAsync([contratoId], ct);
+        if (c == null) return "Contrato não encontrado.";
+        var linhas = await db.StradaContratos.Where(x => x.Contrato == c.Contrato).ToListAsync(ct);
+        var agora = DateTime.UtcNow;
+        if (retornoId is not int rid)
+        {
+            foreach (var l in linhas.Where(StradaRetornos.ReembolsoManual))
+            {
+                l.RetornoId = null; l.Situacao = SemViagem; l.ValorEsperado = null; l.Diferenca = null; l.AtualizadoEm = agora;
+            }
+            await db.SaveChangesAsync(ct);
+            await ReconciliarAsync(ct);
+            return null;
+        }
+        var r = await db.RetornosFrete.FindAsync([rid], ct);
+        if (r == null) return "Retorno não encontrado.";
+        if (await db.RetornosFrete.AnyAsync(x => x.Contrato == c.Contrato && x.Id != rid, ct))
+            return "Este contrato é o frete de outro retorno: solte-o no retorno antes.";
+        if (r.Contrato == c.Contrato) return "Este contrato já é o frete deste retorno.";
+        foreach (var l in linhas)
+        {
+            l.RetornoId = r.Id; l.Tipo = "reembolso"; l.ViagemId = null; l.Situacao = Manual; l.NfSugerida = null; l.AtualizadoEm = agora;
+        }
+        await db.SaveChangesAsync(ct);
+        await StradaRetornos.SincronizarAsync(db, ct);
         return null;
     }
 
@@ -698,6 +734,8 @@ public sealed class StradaService(AppDbContext db)
         var base_ = precisaCandidato
             ? await db.AgrotradeViagens.AsNoTracking().Where(v => v.Data <= (f.DataPagamento ?? DateOnly.MaxValue)).ToListAsync(ct)
             : new List<ViagemAgrotrade>();
+        // VIA-27: dica de retornos da mesma placa com reembolso de descarga ainda sem contrato
+        var (retornosDica, comReembolso) = precisaCandidato ? await RetornosParaDicaAsync(ct) : ([], new HashSet<int>());
 
         var observacoes = new List<string>();
         var porSocio = PorSocio(f.Contratos);
@@ -723,9 +761,26 @@ public sealed class StradaService(AppDbContext db)
                 Candidatos = c.Situacao == SemViagem
                     ? base_.Where(v => Igual(v.DifDescarga, c.Valor) || Igual(v.ValorDiaria, c.Valor)).Take(5).Select(ResumoViagem).ToList()
                     : new List<object>(),
+                Retornos = c.Situacao == SemViagem
+                    ? StradaRetornos.Dicas(c, retornosDica, comReembolso).Select(ResumoRetorno).ToList()
+                    : new List<object>(),
             }).ToList(),
         };
     }
+
+    /// <summary>Retornos com contrato (candidatos a reembolso) e os que já têm reembolso ligado.</summary>
+    private async Task<(List<RetornoFrete> Retornos, HashSet<int> ComReembolso)> RetornosParaDicaAsync(CancellationToken ct)
+    {
+        var retornos = await db.RetornosFrete.AsNoTracking().Where(r => r.Contrato != null).ToListAsync(ct);
+        var com = (await db.StradaContratos.AsNoTracking().Where(c => c.RetornoId != null && c.Tipo == "reembolso")
+            .Select(c => c.RetornoId!.Value).Distinct().ToListAsync(ct)).ToHashSet();
+        return (retornos, com);
+    }
+
+    private static object ResumoRetorno(RetornoFrete r) => new
+    {
+        r.Id, r.Data, r.Placa, r.Motorista, r.Destino, r.Contrato, r.ReembolsoDescarga,
+    };
 
     public async Task<object> ListarViagensAsync(int? ano, int? mes, string? busca, CancellationToken ct = default)
     {
@@ -796,7 +851,9 @@ public sealed class StradaService(AppDbContext db)
             .Where(c => c.FaturaId != null || c.DataTransferencia != null).Select(c => c.Contrato).Distinct().ToListAsync(ct);
         var pagosSet = pagos.ToHashSet();
 
-        var aReceber = new List<(string Socio, string Tipo, ViagemAgrotrade V, decimal Valor, string Motivo)>();
+        // VIA-27: a descarga de viagem cujo contrato é o de um retorno conta pelo retorno (não duas vezes)
+        var contratosRetorno = (await db.RetornosFrete.AsNoTracking().Where(r => r.Contrato != null).Select(r => r.Contrato!).ToListAsync(ct)).ToHashSet();
+        var aReceber = new List<ItemAReceber>();
         foreach (var v in viagens)
         {
             var socio = SocioDe(v.Placa, socios) ?? "";
@@ -804,13 +861,17 @@ public sealed class StradaService(AppDbContext db)
             var fretePago = ligados.Any(c => c.Tipo == "frete" && (c.FaturaId != null || c.DataTransferencia != null))
                 || (v.Contrato != null && pagosSet.Contains(v.Contrato.Trim()));
             if (!fretePago && Esperado(v) is decimal esperado && esperado > 0)
-                aReceber.Add((socio, "frete", v, esperado, v.Contrato == null ? "sem contrato" : "contrato ainda não pago"));
+                aReceber.Add(ItemAReceber.DaViagem(socio, "frete", v, esperado, v.Contrato == null ? "sem contrato" : "contrato ainda não pago"));
             var reembolsoPago = ligados.Any(c => c.Tipo == "reembolso" && (c.FaturaId != null || c.DataTransferencia != null));
-            if (!reembolsoPago && !v.DescargaRecebidaPlanilha && v.DifDescarga is > 0)
-                aReceber.Add((socio, "descarga", v, v.DifDescarga.Value, "reembolso de descarga não recebido"));
+            var doRetorno = v.Contrato != null && contratosRetorno.Contains(v.Contrato.Trim());
+            if (!reembolsoPago && !doRetorno && !v.DescargaRecebidaPlanilha && v.DifDescarga is > 0)
+                aReceber.Add(ItemAReceber.DaViagem(socio, "descarga", v, v.DifDescarga.Value, "reembolso de descarga não recebido"));
             if (!reembolsoPago && v.ValorDiaria is > 0)
-                aReceber.Add((socio, "diária", v, v.ValorDiaria.Value, "diária não recebida"));
+                aReceber.Add(ItemAReceber.DaViagem(socio, "diária", v, v.ValorDiaria.Value, "diária não recebida"));
         }
+        foreach (var l in (await LinhasDescargaAsync(de, ate, socios, ct)).Where(l => l.Situacao == AReceberDescarga))
+            aReceber.Add(new ItemAReceber(l.Socio ?? "", "descarga", null, l.R.Id, l.R.Data, l.Nf, l.R.Placa, l.R.Motorista, l.R.Contrato,
+                l.R.ReembolsoDescarga!.Value, "reembolso de descarga do retorno não recebido"));
 
         string[] ordem = [nameof(Socio.Bento), nameof(Socio.Caio), nameof(Socio.Dudu), ""];
         var linhas = ordem.Select(s => new
@@ -875,15 +936,116 @@ public sealed class StradaService(AppDbContext db)
             },
             Incompletas = incompletas.Select(f => new { f.Numero, f.DataPagamento, f.Total, f.Taxa, f.Repasse }).ToList(),
             Divergencias = divergencias,
-            AReceber = aReceber.OrderBy(x => x.V.Data).Select(x => new
+            AReceber = aReceber.OrderBy(x => x.Data).Select(x => new
             {
-                ViagemId = x.V.Id, x.V.Data, x.V.Nf, x.V.Placa, x.V.Motorista, x.V.Contrato,
+                x.ViagemId, x.RetornoId, x.Data, x.Nf, x.Placa, x.Motorista, x.Contrato,
                 Socio = x.Socio == "" ? null : x.Socio, NomeSocio = NomeSocio(x.Socio), x.Tipo, x.Valor, x.Motivo,
             }).ToList(),
             ContratosSemFatura = await db.StradaContratos.AsNoTracking().Where(c => c.FaturaId == null && c.Origem == "pdf")
                 .OrderBy(c => c.Contrato)
                 .Select(c => new { c.Id, c.Contrato, c.Valor, c.Placa, c.Nf, c.Situacao, c.NfSugerida }).ToListAsync(ct),
         };
+    }
+
+    // ───────────────────────── Descargas dos retornos (VIA-27 Parte 7) ─────────────────────────
+
+    public const string AguardandoPdf = "aguardando PDF do contrato", DescargaNaoLancada = "descarga não lançada",
+        NadaAReceber = "nada a receber", AReceberDescarga = "a receber", Recebido = "recebido", RecebidoComDiferenca = "recebido com diferença";
+
+    private record LinhaDescarga(RetornoFrete R, string? Socio, string? Nf, List<StradaContrato> Reembolsos, decimal Recebido,
+        decimal? Diferenca, string Situacao, string? Aviso);
+
+    /// <summary>
+    /// Retornos do mês (pela data do retorno) com contrato ou da AGROTRADE: esperado no TIP (descarga − adiantamento)
+    /// × recebido (linhas de reembolso ligadas ao retorno que já estão numa fatura).
+    /// </summary>
+    private async Task<List<LinhaDescarga>> LinhasDescargaAsync(DateOnly de, DateOnly ate, Dictionary<string, string> socios, CancellationToken ct)
+    {
+        var retornos = (await db.RetornosFrete.AsNoTracking().Where(r => r.Data >= de && r.Data <= ate).ToListAsync(ct))
+            .Where(r => r.Contrato != null || (r.Transportadora ?? "").Contains("AGROTRADE", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(r => r.Data).ThenBy(r => r.Placa).ToList();
+        var ids = retornos.Select(r => r.Id).ToList();
+        var numeros = retornos.Where(r => r.Contrato != null).Select(r => r.Contrato!).ToList();
+        var ligados = await db.StradaContratos.AsNoTracking().Include(c => c.Fatura)
+            .Where(c => (c.RetornoId != null && ids.Contains(c.RetornoId.Value)) || numeros.Contains(c.Contrato)).ToListAsync(ct);
+        var linhas = new List<LinhaDescarga>();
+        foreach (var r in retornos)
+        {
+            var nf = ligados.Where(c => c.Contrato == r.Contrato).Select(c => c.Nf).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n));
+            var reembolsos = ligados.Where(c => c.RetornoId == r.Id && c.Tipo == "reembolso" && c.Contrato != r.Contrato)
+                .OrderBy(c => c.Fatura?.DataPagamento ?? c.DataContrato).ToList();
+            var recebido = reembolsos.Where(c => c.FaturaId != null).Sum(c => c.Valor);
+            var esperado = r.ReembolsoDescarga;
+            string situacao; string? aviso = null;
+            if (r.Contrato == null) situacao = AguardandoPdf;
+            else if (r.DescargaPaga == null) situacao = DescargaNaoLancada;
+            else if (esperado == null)
+            {
+                situacao = NadaAReceber;
+                aviso = "Contrato menor que o frete contratado: confira o frete.";
+            }
+            else if (recebido == 0) situacao = esperado > 0 ? AReceberDescarga : NadaAReceber;
+            else situacao = Math.Abs(recebido - esperado.Value) < 0.01m ? Recebido : RecebidoComDiferenca;
+            if (situacao == NadaAReceber && aviso == null && r.AdiantamentoDescarga is decimal a && r.DescargaPaga is decimal d && a > d)
+                aviso = $"Sobrou {(a - d).ToString("C2", PtBr)} do adiantamento.";
+            var diferenca = recebido > 0 && esperado is decimal e ? Math.Round(recebido - e, 2) : (decimal?)null;
+            linhas.Add(new LinhaDescarga(r, SocioDe(r.Placa, socios), nf, reembolsos, recebido, diferenca, situacao, aviso));
+        }
+        return linhas;
+    }
+
+    public async Task<object> DescargasAsync(int ano, int mes, CancellationToken ct = default)
+    {
+        var (de, ate) = Mes(ano, mes);
+        var socios = await SociosPorPlacaAsync(ct);
+        var linhas = await LinhasDescargaAsync(de, ate, socios, ct);
+
+        // Reembolsos que ainda não acharam o retorno (sem NF igual): a pessoa liga à mão, com a dica
+        var pendentes = (await db.StradaContratos.AsNoTracking().Include(c => c.Fatura)
+                .Where(c => c.Tipo == "reembolso" && c.Situacao == SemViagem && c.RetornoId == null && c.ViagemId == null).ToListAsync(ct))
+            .Where(c => (c.Fatura?.DataPagamento ?? c.DataContrato) >= de)
+            .GroupBy(c => c.Contrato).Select(g => g.OrderByDescending(c => c.FaturaId != null).First())
+            .OrderBy(c => c.Fatura?.DataPagamento ?? c.DataContrato).ToList();
+        var (retornosDica, comReembolso) = pendentes.Count > 0 ? await RetornosParaDicaAsync(ct) : ([], new HashSet<int>());
+
+        string[] ordem = [nameof(Socio.Bento), nameof(Socio.Caio), nameof(Socio.Dudu), ""];
+        return new
+        {
+            Ano = ano, Mes = mes,
+            Socios = ordem.Select(s => new
+            {
+                Socio = s == "" ? null : s,
+                Nome = NomeSocio(s),
+                Esperado = linhas.Where(l => (l.Socio ?? "") == s).Sum(l => l.R.ReembolsoDescarga ?? 0),
+                Recebido = linhas.Where(l => (l.Socio ?? "") == s).Sum(l => l.Recebido),
+                AReceber = linhas.Where(l => (l.Socio ?? "") == s && l.Situacao == AReceberDescarga).Sum(l => l.R.ReembolsoDescarga ?? 0),
+                Retornos = linhas.Count(l => (l.Socio ?? "") == s),
+            }).Where(x => x.Socio != null || x.Retornos > 0).ToList(),
+            Retornos = linhas.Select(l => new
+            {
+                RetornoId = l.R.Id, l.R.Data, l.R.Placa, l.Socio, NomeSocio = NomeSocio(l.Socio), l.R.Motorista, l.R.Destino,
+                l.R.Transportadora, l.R.Contrato, l.Nf, FreteContratado = l.R.ValorFrete, l.R.ValorContrato, l.R.AdiantamentoDescarga,
+                Descarga = l.R.DescargaPaga, ReembolsoEsperado = l.R.ReembolsoDescarga, l.Recebido, l.Diferenca, l.Situacao, l.Aviso,
+                Reembolsos = l.Reembolsos.Select(c => new
+                {
+                    c.Id, c.Contrato, c.Valor, c.Situacao, Fatura = c.Fatura?.Numero, Vencimento = c.Fatura?.DataPagamento,
+                    CaiuNoBanco = c.Fatura?.CaiuNoBanco ?? false, DataCredito = c.Fatura?.DataCreditoBanco,
+                }).ToList(),
+            }).ToList(),
+            ContratosSemRetorno = pendentes.Select(c => new
+            {
+                c.Id, c.Contrato, c.Valor, c.Placa, c.Socio, NomeSocio = NomeSocio(c.Socio), c.Nf, c.DataContrato,
+                Fatura = c.Fatura?.Numero, Vencimento = c.Fatura?.DataPagamento,
+                Dicas = StradaRetornos.Dicas(c, retornosDica, comReembolso).Select(ResumoRetorno).ToList(),
+            }).ToList(),
+        };
+    }
+
+    private record ItemAReceber(string Socio, string Tipo, int? ViagemId, int? RetornoId, DateOnly Data, string? Nf, string? Placa,
+        string? Motorista, string? Contrato, decimal Valor, string Motivo)
+    {
+        public static ItemAReceber DaViagem(string socio, string tipo, ViagemAgrotrade v, decimal valor, string motivo) =>
+            new(socio, tipo, v.Id, null, v.Data, v.Nf, v.Placa, v.Motorista, v.Contrato, valor, motivo);
     }
 
     private const string SemViagemTexto = "contrato sem viagem";

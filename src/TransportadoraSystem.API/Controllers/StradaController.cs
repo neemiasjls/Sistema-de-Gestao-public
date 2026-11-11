@@ -16,6 +16,7 @@ namespace TransportadoraSystem.API.Controllers;
 public class StradaController(StradaService strada, SicoobService sicoob, ILogger<StradaController> logger) : ControllerBase
 {
     public record LigarPedido(int? ViagemId, string? Placa);
+    public record LigarRetornoPedido(int? RetornoId);
 
     [HttpPost("base/importar")]
     [RequestSizeLimit(30_000_000)]
@@ -127,6 +128,14 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
         return Ok(await strada.PainelAsync(ano, mes, ct));
     }
 
+    /// <summary>Descargas dos retornos do mês (VIA-27): esperado no TIP × recebido, por retorno.</summary>
+    [HttpGet("descargas")]
+    public async Task<IActionResult> Descargas([FromQuery] int ano, [FromQuery] int mes, CancellationToken ct)
+    {
+        if (ano < 2000 || mes is < 1 or > 12) return BadRequest(new { erro = "Escolha o mês e o ano." });
+        return Ok(await strada.DescargasAsync(ano, mes, ct));
+    }
+
     [HttpPut("contratos/{id:int}/ligar")]
     public async Task<IActionResult> Ligar(int id, [FromBody] LigarPedido pedido, CancellationToken ct)
     {
@@ -138,6 +147,14 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
     public async Task<IActionResult> Desligar(int id, CancellationToken ct)
     {
         var erro = await strada.DesligarAsync(id, ct);
+        return erro == null ? NoContent() : BadRequest(new { erro });
+    }
+
+    /// <summary>Reembolso de descarga ligado à mão a um retorno (VIA-27); retornoId nulo solta.</summary>
+    [HttpPut("contratos/{id:int}/retorno")]
+    public async Task<IActionResult> LigarRetorno(int id, [FromBody] LigarRetornoPedido pedido, CancellationToken ct)
+    {
+        var erro = await strada.LigarRetornoAsync(id, pedido.RetornoId, ct);
         return erro == null ? NoContent() : BadRequest(new { erro });
     }
 
