@@ -214,14 +214,25 @@ public static class BoletoMontador
 }
 
 /// <summary>Junta os dados da carga (relatório .txt da Girassol, romaneio da CD) e o boleto já feito.</summary>
-public class BoletoMontagemService(AppDbContext db)
+public class BoletoMontagemService(AppDbContext db, FretePerfilService? fretePerfil = null)
 {
+    // Cálculo da queda e do saldo da Girassol (BOL-17); fora da injeção (Conferir), um próprio no mesmo banco
+    private readonly FretePerfilService frete = fretePerfil ?? new FretePerfilService(db, new TiposVolumeService(db));
+
     public record Fonte(string Nome, string Descricao);
+
+    /// <summary>
+    /// Perfil: frete das notas, queda do volume, saldo anterior abatido e o que sobra para o próximo boleto (BOL-17).
+    /// <c>SemBoleto</c> = a queda (com o saldo anterior) cobriu o frete: não precisa fazer o boleto.
+    /// </summary>
+    public record FretePerfilResumo(decimal FreteBruto, decimal DescontoTotal, decimal SaldoAnteriorAbatido,
+        bool SemBoleto, decimal SaldoALevar);
 
     public record Resultado(BoletoMontador.Boleto Boleto, List<Fonte> Fontes, List<string> Faltando,
         int? FeitoId, string? FeitoNome, string? FeitoNossoNumero, List<BoletoMontador.Diferenca>? Comparacao,
         int Sequencia, string NomeArquivo, List<string> ImpedeEmitir,
-        decimal? Caixas = null, decimal? CaixasRomaneio = null, bool JaTemBoleto = false);
+        decimal? Caixas = null, decimal? CaixasRomaneio = null, bool JaTemBoleto = false,
+        FretePerfilResumo? FretePerfil = null);
 
     /// <summary>Carga candidata da lista "Para emitir" (já montada).</summary>
     public record Candidata(string Cliente, DateOnly Data, string? Placa, string? Arquivo, Resultado Montagem);
@@ -297,6 +308,7 @@ public class BoletoMontagemService(AppDbContext db)
         decimal? valor = null;
         string? placa = null;
         int? sequenciaTxt = null;
+        FretePerfilResumo? resumoPerfil = null;
         var fontes = new List<Fonte>();
         var faltando = new List<string>();
         var dataBr = data.ToString("dd/MM/yyyy");
@@ -333,7 +345,26 @@ public class BoletoMontagemService(AppDbContext db)
                 valor = rel.TotalFrete;
                 placa = rel.Placa;
                 faltando.AddRange(rel.Avisos);
-                fontes.Add(new(esc.Nome, "Valor = TOTAL FRETE do relatório; placa = nome do arquivo"));
+
+                // BOL-17: na cadeia da queda (a partir da primeira queda lançada), o valor é frete − queda − saldo
+                var placaCarga = string.IsNullOrWhiteSpace(esc.Ident.Placa) ? "" : EmailClienteService.Placa(esc.Ident.Placa);
+                var pos = (await frete.CadeiaAsync()).FirstOrDefault(x => x.Data == data && x.Placa == placaCarga);
+                if (pos == null)
+                {
+                    resumoPerfil = new(rel.TotalFrete ?? 0m, 0m, 0m, false, 0m);
+                    fontes.Add(new(esc.Nome, "Valor = TOTAL FRETE do relatório; placa = nome do arquivo"));
+                }
+                else
+                {
+                    var calc = await frete.ObterAsync(data, placaCarga);
+                    var t = calc.Totais;
+                    // Já emitido = carga fechada: o cálculo serve só para comparar com o boleto feito
+                    valor = pos.TemBoleto ? t.Devido - pos.SaldoAbatido : pos.ValorBoleto;
+                    resumoPerfil = new(t.FreteBruto, t.DescontoTotal, pos.SaldoAbatido, pos.SemBoleto, pos.SaldoALevar);
+                    faltando.AddRange(calc.Avisos.Where(a => !faltando.Contains(a)));
+                    fontes.Add(new(esc.Nome, $"Valor = frete {Reais(t.FreteBruto)} − desconto da queda {Reais(t.DescontoTotal)}"
+                        + $" − saldo anterior {Reais(pos.SaldoAbatido)}; placa = nome do arquivo"));
+                }
                 if (doDia.Count > 1)
                     faltando.Add($"Há {doDia.Count} relatórios de frete em {dataBr}; valeu o mais recente, {esc.Nome}.");
             }
@@ -391,19 +422,21 @@ public class BoletoMontagemService(AppDbContext db)
 
         // Não emitir duas vezes: já há boleto desta carga (mesma placa, ou um dos dois sem placa)
         var impede = BoletoMontador.ImpedeEmitir(boleto);
-        var mesmo = feitos.FirstOrDefault(b => boleto.Placa == null || string.IsNullOrWhiteSpace(b.Placa)
-            || EmailClienteService.Placa(b.Placa) == boleto.Placa);
-        // Placa errada nas NFs (Admin, 11/11/2026: .txt VOLUME, boleto emitido certo com XAC): boleto do dia cuja placa não é
-        // de nenhuma carga do dia vale para a única carga do dia que ficou sem boleto
+        if (resumoPerfil is { SemBoleto: true } sb)
+        {
+            // Não é falta de dado: a queda (com o saldo anterior) cobriu o frete; nunca emitir valor ≤ 0
+            impede.Remove("Sem o valor calculado.");
+            boleto.Avisos.Remove("Valor não calculado: falta o dado da carga (veja abaixo).");
+            var iv = boleto.Campos.FindIndex(x => x.Rotulo == "Valor");
+            if (iv >= 0) boleto.Campos[iv] = boleto.Campos[iv] with { Aviso = "Sem boleto: o desconto cobriu o frete" };
+            impede.Insert(0, NaoPrecisaBoleto(sb));
+        }
+        var mesmo = BoletoMesmaPlaca(feitos, b => b.Placa, boleto.Placa);
         if (mesmo == null && feitos.Count > 0 && boleto.Placa != null && cliente == BoletoReceberLeitor.Perfil)
         {
-            var placasDoDia = (await db.PlanilhasCarga.AsNoTracking().Select(p => p.Nome).ToListAsync())
-                .Select(RomaneioClienteLeitor.LerNome)
-                .Where(i => i.Tipo == "frete" && i.Data is { } d && DateOnly.FromDateTime(d) == data && !string.IsNullOrWhiteSpace(i.Placa))
-                .Select(i => EmailClienteService.Placa(i.Placa!)).ToHashSet();
-            var cargasSemBoleto = placasDoDia.Where(p => !feitos.Any(f => EmailClienteService.Placa(f.Placa) == p)).ToList();
-            var boletosSemCarga = feitos.Where(f => !string.IsNullOrWhiteSpace(f.Placa) && !placasDoDia.Contains(EmailClienteService.Placa(f.Placa))).ToList();
-            if (cargasSemBoleto is [var unica] && unica == boleto.Placa && boletosSemCarga is [var outro])
+            var placasDoDia = PlacasFreteDoDia(await db.PlanilhasCarga.AsNoTracking().Select(p => p.Nome).ToListAsync(), data);
+            var outro = BoletoPlacaErrada(feitos, b => b.Placa, boleto.Placa, placasDoDia);
+            if (outro != null)
             {
                 mesmo = outro;
                 faltando.Add($"O boleto {outro.Sequencia} desta data saiu com a placa {outro.Placa} e a carga está com {boleto.Placa}: conta como o boleto desta carga.");
@@ -415,6 +448,48 @@ public class BoletoMontagemService(AppDbContext db)
 
         return new Resultado(boleto, fontes, faltando, feito?.Id,
             feito == null ? null : (string.IsNullOrWhiteSpace(feito.NomeArquivo) ? $"Boleto {feito.Sequencia}" : feito.NomeArquivo),
-            feito?.NossoNumero, comp, sequencia, nomeArquivo, impede, caixasUsadas, caixasRomaneio, mesmo != null);
+            feito?.NossoNumero, comp, sequencia, nomeArquivo, impede, caixasUsadas, caixasRomaneio, mesmo != null, resumoPerfil);
     }
+
+    /// <summary>Aviso da carga da Girassol sem boleto (BOL-17): o desconto cobriu o frete.</summary>
+    public static string NaoPrecisaBoleto(FretePerfilResumo r)
+    {
+        var desconto = r.SaldoAnteriorAbatido > 0
+            ? $"o desconto ({Reais(r.DescontoTotal)} da queda + {Reais(r.SaldoAnteriorAbatido)} de saldo anterior)"
+            : $"o desconto ({Reais(r.DescontoTotal)})";
+        return r.SaldoALevar > 0
+            ? $"Não precisa fazer o boleto: {desconto} é maior que o frete ({Reais(r.FreteBruto)}). Saldo de {Reais(r.SaldoALevar)} para o próximo boleto."
+            : $"Não precisa fazer o boleto: {desconto} é igual ao frete ({Reais(r.FreteBruto)}).";
+    }
+
+    private static string Reais(decimal v) => FretePerfilCalculo.Reais(v);
+
+    // ── Casar boleto × carga (Montar e FretePerfilService usam a mesma regra) ──
+
+    /// <summary>
+    /// Boleto do dia (já em ordem de Id decrescente) que é desta carga: mesma placa, ou um dos dois sem placa.
+    /// <paramref name="placaCarga"/> já normalizada (EmailClienteService.Placa) ou nula.
+    /// </summary>
+    public static T? BoletoMesmaPlaca<T>(IEnumerable<T> feitosDoDia, Func<T, string?> placaDe, string? placaCarga) where T : class =>
+        feitosDoDia.FirstOrDefault(b => placaCarga == null || string.IsNullOrWhiteSpace(placaDe(b))
+            || EmailClienteService.Placa(placaDe(b)) == placaCarga);
+
+    /// <summary>
+    /// Placa errada nas NFs (BOL-16; Admin, 11/11/2026: .txt VOLUME, boleto emitido certo com XAC): boleto do dia cuja
+    /// placa não é de nenhuma carga do dia vale para a única carga do dia que ficou sem boleto. Só Perfil.
+    /// </summary>
+    public static T? BoletoPlacaErrada<T>(IReadOnlyCollection<T> feitosDoDia, Func<T, string?> placaDe, string placaCarga,
+        IReadOnlySet<string> placasCargasDoDia) where T : class
+    {
+        var cargasSemBoleto = placasCargasDoDia.Where(p => !feitosDoDia.Any(f => EmailClienteService.Placa(placaDe(f)) == p)).ToList();
+        var boletosSemCarga = feitosDoDia.Where(f => !string.IsNullOrWhiteSpace(placaDe(f))
+            && !placasCargasDoDia.Contains(EmailClienteService.Placa(placaDe(f)))).ToList();
+        return cargasSemBoleto is [var unica] && unica == placaCarga && boletosSemCarga is [var outro] ? outro : null;
+    }
+
+    /// <summary>Placas (normalizadas) das cargas da Girassol do dia, pelos nomes dos .txt de frete guardados.</summary>
+    public static HashSet<string> PlacasFreteDoDia(IEnumerable<string> nomesPlanilhas, DateOnly data) =>
+        nomesPlanilhas.Select(RomaneioClienteLeitor.LerNome)
+            .Where(i => i.Tipo == "frete" && i.Data is { } d && DateOnly.FromDateTime(d) == data && !string.IsNullOrWhiteSpace(i.Placa))
+            .Select(i => EmailClienteService.Placa(i.Placa!)).ToHashSet();
 }

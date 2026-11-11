@@ -13,13 +13,15 @@ namespace TransportadoraSystem.Application.Services;
 /// desde então, não emite. Uma carga com boleto (mesmo o lançado à mão) não emite de novo.
 /// </summary>
 public class BoletoEmissaoService(AppDbContext db, BoletoMontagemService montagem, SicoobService sicoob,
-    ILogger<BoletoEmissaoService> log)
+    FretePerfilService fretePerfil, ILogger<BoletoEmissaoService> log)
 {
     // A API roda numa instância só: a trava impede o duplo clique de emitir duas vezes
     private static readonly SemaphoreSlim Trava = new(1, 1);
 
-    // Caixas: CD, as caixas de produtoD confirmadas (nulo = as do romaneio); o valor é recalculado com elas
-    public record Pedido(string Cliente, DateOnly Data, string? Placa, decimal Valor, DateOnly Vencimento, decimal? Caixas = null);
+    // Caixas: CD, as caixas de produtoD confirmadas (nulo = as do romaneio); o valor é recalculado com elas.
+    // Usuario: quem emitiu, gravado na fotografia da queda da Girassol (BOL-17).
+    public record Pedido(string Cliente, DateOnly Data, string? Placa, decimal Valor, DateOnly Vencimento, decimal? Caixas = null,
+        string? Usuario = null);
 
     public record Resultado(int? Id, string? NossoNumero, string? LinhaDigitavel, string? NomeArquivo, bool TemPdf,
         string? Erro, bool Incerto);
@@ -40,6 +42,7 @@ public class BoletoEmissaoService(AppDbContext db, BoletoMontagemService montage
         if (m.ImpedeEmitir.Count > 0) return Falha("Não dá para emitir: " + string.Join(" ", m.ImpedeEmitir));
         if (b.Valor is not decimal valor || Math.Abs(valor - p.Valor) >= 0.005m || b.Vencimento != p.Vencimento)
             return Falha("O boleto mudou desde que foi montado (valor ou vencimento). Monte de novo e confira antes de emitir.");
+        if (valor <= 0) return Falha("Não dá para emitir boleto de valor zero ou negativo.");
 
         var (emitido, erro, incerto) = await sicoob.IncluirBoletoAsync(b, ct);
         var agora = DateTime.UtcNow;
@@ -86,6 +89,14 @@ public class BoletoEmissaoService(AppDbContext db, BoletoMontagemService montage
                 b.Cliente, p.Data, emitido.NossoNumero, emitido.LinhaDigitavel);
             return Falha($"O boleto FOI emitido no Sicoob (nosso número {reg.NossoNumero}), mas não consegui gravar aqui. "
                 + "Baixe o PDF no Sicoobnet e suba em Boletos → A receber; não emita de novo.");
+        }
+
+        // Perfil: fotografia do frete, da queda e do saldo que saíram no boleto, para o e-mail repetir os números.
+        // O boleto já foi emitido e gravado: falha aqui só vira aviso no log.
+        if (b.Cliente == BoletoReceberLeitor.Perfil)
+        {
+            try { await fretePerfil.GravarEmitidoAsync(p.Data, b.Placa, valor, p.Usuario ?? ""); }
+            catch (Exception ex) { log.LogWarning(ex, "Boleto {Id} emitido; não gravei a fotografia da queda da Girassol {Data}", reg.Id, p.Data); }
         }
         return new Resultado(reg.Id, reg.NossoNumero, reg.LinhaDigitavel, reg.NomeArquivo, reg.Pdf != null, null, false);
     }

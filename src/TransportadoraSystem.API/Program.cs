@@ -92,6 +92,7 @@ builder.Services.AddScoped<TiposVolumeService>();
 builder.Services.AddScoped<PlanilhaSeguroService>();
 builder.Services.AddScoped<EmailClienteService>();
 builder.Services.AddScoped<BoletoMontagemService>();
+builder.Services.AddScoped<FretePerfilService>();
 builder.Services.AddScoped<PostosPagosExtratoService>();
 builder.Services.AddScoped<ConferenciaAutomaticaService>();
 builder.Services.AddScoped<BoletoEmissaoService>();
@@ -101,6 +102,7 @@ builder.Services.AddScoped<ViagensCaminhaoService>();
 builder.Services.AddScoped<FechamentoMensalService>();
 builder.Services.AddScoped<EstoqueVendasService>();
 builder.Services.AddScoped<ProdutosCReceberService>();
+builder.Services.AddScoped<ProdutosCRomaneioService>();
 builder.Services.AddScoped<PrecosClienteService>();
 builder.Services.AddScoped<EmbaladosService>();
 builder.Services.AddScoped<ProdutosASaidaService>();
@@ -426,7 +428,7 @@ app.MapGet("/health/tabelas", async (AppDbContext db) =>
         "FechamentosMensais", "FechamentoDespesas", "FechamentoCreditos", "FechamentoVales", "Consorcios",
         "DespesasDivididasLinhas", "DespesasDivididasSocios", "DespesasDivididasPlacas", "PlacasFrota", "MotoristasCnhPdf",
         "AgrotradeViagens", "StradaFaturas", "StradaContratos", "StradaArquivos",
-        "ConfigEmissaoBoleto", "PortalProdutosAHistorico", "PortalProdutosAConfig",
+        "ConfigEmissaoBoleto", "PortalProdutosAHistorico", "PortalProdutosAConfig", "FretePerfilAjustes",
     ];
 
     try

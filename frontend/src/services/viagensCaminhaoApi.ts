@@ -128,9 +128,11 @@ export type MotoristaFrota = DadosCnh & {
   usuarioId?: number | null
   /** Tem usuário de acesso (perfil motorista), ativo ou não */
   temUsuario?: boolean
+  email?: string | null
 }
 export type MotoristaEntrada = DadosCnh & {
   nome: string; apelidos: string | null; login: string; porcentagemComissao: number; ativo: boolean; usuarioId?: number | null
+  email?: string | null
 }
 /** Leitura do PDF da CNH: o que foi lido, quem é no cadastro e o que muda (antes e depois) */
 export type LeituraCnh = {

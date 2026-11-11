@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
+using TransportadoraSystem.Application.Services.Acesso;
 using TransportadoraSystem.Core.Entities;
 using TransportadoraSystem.Infrastructure.Data;
 
@@ -30,6 +31,10 @@ public class UsuarioDto
     public bool   TrocarSenha { get; set; }
     // "" = escritório; "motorista" = só o painel do motorista
     public string Perfil      { get; set; } = "";
+    // Áreas que a pessoa tem de fato (AreasAcesso.Efetivas), na ordem do catálogo.
+    // Acesso total e administrador = ["*"] (mais "painel-motorista" se o login tem
+    // cadastro de motorista ativo, porque o "*" não dá o painel).
+    public List<string> Areas { get; set; } = [];
 }
 
 // Resultado de criar usuário ou gerar senha nova. Quando o e-mail não sai, a
@@ -69,13 +74,13 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         if (result == PasswordVerificationResult.Failed)
             return new LoginResult { Erro = erro };
 
-        return new LoginResult { Token = GerarToken(usuario), Usuario = ToDto(usuario) };
+        return new LoginResult { Token = GerarToken(usuario), Usuario = await ToDtoAsync(usuario) };
     }
 
     public async Task<UsuarioDto?> ObterAsync(int id)
     {
         var u = await db.Usuarios.FindAsync(id);
-        return u == null ? null : ToDto(u);
+        return u == null ? null : await ToDtoAsync(u);
     }
 
     public async Task<bool> EhDonoAsync(int id) =>
@@ -175,7 +180,7 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         await db.SaveChangesAsync();
 
         // Token novo, já sem a marca de senha provisória
-        return new LoginResult { Token = GerarToken(usuario), Usuario = ToDto(usuario) };
+        return new LoginResult { Token = GerarToken(usuario), Usuario = await ToDtoAsync(usuario) };
     }
 
     // A pessoa muda o próprio nome e e-mail. O e-mail é o login, então pede a
@@ -201,7 +206,7 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         await db.SaveChangesAsync();
 
         // Token novo: o antigo ainda carrega o e-mail velho
-        return new LoginResult { Token = GerarToken(usuario), Usuario = ToDto(usuario) };
+        return new LoginResult { Token = GerarToken(usuario), Usuario = await ToDtoAsync(usuario) };
     }
 
     // ── Usuários (só o dono chega aqui) ────────────────────────────
@@ -218,18 +223,24 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
             })
             .ToListAsync();
 
-    public async Task<SenhaProvisoriaResult> CriarAsync(string nome, string emailInformado)
+    // Usuário novo de escritório nasce só com as áreas marcadas (USU-11); sem nenhuma = sem acesso.
+    public async Task<SenhaProvisoriaResult> CriarAsync(string nome, string emailInformado, IEnumerable<string>? areas = null)
     {
         var emailNorm = emailInformado.Trim().ToLower();
         nome = nome.Trim();
 
         if (nome.Length == 0)          return new() { Erro = "Informe o nome." };
         if (!EmailValido(emailNorm))   return new() { Erro = "Esse e-mail não parece válido." };
+        var permissoes = AreasAcesso.Validar(areas);
+        if (!permissoes.Ok)            return new() { Erro = permissoes.Erro };
         if (await db.Usuarios.AnyAsync(u => u.Email.ToLower() == emailNorm))
             return new() { Erro = "Este e-mail já está cadastrado." };
 
         var senha = GerarSenhaForte();
-        var usuario = new Usuario { Nome = nome, Email = emailNorm, Ativo = true, TrocarSenha = true };
+        var usuario = new Usuario
+        {
+            Nome = nome, Email = emailNorm, Ativo = true, TrocarSenha = true, Permissoes = permissoes.Valor,
+        };
         usuario.SenhaHash = _hasher.HashPassword(usuario, senha);
         db.Usuarios.Add(usuario);
         await db.SaveChangesAsync();
@@ -333,6 +344,7 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         var usuario = new Usuario
         {
             Nome = nome, Email = emailNorm, Ativo = true, Dono = false, TrocarSenha = false, Perfil = PerfilProdutosA,
+            Permissoes = AreasAcesso.PortalProdutosA,
         };
         usuario.SenhaHash = _hasher.HashPassword(usuario, senha);
         db.Usuarios.Add(usuario);
@@ -342,7 +354,7 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
             $"Cadastro pelo QR: {usuario.Nome} ({usuario.Email})",
             depois: new { usuario.Nome, usuario.Email }, ip: ip);
 
-        return new(201, null, new LoginResult { Token = GerarToken(usuario), Usuario = ToDto(usuario) });
+        return new(201, null, new LoginResult { Token = GerarToken(usuario), Usuario = await ToDtoAsync(usuario) });
     }
 
     /// <summary>
@@ -390,7 +402,10 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
             var existe = await db.Usuarios.AnyAsync(u => u.Perfil != PerfilMotorista && u.Perfil != PerfilProdutosA);
             if (!existe)
             {
-                var novo = new Usuario { Nome = login, Email = login.ToLower(), Ativo = true, Dono = true };
+                var novo = new Usuario
+                {
+                    Nome = login, Email = login.ToLower(), Ativo = true, Dono = true, Permissoes = AreasAcesso.AcessoTotal,
+                };
                 novo.SenhaHash = _hasher.HashPassword(novo, senha);
                 db.Usuarios.Add(novo);
                 await db.SaveChangesAsync();
@@ -410,11 +425,33 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         await db.SaveChangesAsync();
     }
 
-    private static UsuarioDto ToDto(Usuario u) => new()
+    // Serve o login e o /api/auth/me: leva as áreas efetivas (USU-11).
+    private async Task<UsuarioDto> ToDtoAsync(Usuario u)
     {
-        Id = u.Id, Nome = u.Nome, Email = u.Email, Ativo = u.Ativo,
-        Dono = u.Dono, TrocarSenha = u.TrocarSenha, Perfil = u.Perfil,
-    };
+        var temCadastro = string.IsNullOrEmpty(u.Perfil) && u.Id != 0
+            && await db.MotoristasFrota.AnyAsync(m => m.UsuarioId == u.Id && m.Ativo);
+        return new()
+        {
+            Id = u.Id, Nome = u.Nome, Email = u.Email, Ativo = u.Ativo,
+            Dono = u.Dono, TrocarSenha = u.TrocarSenha, Perfil = u.Perfil,
+            Areas = AreasDoDto(u.Perfil, u.Dono, u.Permissoes, temCadastro),
+        };
+    }
+
+    /// <summary>Lista de áreas para o site: ["*"] para acesso total e administrador; senão as chaves, na ordem do catálogo.</summary>
+    public static List<string> AreasDoDto(string? perfil, bool dono, string? permissoes, bool temCadastroMotoristaAtivo)
+    {
+        var efetivas = AreasAcesso.Efetivas(perfil, dono, permissoes, temCadastroMotoristaAtivo);
+        var total = string.IsNullOrEmpty(perfil)
+            && (dono || (permissoes ?? "").Split(',', StringSplitOptions.TrimEntries).Contains(AreasAcesso.AcessoTotal));
+        if (total)
+        {
+            List<string> r = [AreasAcesso.AcessoTotal];
+            if (efetivas.Contains(AreasAcesso.PainelMotorista)) r.Add(AreasAcesso.PainelMotorista);
+            return r;
+        }
+        return AreasAcesso.Areas.Select(a => a.Chave).Where(efetivas.Contains).ToList();
+    }
 
     // ── Acesso dos motoristas ──────────────────────────────────────
     // Senha padrão = login + "123", fixa e sem troca obrigatória (decisão do
@@ -434,6 +471,15 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
     /// </summary>
     public async Task<string?> GarantirUsuarioMotoristaAsync(MotoristaFrota m, bool redefinirSenha = false, bool soLigar = false)
     {
+        // Pessoa com um login só (USU-11): o cadastro aponta para o login do escritório. Esse login
+        // não é tocado (nome, e-mail, senha, situação) e a ligação fica; nada de login de motorista.
+        if (await LoginEscritorioDoCadastroAsync(m) is { } escritorio)
+        {
+            if (await db.MotoristasFrota.AnyAsync(x => x.UsuarioId == escritorio.Id && x.Id != m.Id))
+                return $"O login de \"{escritorio.Nome}\" já está ligado a outro cadastro de motorista.";
+            return redefinirSenha ? MensagemLoginDoSistema : null;
+        }
+
         var login = m.Login.Trim().ToLowerInvariant();
         if (!LoginMotoristaValido(login)) return $"Login \"{m.Login}\" inválido: só letras minúsculas e números, sem espaço.";
 
@@ -460,7 +506,11 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
 
         if (usuario == null)
         {
-            usuario = new Usuario { Nome = m.Nome, Email = login, Ativo = m.Ativo, Perfil = PerfilMotorista };
+            usuario = new Usuario
+            {
+                Nome = m.Nome, Email = login, Ativo = m.Ativo, Perfil = PerfilMotorista,
+                Permissoes = AreasAcesso.PainelMotorista,
+            };
             usuario.SenhaHash = _hasher.HashPassword(usuario, SenhaPadraoMotorista(login));
             db.Usuarios.Add(usuario);
         }
@@ -483,6 +533,16 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         return null;
     }
 
+    public const string MensagemLoginDoSistema = "Esta pessoa entra com o login do sistema; a senha se troca no perfil dela.";
+
+    /// <summary>Login de escritório (perfil vazio) para o qual o cadastro aponta, ou null.</summary>
+    public async Task<Usuario?> LoginEscritorioDoCadastroAsync(MotoristaFrota m)
+    {
+        if (m.UsuarioId is not { } uid) return null;
+        var u = await db.Usuarios.FindAsync(uid);
+        return u != null && string.IsNullOrEmpty(u.Perfil) ? u : null;
+    }
+
     /// <summary>Na subida: cria o acesso de quem ainda não tem (idempotente).</summary>
     public async Task<List<string>> GarantirUsuariosMotoristasAsync()
     {
@@ -499,6 +559,7 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
     /// </summary>
     public async Task<string?> DefinirSenhaMotoristaAsync(MotoristaFrota m, string senha)
     {
+        if (await LoginEscritorioDoCadastroAsync(m) != null) return MensagemLoginDoSistema;
         if (ValidarSenhaNova(senha) is { } problema) return problema;
         Usuario? usuario = m.UsuarioId is { } uid ? await db.Usuarios.FindAsync(uid) : null;
         if (usuario == null || usuario.Perfil != PerfilMotorista)

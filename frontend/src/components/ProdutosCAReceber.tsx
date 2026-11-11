@@ -14,20 +14,23 @@ import { Selo } from './viagens/ViagensPecas'
 import type { ClienteEstoque, TipoProdutoB } from './ClientesEstoqueModal'
 
 /**
- * ProdutosC a receber (EST-14/EST-08): não é boleto. As vendas de produtosC vazias (pacote de 100) que vêm do
- * controle de carregamento (coluna U), por cliente, a BRZ primeiro. A BRZ paga por Pix e a baixa é automática
- * na conferência com o banco; o resto se marca recebido à mão.
+ * ProdutosC a receber (EST-14/EST-08): as vendas de produtosC vazias (pacote de 100). A da BRZ nasce do romaneio dela
+ * (quantidade e preço digitados em Viagens), uma por carga, e aparece como um boleto: a receber ou "Pago em dd/mm".
+ * A BRZ paga por Pix e a baixa é automática na conferência com o banco; o resto se marca recebido à mão.
  */
 
 type Venda = {
   id: number; data: string; clienteId: number; cliente: string; pacotes: number; unidades: number; quantidade: number
-  preco: number; valor: number; origem: 'controle' | 'mao'; observacao?: string | null; cobradaNoRomaneio?: string | null
+  preco: number; valor: number; origem: 'romaneio' | 'controle' | 'mao'; observacao?: string | null; cobradaNoRomaneio?: string | null
   recebidoEm?: string | null; recebidoPix?: string | null; semPreco: boolean
 }
 type Grupo = { clienteId: number; cliente: string; brz: boolean; aReceber: number; recebido: number; vendas: Venda[] }
 type Resumo = { grupos: Grupo[]; aReceber: number; aReceberBrz: number; semPreco: number }
 type PixRelato = { chave: string; data: string; valor: number; situacao: 'baixado' | 'certo' | 'duvida' | 'sem-casamento' | 'ja-baixado'; opcoes: Venda[][] }
 type ResultadoPix = { pix: PixRelato[]; marcadas: number; erro?: string | null }
+
+// "173--BRZ-09-11-2026.xlsx" → "romaneio 173"
+const romaneio = (nome: string) => { const n = nome.split('--')[0]; return /^\d+$/.test(n) ? `romaneio ${n}` : 'romaneio da BRZ' }
 
 const quantidade = (v: Venda) =>
   `${num(v.pacotes, 0)} ${v.pacotes === 1 ? 'pacote' : 'pacotes'}` + (v.unidades > 0 ? ` e ${num(v.unidades, 0)} produtosC` : '')
@@ -87,7 +90,7 @@ export default function ProdutosCAReceber({ modo }: { modo: 'vendas' | 'brz' }) 
   const apagar = async (v: Venda) => {
     if (!await confirmar({
       titulo: 'Apagar esta venda de produtosC?',
-      texto: <><b>{v.cliente}</b>, {dataBr(v.data)}: {quantidade(v)}, {brl(v.valor)}.{v.origem === 'controle' ? ' Ela veio do controle de carregamento: ler o controle de novo traz de volta.' : ''}{v.recebidoEm ? ' Ela já está recebida.' : ''}</>,
+      texto: <><b>{v.cliente}</b>, {dataBr(v.data)}: {quantidade(v)}, {brl(v.valor)}.{v.origem === 'controle' ? ' Ela veio do controle de carregamento: ler o controle de novo traz de volta.' : v.origem === 'romaneio' ? ' Ela veio do romaneio da BRZ: gerar o romaneio de novo em Viagens traz de volta.' : ''}{v.recebidoEm ? ' Ela já está recebida.' : ''}</>,
       confirmar: 'Apagar venda',
     })) return
     try { await api.delete(`/api/estoque/produtosB/vendas/${v.id}`); toast.success('Venda apagada.'); carregar() }
@@ -109,7 +112,7 @@ export default function ProdutosCAReceber({ modo }: { modo: 'vendas' | 'brz' }) 
           </h2>
           <p className="text-sm text-gray-600 max-w-[68ch]">
             {ehBrz
-              ? 'Não é boleto: a BRZ paga as produtosC por Pix e a baixa é sozinha na conferência com o banco. Aqui você vê o que falta receber.'
+              ? 'Uma linha por carga, com a quantidade e o preço das produtosC digitados em Viagens. A BRZ paga por Pix e a baixa é sozinha na conferência com o banco.'
               : <>Todas as vendas de produtosC vazias, com o valor. Saem sozinhas do controle de carregamento (coluna U). O recebimento da BRZ fica em <Link to="/boletos" className="font-medium text-tinta-700 hover:underline">Boletos → A receber → BRZ (produtosC)</Link>.</>}
           </p>
         </div>
@@ -163,7 +166,7 @@ export default function ProdutosCAReceber({ modo }: { modo: 'vendas' | 'brz' }) 
         <Carregando linhas={3} rotulo="Carregando as produtosC" />
       ) : grupos.length === 0 ? (
         <Vazio icone={Grid3x3} titulo={ehBrz ? 'Nenhuma produtoC da BRZ' : 'Nenhuma venda de produtosC'} compacto>
-          As vendas entram sozinhas quando o controle de carregamento tem produtosC (coluna U).
+          {ehBrz ? 'Entram sozinhas quando o romaneio da BRZ sai com produtosC (Viagens).' : 'As vendas entram sozinhas do romaneio da BRZ e do controle de carregamento (coluna U).'}
         </Vazio>
       ) : (
         <div className="space-y-4">
@@ -180,7 +183,7 @@ export default function ProdutosCAReceber({ modo }: { modo: 'vendas' | 'brz' }) 
                   <li key={v.id} className="px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2">
                     <div className="flex-1 min-w-0">
                       <p className="flex flex-wrap items-baseline gap-x-2">
-                        <span className="font-medium text-gray-900 tabular-nums">{dataBr(v.data)}</span>
+                        <span className="font-medium text-gray-900 tabular-nums">{ehBrz ? `Carga de ${dataBr(v.data)}` : dataBr(v.data)}</span>
                         <span className="text-sm text-gray-600 tabular-nums">{quantidade(v)}</span>
                         {v.semPreco
                           ? <span className="font-semibold text-amber-800">Sem valor</span>
@@ -188,18 +191,20 @@ export default function ProdutosCAReceber({ modo }: { modo: 'vendas' | 'brz' }) 
                       </p>
                       <p className="flex flex-wrap gap-1 mt-1">
                         {!ehBrz ? null : v.recebidoEm
-                          ? <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-800"><CheckCircle2 size={14} aria-hidden />Recebido em {dataBr(v.recebidoEm)}{v.recebidoPix ? ' (Pix)' : ''}</span>
+                          ? <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-800"><CheckCircle2 size={14} aria-hidden />Pago em {dataBr(v.recebidoEm)}{v.recebidoPix ? ' (Pix)' : ''}</span>
                           : <Selo tom="atencao">A receber</Selo>}
                         {v.semPreco && <Selo tom="atencao">Falta o preço da produtoC</Selo>}
                         {v.origem === 'controle' && <Selo tom="info">Do controle de carregamento</Selo>}
-                        {v.cobradaNoRomaneio && <Selo>Também no {v.cobradaNoRomaneio.toLowerCase()}</Selo>}
+                        {v.origem === 'romaneio' && v.cobradaNoRomaneio
+                          ? <Selo tom="info">Do {romaneio(v.cobradaNoRomaneio)}</Selo>
+                          : v.cobradaNoRomaneio && <Selo>Também no {v.cobradaNoRomaneio.toLowerCase()}</Selo>}
                       </p>
                       {v.observacao && <p className="text-xs text-gray-500 mt-1">{v.observacao}</p>}
                     </div>
                     <div className="flex items-center gap-1 sm:shrink-0">
                       {!ehBrz ? null : v.recebidoEm
                         ? <BotaoIcone icone={RotateCcw} rotulo="Voltar para a receber" onClick={() => voltarAReceber(v)} />
-                        : <Botao variante="secundario" tamanho="sm" icone={CheckCircle2} onClick={() => setRecebendo(v)}>Recebido</Botao>}
+                        : <Botao variante="secundario" tamanho="sm" icone={CheckCircle2} onClick={() => setRecebendo(v)}>Pago</Botao>}
                       <BotaoIcone icone={Pencil} rotulo="Editar venda" onClick={() => setEditando(v)} />
                       <BotaoIcone icone={Trash2} rotulo="Apagar venda" perigo onClick={() => apagar(v)} />
                     </div>
@@ -232,9 +237,9 @@ function ModalRecebido({ venda, onClose, onSalvou }: { venda: Venda; onClose: ()
     finally { setSalvando(false) }
   }
   return (
-    <Modal titulo="ProdutosC recebidas" descricao={`${venda.cliente} · ${dataBr(venda.data)} · ${brl(venda.valor)}`} onClose={onClose}
-           rodape={<BotoesModal salvando={salvando} onSalvar={salvar} onClose={onClose} rotulo="Marcar recebida" />}>
-      <Campo rotulo="Data do recebimento">
+    <Modal titulo="ProdutosC pagas" descricao={`${venda.cliente} · ${dataBr(venda.data)} · ${brl(venda.valor)}`} onClose={onClose}
+           rodape={<BotoesModal salvando={salvando} onSalvar={salvar} onClose={onClose} rotulo="Marcar paga" />}>
+      <Campo rotulo="Data do pagamento">
         <input type="date" value={data} onChange={e => setData(e.target.value)} className="w-full border border-gray-300 rounded-lg px-3 py-2 text-base sm:text-sm" />
       </Campo>
     </Modal>
@@ -286,6 +291,9 @@ function ModalVendaProdutoC({ venda, onClose, onSalvou }: { venda: Venda | null;
            rodape={<BotoesModal salvando={salvando} onSalvar={salvar} onClose={onClose} rotulo={venda ? 'Salvar' : 'Lançar venda'} />}>
       {venda?.origem === 'controle' && (
         <Aviso tipo="info">Veio do controle de carregamento: se o controle for lido de novo com outra quantidade, vale a do controle.</Aviso>
+      )}
+      {venda?.origem === 'romaneio' && (
+        <Aviso tipo="info">Veio do romaneio da BRZ: gerar o romaneio de novo em Viagens volta à quantidade e ao preço digitados lá.</Aviso>
       )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Campo rotulo="Cliente">

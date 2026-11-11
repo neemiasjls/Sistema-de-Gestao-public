@@ -18,4 +18,8 @@ public class Usuario : BaseEntity
     // "produtosA" = só o portal das produtosA (cadastro pelo QR, EST-09/USU-05).
     // O login do motorista fica no campo Email, sem @ (joseferraz).
     public string Perfil      { get; set; } = "";
+
+    // Áreas liberadas (USU-11): chaves do catálogo AreasAcesso separadas por vírgula,
+    // "*" = acesso total, null = ainda não definido = sem acesso. Só entra pelas rotas próprias.
+    public string? Permissoes { get; set; }
 }

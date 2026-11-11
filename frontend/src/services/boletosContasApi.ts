@@ -168,6 +168,59 @@ export interface ListaConfigEmissao {
   podeSalvar: boolean
 }
 
+// Cálculo do frete da Girassol com a queda do volume (BOL-17). O cálculo das notas não se edita:
+// só a queda por caixa de cada tipo normal (produtoE e produtoD nunca levam).
+export interface LinhaFretePerfil {
+  tipo: string
+  produtoE: boolean
+  caixas: number
+  fretePorCaixa: number
+  quedaPorCaixa: number
+  frete: number
+  queda: number
+  podeTerQueda: boolean
+}
+export interface EmitidoFretePerfil {
+  freteBruto: number
+  descontoTotal: number
+  saldoAbatido: number
+  valor: number
+  tabela: string[]
+  em: string
+  por: string
+}
+export interface CalculoFretePerfil {
+  data: string
+  placa: string
+  arquivo: string | null
+  numeroBoleto: number | null
+  notas: { nf: string | null; caixas: number; produtoE: boolean; emitente: string }[]
+  linhas: LinhaFretePerfil[]
+  totais: { caixas: number; freteBruto: number; caixasComDesconto: number; quedaTotal: number; devido: number }
+  saldoAnterior: number
+  saldoAbatido: number
+  // nulo quando não precisa de boleto (queda maior que o frete)
+  valorBoleto: number | null
+  semBoleto: boolean
+  saldoALevar: number
+  temBoleto: boolean
+  comQueda: boolean
+  descontos: Record<string, number>
+  emitido: EmitidoFretePerfil | null
+  atualizadoEm: string | null
+  atualizadoPor: string | null
+  avisos: string[]
+  // Só Admin e Bento lançam a queda
+  podeLancar: boolean
+}
+
+function comoCalculoFretePerfil(d: unknown): CalculoFretePerfil {
+  const c = comoObjeto<CalculoFretePerfil>(d, ['linhas', 'notas', 'avisos'], 'cálculo do frete Perfil')
+  c.totais = comoObjeto(c.totais ?? {}, [], 'totais do frete Perfil')
+  c.descontos = c.descontos ?? {}
+  return c
+}
+
 export const boletosContasApi = {
   // A pagar
   listarAPagar: () => api.get(`${base}/pagar`).then(r => comDados(r, d => {
@@ -216,6 +269,12 @@ export const boletosContasApi = {
   paraEmitirAReceber: (cliente: ClienteReceber) =>
     api.get(`${base}/receber/para-emitir`, { params: { cliente } }).then(r => comDados(r, d =>
       comoLista<CargaParaEmitir>(d, 'cargas para emitir').map(c => ({ ...c, montagem: comoMontagem(c.montagem) })))),
+  // Cálculo do frete da Girassol da carga (data aaaa-mm-dd + placa)
+  fretePerfil: (data: string, placa: string) =>
+    api.get(`${base}/receber/frete-perfil`, { params: { data, placa } }).then(r => comDados(r, d => comoCalculoFretePerfil(d))),
+  // Grava a queda por caixa de cada tipo; lista vazia tira a queda. Devolve o cálculo novo.
+  gravarQuedaFretePerfil: (data: string, placa: string, descontos: { tipo: string; quedaPorCaixa: number }[]) =>
+    api.put(`${base}/receber/frete-perfil`, { data, placa, descontos }).then(r => comDados(r, d => comoCalculoFretePerfil(d))),
   // Cobrança REAL no Sicoob: só depois da confirmação do Admin para este boleto
   emitirAReceber: (d: { cliente: ClienteReceber; data: string; placa: string | null; valor: number; vencimento: string; caixas?: number | null }) =>
     api.post<BoletoEmitido>(`${base}/receber/emitir`, { ...d, confirmado: true }).then(r => r.data),
@@ -254,4 +313,8 @@ export interface BoletoMontagem {
   impedeEmitir: string[]   // vazio = pode emitir no Sicoob
   caixas: number | null; caixasRomaneio: number | null   // CD: caixas usadas no valor e as do romaneio
   jaTemBoleto: boolean
+  // Perfil (BOL-17): frete das notas − queda − saldo anterior; semBoleto = o desconto cobriu o frete. Nulo na CD.
+  fretePerfil: {
+    freteBruto: number; descontoTotal: number; saldoAnteriorAbatido: number; semBoleto: boolean; saldoALevar: number
+  } | null
 }

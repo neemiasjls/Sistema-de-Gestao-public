@@ -12,7 +12,8 @@ namespace TransportadoraSystem.API.Controllers;
 [ApiController]
 [Route("api/nfe")]
 public class NFeController(NFeImportService nfeService, AppDbContext db,
-    ArquivoNFeService arquivoNFe, TiposVolumeService tiposVolume, ViagensCaminhaoService viagens, ILogger<NFeController> logger) : ControllerBase
+    ArquivoNFeService arquivoNFe, TiposVolumeService tiposVolume, ViagensCaminhaoService viagens, ProdutosCRomaneioService produtosCRomaneio,
+    ILogger<NFeController> logger) : ControllerBase
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
@@ -161,6 +162,17 @@ public class NFeController(NFeImportService nfeService, AppDbContext db,
             if (!await GuardarGerados(resultado.Arquivos))
                 resultado.Avisos.Add("Os arquivos foram gerados, mas não consegui guardar no sistema: " +
                     "eles não vão aparecer em Romaneios guardados.");
+            else
+            {
+                // A produtoC digitada em Viagens vira a venda a receber da BRZ do dia (EST-08)
+                try { resultado.Avisos.AddRange(await produtosCRomaneio.AposGuardarAsync(resultado.Arquivos.Select(a => a.NomeArquivo))); }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Não atualizei as produtosC da BRZ pelo romaneio");
+                    db.ChangeTracker.Clear();
+                    resultado.Avisos.Add("Os romaneios foram guardados, mas não consegui lançar as produtosC da BRZ a receber.");
+                }
+            }
 
             // A produtoC da BRZ é a mesma do controle de carregamento (NFE-05, EST-07):
             // quantidade diferente, avisa (não se cobra duas vezes)

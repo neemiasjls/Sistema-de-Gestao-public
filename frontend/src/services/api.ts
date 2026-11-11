@@ -477,6 +477,8 @@ export interface UsuarioResumo {
   trocarSenha: boolean
   /** '' = escritório; 'motorista' = só o painel do motorista; 'produtosA' = só o portal das produtosA */
   perfil?: string
+  /** Áreas liberadas (USU-11): ['*'] = acesso total (mais 'painel-motorista' se tem cadastro de motorista). Só no login e no "quem sou eu". */
+  areas?: string[]
 }
 
 // Quando o e-mail não sai, a senha provisória volta para o dono ver uma vez.

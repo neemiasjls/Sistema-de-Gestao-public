@@ -45,6 +45,7 @@ export interface PreviaEmail {
   arquivos: ArquivoEmail[]
   faltando: string[]
   avisos: string[]
+  semBoleto?: boolean    // Perfil sem boleto (queda do volume passou do frete): envia sem anexo
   envios: EnvioEmail[]
   /** Boleto substituído depois do último envio: o e-mail volta para enviar */
   boletoTrocadoEm?: string | null

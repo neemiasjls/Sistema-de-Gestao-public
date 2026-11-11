@@ -14,7 +14,7 @@ namespace TransportadoraSystem.API.Controllers;
 [Authorize]
 [ApiController]
 [Route("api/romaneios-cliente")]
-public class RomaneiosClienteController(AppDbContext db, ILogger<RomaneiosClienteController> logger) : ControllerBase
+public class RomaneiosClienteController(AppDbContext db, ProdutosCRomaneioService produtosCRomaneio, ILogger<RomaneiosClienteController> logger) : ControllerBase
 {
     private const string TipoXlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -156,7 +156,8 @@ public class RomaneiosClienteController(AppDbContext db, ILogger<RomaneiosClient
         }
 
         await db.SaveChangesAsync();
-        return Ok(new { novos, atualizados, recusados });
+        var avisos = await ProdutosCDaBrzAsync(soltos.Select(x => x.Nome));
+        return Ok(new { novos, atualizados, recusados, avisos });
     }
 
     // Editar o romaneio guardado (Admin, 02/11/2026: o 183 do Aurora e o 174 da BRZ
@@ -212,7 +213,20 @@ public class RomaneiosClienteController(AppDbContext db, ILogger<RomaneiosClient
         }
 
         await db.SaveChangesAsync();
-        return Ok(new { p.Id, nome = nomeNovo });
+        var avisos = conteudo != null ? await ProdutosCDaBrzAsync([nomeNovo]) : [];
+        return Ok(new { p.Id, nome = nomeNovo, avisos });
+    }
+
+    // Romaneio da BRZ guardado → venda de produtoC a receber do dia (EST-08). Nunca derruba o que já foi gravado.
+    private async Task<List<string>> ProdutosCDaBrzAsync(IEnumerable<string> nomes)
+    {
+        try { return await produtosCRomaneio.AposGuardarAsync(nomes); }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Não atualizei as produtosC da BRZ pelo romaneio");
+            db.ChangeTracker.Clear();
+            return ["Não consegui atualizar as produtosC da BRZ a receber por este romaneio."];
+        }
     }
 
     [HttpDelete("{id:int}")]

@@ -189,7 +189,7 @@ public class ViagensCaminhaoController(ViagensCaminhaoService svc, AuthService a
         string? PlacaCavalo, string? PlacaCarreta, bool? Ativo, int? UsuarioId = null,
         string? Cpf = null, string? Rg = null, string? RgOrgaoUf = null, DateOnly? DataNascimento = null,
         string? CidadeNascimento = null, string? UfNascimento = null, string? CnhRegistro = null, string? CnhCategoria = null,
-        DateOnly? CnhEmissao = null, DateOnly? CnhValidade = null, string? Pai = null, string? Mae = null);
+        DateOnly? CnhEmissao = null, DateOnly? CnhValidade = null, string? Pai = null, string? Mae = null, string? Email = null);
     public record SenhaMotoristaDto(string? Senha);
     public record AtivoDto(bool Ativo);
 
@@ -200,15 +200,18 @@ public class ViagensCaminhaoController(ViagensCaminhaoService svc, AuthService a
         var lista = await MotoristasFrotaController.SemPdf(db.MotoristasFrota.AsNoTracking())
             .OrderByDescending(m => m.Ativo).ThenBy(m => m.Nome).ToListAsync();
         var ids = lista.Where(m => m.UsuarioId != null).Select(m => m.UsuarioId!.Value).ToList();
-        var usuarios = await db.Usuarios.AsNoTracking().Where(u => ids.Contains(u.Id) && u.Perfil == AuthService.PerfilMotorista)
-            .ToDictionaryAsync(u => u.Id, u => u.Ativo);
+        // Login de motorista ou, na pessoa com um login só (USU-11), o login do escritório
+        var usuarios = await db.Usuarios.AsNoTracking()
+            .Where(u => ids.Contains(u.Id) && (u.Perfil == AuthService.PerfilMotorista || u.Perfil == ""))
+            .ToDictionaryAsync(u => u.Id, u => (u.Ativo, Sistema: u.Perfil == ""));
         return Ok(lista.Select(m => new
         {
             m.Id, m.Nome, m.Apelidos, m.Login, m.PorcentagemComissao, m.PlacaCavalo, m.PlacaCarreta, m.Ativo, m.UsuarioId,
             m.Cpf, m.Rg, m.RgOrgaoUf, m.DataNascimento, m.CidadeNascimento, m.UfNascimento, m.CnhRegistro, m.CnhCategoria,
-            m.CnhEmissao, m.CnhValidade, m.Pai, m.Mae, m.CnhAtualizadaEm, TemCnhPdf = m.CnhPdfNome != null,
+            m.CnhEmissao, m.CnhValidade, m.Pai, m.Mae, m.Email, m.CnhAtualizadaEm, TemCnhPdf = m.CnhPdfNome != null,
             TemUsuario = m.UsuarioId is { } u1 && usuarios.ContainsKey(u1),
-            Acesso = m.UsuarioId is { } u2 && usuarios.TryGetValue(u2, out var ativo) && ativo,
+            Acesso = m.UsuarioId is { } u2 && usuarios.TryGetValue(u2, out var us) && us.Ativo && (!us.Sistema || m.Ativo),
+            LoginDoSistema = m.UsuarioId is { } u3 && usuarios.TryGetValue(u3, out var us2) && us2.Sistema,
         }));
     }
 
@@ -231,6 +234,9 @@ public class ViagensCaminhaoController(ViagensCaminhaoService svc, AuthService a
         if (dto.PorcentagemComissao is < 0 or > 100) return BadRequest(new { erro = "% de comissão inválida." });
         if (!string.IsNullOrWhiteSpace(dto.Cpf) && MotoristasFrotaController.FormatarCpf(dto.Cpf) == null)
             return BadRequest(new { erro = "CPF inválido: são 11 números." });
+        var email = (dto.Email ?? "").Trim().ToLowerInvariant();
+        if (email.Length > 0 && (email.Length > 254 || !AuthService.EmailValido(email)))
+            return BadRequest(new { erro = "Esse e-mail não parece válido." });
         if (await db.MotoristasFrota.AnyAsync(m => m.Login == login && m.Id != (id ?? 0)))
             return BadRequest(new { erro = "Este login já é de outro motorista." });
         if (await db.Usuarios.AnyAsync(u => u.Email.ToLower() == login && u.Perfil != AuthService.PerfilMotorista))
@@ -273,6 +279,7 @@ public class ViagensCaminhaoController(ViagensCaminhaoService svc, AuthService a
         m.CnhValidade = dto.CnhValidade;
         m.Pai = MotoristasFrotaController.Texto(dto.Pai);
         m.Mae = MotoristasFrotaController.Texto(dto.Mae);
+        m.Email = email.Length == 0 ? null : email;
         m.Ativo = dto.Ativo ?? true;
         m.AtualizadoEm = DateTime.UtcNow;
         await db.SaveChangesAsync();
@@ -281,7 +288,8 @@ public class ViagensCaminhaoController(ViagensCaminhaoService svc, AuthService a
         return Ok(new { id = m.Id, aviso = erroAcesso });
     }
 
-    // Ativar/desativar: desativado não entra (o usuário dele fica inativo junto)
+    // Ativar/desativar: desativado não entra (o usuário dele fica inativo junto). Pessoa com um login
+    // só (USU-11): o login do escritório fica como está; só o painel do motorista sai.
     [HttpPut("motoristas/{id:int}/ativo")]
     public async Task<IActionResult> AtivoMotorista(int id, [FromBody] AtivoDto dto)
     {

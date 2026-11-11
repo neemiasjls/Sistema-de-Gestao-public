@@ -77,6 +77,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<BoletoReceber> BoletosReceber => Set<BoletoReceber>();
     public DbSet<BoletoPagarAvulso> BoletosPagarAvulsos => Set<BoletoPagarAvulso>();
     public DbSet<ConfigEmissaoBoleto> ConfigEmissaoBoleto => Set<ConfigEmissaoBoleto>();
+    // Perfil: queda do volume lançada por carga (BOL-17)
+    public DbSet<FretePerfilAjuste> FretePerfilAjustes => Set<FretePerfilAjuste>();
 
     // Volumes embalados (controle do barracão)
     public DbSet<ControleVolumes> VolumesControles => Set<ControleVolumes>();

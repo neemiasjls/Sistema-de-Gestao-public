@@ -20,7 +20,8 @@ namespace TransportadoraSystem.API.Controllers;
 [Route("api/estoque")]
 public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios, EstoqueVendasService vendas,
     EmbaladosService embalados, ProdutosASaidaService saidas, PortalProdutosAHistoricoService historico,
-    ProdutosCReceberService produtosC, ViagensCaminhaoService viagens, SicoobService sicoob) : ControllerBase
+    ProdutosCReceberService produtosC, ViagensCaminhaoService viagens, SicoobService sicoob,
+    ProdutosCRomaneioService produtosCRomaneio, AuthService auth) : ControllerBase
 {
     // ── Clientes e preços ─────────────────────────────────────────────────
 
@@ -759,21 +760,41 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
     [HttpPost("produtosC/preencher-historico")]
     public async Task<IActionResult> PreencherHistoricoProdutosC() => Ok(await viagens.PreencherProdutosCAsync());
 
-    // Pix da BRZ no extrato (40 dias) × produtosC em aberto: baixa só a combinação única; dúvida e sem soma voltam para a tela
-    [HttpPost("produtosC/conferir-pix")]
-    public async Task<IActionResult> ConferirPixProdutosC(CancellationToken ct)
+    // Gravar as produtosC (histórico e baixa pelo Pix) é só do dono; a prévia (aplicar=false) qualquer um vê
+    private async Task<bool> EhDonoAsync()
     {
+        var id = AuthController.UsuarioId(User);
+        return id != null && await auth.EhDonoAsync(id.Value);
+    }
+
+    // Histórico pelos romaneios da BRZ guardados (EST-08): uma venda a receber por dia de carga, com a quantidade e o
+    // preço da linha ProdutosC. aplicar=false só mostra o que faria (nada é gravado); rodar de novo não duplica.
+    [HttpPost("produtosC/preencher-romaneios")]
+    public async Task<IActionResult> PreencherProdutosCRomaneios([FromQuery] DateOnly? desde, [FromQuery] bool aplicar = false)
+    {
+        if (aplicar && !await EhDonoAsync()) return StatusCode(403, new { erro = "Só o dono grava as produtosC a receber." });
+        return Ok(await produtosCRomaneio.PreencherAsync(desde ?? new DateOnly(2026, 10, 1), aplicar));
+    }
+
+    // Pix da BRZ no extrato (padrão 40 dias; desde= amplia) × produtosC em aberto: baixa só a combinação única; dúvida e
+    // sem soma voltam para a tela. aplicar=false só mostra (nada é gravado).
+    [HttpPost("produtosC/conferir-pix")]
+    public async Task<IActionResult> ConferirPixProdutosC([FromQuery] DateOnly? desde, CancellationToken ct, [FromQuery] bool aplicar = true)
+    {
+        if (aplicar && !await EhDonoAsync()) return StatusCode(403, new { erro = "Só o dono dá baixa nas produtosC." });
         if (sicoob.FaltaConfigurar() is { } falta) return Ok(new ProdutosCReceberService.ResultadoPix([], 0, falta));
         var hoje = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(-3));
-        var (extrato, erro) = await sicoob.ExtratoAsync(hoje.AddDays(-40), hoje, ct);
+        var inicio = desde is { } d && d < hoje ? (d < hoje.AddDays(-400) ? hoje.AddDays(-400) : d) : hoje.AddDays(-40);
+        var (extrato, erro) = await sicoob.ExtratoAsync(inicio, hoje, ct);
         if (extrato == null) return Ok(new ProdutosCReceberService.ResultadoPix([], 0, erro));
-        return Ok(await produtosC.ConferirPixAsync(ConferenciaAutomaticaService.PixDoExtrato(extrato.Lancamentos), aplicar: true, ct));
+        return Ok(await produtosC.ConferirPixAsync(ConferenciaAutomaticaService.PixDoExtrato(extrato.Lancamentos), aplicar, ct));
     }
 
     // Dúvida escolhida na tela: estas vendas foram pagas por este Pix
     [HttpPost("produtosC/baixar-pix")]
     public async Task<IActionResult> BaixarPixProdutosC([FromBody] BaixaPixProdutosCDto dto)
     {
+        if (!await EhDonoAsync()) return StatusCode(403, new { erro = "Só o dono dá baixa nas produtosC." });
         if (string.IsNullOrWhiteSpace(dto.Chave) || dto.VendaIds is not { Count: > 0 }) return BadRequest(new { erro = "Escolha as vendas." });
         try { return Ok(new { marcadas = await produtosC.BaixarAsync(dto.VendaIds, dto.Data, dto.Chave) }); }
         catch (ErroEstoque ex) { return BadRequest(new { erro = ex.Message }); }

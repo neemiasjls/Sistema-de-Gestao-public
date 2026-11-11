@@ -29,7 +29,11 @@ public class MotoristaPainelController(ViagensCaminhaoService svc, AppDbContext 
     {
         var id = AuthController.UsuarioId(User);
         var u = id == null ? null : await db.Usuarios.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
-        if (u?.Perfil != AuthService.PerfilMotorista)
+        // Login de motorista OU login do escritório com cadastro de motorista ligado (pessoa com
+        // um login só, USU-11); nos dois casos o cadastro sai do UsuarioId.
+        var escritorioComCadastro = u != null && string.IsNullOrEmpty(u.Perfil)
+            && await db.MotoristasFrota.AnyAsync(m => m.UsuarioId == u.Id);
+        if (u == null || (u.Perfil != AuthService.PerfilMotorista && !escritorioComCadastro))
         {
             ctx.Result = StatusCode(403, new { erro = "Este painel é só para motoristas." });
             return;
@@ -54,7 +58,7 @@ public class MotoristaPainelController(ViagensCaminhaoService svc, AppDbContext 
             return;
         }
         _motorista = cadastro;
-        _usuarioId = u!.Id;
+        _usuarioId = u.Id;
         await next();
     }
 

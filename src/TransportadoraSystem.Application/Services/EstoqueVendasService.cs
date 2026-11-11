@@ -135,6 +135,11 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
         var usadas = new HashSet<int>();
         var cargasMexidas = new HashSet<int>();
         var obs = $"Controle de carregamento {c.Placa} {c.Data.ToString("dd/MM/yyyy", PtBr)}";
+        // ProdutoC da BRZ já lançada pelo romaneio (o que foi digitado em Viagens, EST-08): vale a do romaneio,
+        // o controle não cria outra (não se cobra duas vezes)
+        var doRomaneio = (await db.VendasProdutoB.AsNoTracking().Include(v => v.Itens)
+                .Where(v => v.Data == c.Data && v.CobradaNoRomaneio != null && v.CobradaNoRomaneio.EndsWith(".xlsx")).ToListAsync())
+            .Where(v => ProdutoDaVenda(v, tipos) == ProdutoPacote.ProdutoC).ToList();
 
         foreach (var s in saidas.Where(s => soProdutosCQueFaltam ? s.ProdutosC > 0 : s.Amarelas > 0 || s.Brancas > 0 || s.ProdutosC > 0))
         {
@@ -152,6 +157,13 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
                 if (soProdutosCQueFaltam && produto != ProdutoPacote.ProdutoC) continue;
                 var itens = lista.Where(i => i.Qtd > 0).ToList();
                 if (itens.Count == 0) continue;
+                if (produto == ProdutoPacote.ProdutoC && brz && doRomaneio.FirstOrDefault(v => v.ClienteId == cliente.Id) is { } pelaViagem)
+                {
+                    var noRomaneio = pelaViagem.Itens.Sum(i => Equivalente(i, tipos));
+                    if (noRomaneio != itens.Sum(i => i.Qtd))
+                        avisos.Add($"{cliente.Nome}: o controle de {c.Data:dd/MM} tem {Qtd(itens.Sum(i => i.Qtd))} produtosC e o romaneio da BRZ {Qtd(noRomaneio)}. Vale o romaneio (o que foi digitado em Viagens). Confira.");
+                    continue;   // a saída deste controle, se existia, sai no fim (a do romaneio fica)
+                }
                 if (itens.Any(i => i.Tipo == null))
                 {
                     avisos.Add($"{s.Cliente}: falta o tipo de {(produto == ProdutoPacote.ProdutoC ? "produtoC" : "produtoB")} no cadastro (Codigo). A saída não foi lançada.");

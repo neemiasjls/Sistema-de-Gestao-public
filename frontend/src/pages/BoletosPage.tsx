@@ -542,14 +542,14 @@ function AReceber() {
         <BotaoIcone icone={Pencil} rotulo={`Editar ${nome}`} onClick={() => setEditando(b)} />
         {/* Boleto emitido errado: baixa no Sicoob e apaga do sistema (ação real no banco, só o dono) */}
         {dono && !b.recebidoEm && b.nossoNumero && (
-          <BotaoIcone icone={Ban} rotulo="Baixar e excluir" perigo
+          <BotaoIcone icone={Ban} rotulo="Dar baixa no boleto" perigo
                       onClick={async () => await confirmar({
-                        titulo: 'Baixar no Sicoob e excluir o boleto?',
+                        titulo: 'Dar baixa no boleto?',
                         texto: <>
                           <p><b>{b.nossoNumero}</b> · {b.valor != null ? formatBRL(b.valor) : 'valor sem informar'} · vence {b.vencimento ? dataBr(b.vencimento) : 'data sem informar'}</p>
                           <p className="mt-2">Dá baixa no Sicoob e apaga do sistema; não dá para desfazer.</p>
                         </>,
-                        confirmar: 'Baixar e excluir',
+                        confirmar: 'Dar baixa',
                       }) && tentar(async () => { const { data } = await sicoobApi.baixarEExcluir(b.id); toast.success(data.mensagem) },
                                    'O Sicoob não baixou o boleto.')} />
         )}

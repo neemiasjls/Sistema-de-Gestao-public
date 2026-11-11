@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using System.Net.Http.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -129,7 +130,18 @@ public class EmailService(HttpClient http, IConfiguration config, ILogger<EmailS
     /// O corpo JSON do POST /v3/smtp/email. Fica separado do envio para dar para
     /// conferir o que iria para o Brevo sem mandar nada.
     /// </summary>
-    public string MontarJsonBrevo(EnvioPreparado e) => System.Text.Json.JsonSerializer.Serialize(new
+    public string MontarJsonBrevo(EnvioPreparado e) => e.Anexos.Count == 0
+        // Sem anexo (Perfil sem boleto, BOL-17): o Brevo não aceita "attachment" vazio
+        ? System.Text.Json.JsonSerializer.Serialize(new
+        {
+            sender      = new { name = RemetenteNome, email = Remetente },
+            replyTo     = new { name = RemetenteNome, email = Remetente },
+            to          = e.Para.Select(p => new { email = p }).ToArray(),
+            subject     = e.Assunto,
+            htmlContent = e.Html,
+            textContent = e.Texto,
+        })
+        : System.Text.Json.JsonSerializer.Serialize(new
     {
         sender      = new { name = RemetenteNome, email = Remetente },
         // Remetente Gmail/Hotmail o Brevo troca por "...@NNN.brevosend.com"; a resposta
@@ -197,11 +209,42 @@ public class EmailService(HttpClient http, IConfiguration config, ILogger<EmailS
         return $"O serviço de e-mail recusou o envio ({status}).";
     }
 
-    private static string Html(string texto, string? avisoTeste)
+    /// <summary>
+    /// Texto → HTML: um &lt;p&gt; por parágrafo. Linhas seguidas com " | " (tabelinha da queda da Girassol, BOL-17)
+    /// viram uma &lt;table&gt; simples: primeira linha em negrito, números à direita. Sem " | ", igual a sempre.
+    /// </summary>
+    public static string Html(string texto, string? avisoTeste)
     {
         static string h(string s) => WebUtility.HtmlEncode(s);
-        var paragrafos = texto.Replace("\r", "").Split("\n\n", StringSplitOptions.RemoveEmptyEntries)
-            .Select(p => $"<p>{h(p.Trim()).Replace("\n", "<br>")}</p>");
+        static string Paragrafo(string p)
+        {
+            var linhas = p.Trim().Split('\n');
+            if (!linhas.Any(l => l.Contains(" | "))) return $"<p>{h(p.Trim()).Replace("\n", "<br>")}</p>";
+            var sb = new StringBuilder();
+            var i = 0;
+            while (i < linhas.Length)
+            {
+                var tabela = linhas[i].Contains(" | ");
+                var grupo = linhas.Skip(i).TakeWhile(l => l.Contains(" | ") == tabela).ToList();
+                i += grupo.Count;
+                if (!tabela) { sb.Append($"<p style=\"margin:8px 0\">{string.Join("<br>", grupo.Select(h))}</p>"); continue; }
+                sb.Append("<table style=\"border-collapse:collapse;margin:4px 0 8px\">");
+                for (var r = 0; r < grupo.Count; r++)
+                {
+                    var celulas = grupo[r].Split(" | ");
+                    sb.Append("<tr>");
+                    for (var k = 0; k < celulas.Length; k++)
+                    {
+                        var estilo = "border:1px solid #c9d2dc;padding:4px 8px" + (k > 0 ? ";text-align:right" : "") + (r == 0 ? ";font-weight:bold;background:#f1f4f7" : "");
+                        sb.Append($"<td style=\"{estilo}\">{h(celulas[k].Trim())}</td>");
+                    }
+                    sb.Append("</tr>");
+                }
+                sb.Append("</table>");
+            }
+            return sb.ToString();
+        }
+        var paragrafos = texto.Replace("\r", "").Split("\n\n", StringSplitOptions.RemoveEmptyEntries).Select(Paragrafo);
         var faixa = avisoTeste == null ? ""
             : $"<p style=\"background:#fff3cd;border:1px solid #e0b000;padding:8px 12px;border-radius:6px\"><b>{h(avisoTeste)}</b></p>";
         return $"<div style=\"font-family:Arial,sans-serif;font-size:15px;color:#161d25;max-width:620px\">{faixa}{string.Join("", paragrafos)}</div>";

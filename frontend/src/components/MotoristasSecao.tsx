@@ -185,6 +185,7 @@ function MotoristaModal({ m, base, onClose, onSalvou }: {
   const data = (k: keyof DadosCnh) => (
     <input type="date" value={doc[k] ?? ''} className={classeCampo} onChange={e => setDoc(d => ({ ...d, [k]: e.target.value || null }))} />
   )
+  const [email, setEmail] = useState(m?.email ?? '')
   const [ativo, setAtivo] = useState(m?.ativo ?? true)
   const [salvando, setSalvando] = useState(false)
   const [loginMexido, setLoginMexido] = useState(!!m || !!base)
@@ -197,7 +198,7 @@ function MotoristaModal({ m, base, onClose, onSalvou }: {
     try {
       const r = await viagensApi.salvarMotorista(m?.id ?? null, {
         nome, login, apelidos: apelidos || null, porcentagemComissao: pct,
-        ativo, usuarioId: base?.id ?? null, ...doc,
+        ativo, usuarioId: base?.id ?? null, email: email.trim() || null, ...doc,
       })
       if (r.aviso) toast.error(r.aviso, { duration: 8000 })
       else toast.success(base ? 'Cadastro completo.' : 'Motorista salvo.')
@@ -231,6 +232,10 @@ function MotoristaModal({ m, base, onClose, onSalvou }: {
           <Campo rotulo="Validade">{data('cnhValidade')}</Campo>
           <Campo rotulo="Pai">{texto('pai')}</Campo>
           <Campo rotulo="Mãe">{texto('mae')}</Campo>
+          <Campo rotulo="E-mail" dica="Opcional. Vai ser o login do motorista quando o acesso por e-mail entrar.">
+            <input type="email" value={email} className={classeCampo} autoCapitalize="none" autoComplete="off"
+                   onChange={e => setEmail(e.target.value)} />
+          </Campo>
         </div>
       </Campo>
       <Campo rotulo="Como aparece nas planilhas" dica="Separado por vírgula (PAULINHO, J. FERRAZ). Serve para casar as importações.">

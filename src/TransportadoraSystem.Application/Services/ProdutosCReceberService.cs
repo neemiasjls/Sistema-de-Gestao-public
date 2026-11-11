@@ -50,7 +50,7 @@ public class ProdutosCReceberService(AppDbContext db, PrecosClienteService preco
             var preco = itens.FirstOrDefault()?.Preco ?? 0;
             return new VendaProdutoC(v.Id, v.Data, v.ClienteId, v.Cliente?.Nome ?? "", itens.Sum(i => i.Pacotes), itens.Sum(i => i.Unidades),
                 qtd, preco, itens.Sum(i => EstoqueVendasService.Equivalente(i, tipos) * i.Preco),
-                v.CarregamentoId != null ? "controle" : "mao", v.Observacao, v.CobradaNoRomaneio, v.RecebidoEm, v.RecebidoPix,
+                ProdutosCRomaneioService.EhDoRomaneio(v) ? "romaneio" : v.CarregamentoId != null ? "controle" : "mao", v.Observacao, v.CobradaNoRomaneio, v.RecebidoEm, v.RecebidoPix,
                 itens.Any(i => i.Preco <= 0));
         }).ToList();
         return (lista, brzIds);

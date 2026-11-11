@@ -1243,9 +1243,9 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
     }
 
     /// <summary>
-    /// A produtoC da BRZ no controle é a mesma do romaneio da nota (NFE-05): o
-    /// romaneio guardado do mesmo dia (e da mesma placa) fica com a quantidade do
-    /// controle, sempre com aviso quando era diferente (EST-07).
+    /// A produtoC da BRZ no controle é a mesma do romaneio da nota (NFE-05). Vale o
+    /// romaneio (o digitado em Viagens, EST-08): o controle nunca reescreve o romaneio
+    /// guardado nem a venda; quantidade diferente só gera aviso.
     /// </summary>
     private async Task<List<string>> RomaneioBrzAsync(CarregamentoVolumes c, List<ItemJson> itens)
     {
@@ -1255,18 +1255,13 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         if (brz.Count == 0) return avisos;
         var produtosC = brz.Sum(i => i.produtosC);
         var dia = c.Data.ToString("dd-MM-yyyy");
-        var romaneios = (await db.PlanilhasCarga.Where(p => p.Nome.Contains(dia)).ToListAsync())
+        var romaneios = (await db.PlanilhasCarga.AsNoTracking().Where(p => p.Nome.Contains(dia)).ToListAsync())
             .Where(p => ProdutosCBrz.RomaneioDoDia(p.Nome, c.Data)).OrderByDescending(p => p.CriadoEm).ToList();
         if (romaneios.Count == 0)
         {
             if (produtosC > 0) avisos.Add($"BRZ: ainda não há romaneio da nota de {c.Data:dd/MM}. Ao gerar, informe {produtosC:0.##} produtosC (as do controle).");
             return avisos;
         }
-        var estoqueBrz = tabela.EstoqueDoCliente(brz[0].cliente);
-        var tipoProdutoC = await db.TiposProdutoB.AsNoTracking().FirstOrDefaultAsync(t => t.Codigo == TipoProdutoB.CodigoProdutoC);
-        var precoBrz = estoqueBrz?.PrecosProdutoB.FirstOrDefault(p => p.TipoProdutoBId == tipoProdutoC?.Id) is { Preco: > 0 } pr
-            ? pr.Preco : (decimal)NFeImportService.PrecoProdutoCPadrao;
-        var mexeu = false;
         foreach (var p in romaneios)
         {
             ProdutosCBrz.Linha? linha;
@@ -1276,13 +1271,9 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
             // Romaneio de outro caminhão no mesmo dia fica como está
             if (Placas(linha.Placa).FirstOrDefault() is { } placaRomaneio && placaRomaneio != c.Placa) continue;
             if (linha.Quantidade == produtosC) continue;
-            var novo = ProdutosCBrz.Gravar(p.Conteudo, produtosC, precoBrz);
-            if (novo == null) continue;
-            p.Conteudo = novo;
-            mexeu = true;
-            avisos.Add($"{p.Nome}: o romaneio da BRZ tinha {linha.Quantidade:0.##} produtosC e o controle diz {produtosC:0.##}. O romaneio guardado ficou com {produtosC:0.##}; se já tinha mandado, mande de novo.");
+            // Vale o romaneio (o que foi digitado em Viagens, EST-08, Admin 11/11/2026): o controle não reescreve, só avisa
+            avisos.Add($"{p.Nome}: o romaneio da BRZ tem {linha.Quantidade:0.##} produtosC e o controle diz {produtosC:0.##}. Vale o romaneio (Viagens); confira.");
         }
-        if (mexeu) await db.SaveChangesAsync();
         return avisos;
     }
 

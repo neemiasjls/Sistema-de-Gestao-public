@@ -329,6 +329,123 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
         return Ok(await montagem.ParaEmitir(c, Hoje()));
     }
 
+    // ── Cálculo do frete da Girassol e queda do volume (BOL-17) ──
+    // Ver: qualquer login do escritório (motorista e portal das produtosA já são barrados de /api/boletos-contas
+    // pelo filtro de perfil do Program.cs). Lançar a queda: só Admin e Bento (PodeLancarQueda).
+
+    public record QuedaTipo(string? Tipo, decimal? QuedaPorCaixa);
+    public record QuedaPedido(DateOnly? Data, string? Placa, List<QuedaTipo>? Descontos);
+
+    private const int MaxTiposQueda = 50;
+
+    /// <summary>
+    /// Admin (o dono) ou o Bento, conferido no banco a cada pedido: login do escritório (sem perfil), ativo,
+    /// e dono ou com o primeiro nome "Bento" (Admin, 11/11/2026: só os dois lançam a queda).
+    /// </summary>
+    private async Task<bool> PodeLancarQueda()
+    {
+        if (!string.IsNullOrEmpty(User.FindFirst(AuthService.ClaimPerfil)?.Value)) return false;
+        if (AuthController.UsuarioId(User) is not { } id) return false;
+        var u = await db.Usuarios.AsNoTracking().Where(x => x.Id == id && x.Ativo)
+            .Select(x => new { x.Dono, x.Nome, x.Perfil }).FirstOrDefaultAsync();
+        if (u == null || !string.IsNullOrEmpty(u.Perfil)) return false;
+        if (u.Dono) return true;
+        var primeiro = (u.Nome ?? "").Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+        return primeiro.Equals("Bento", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static object CalculoDto(FretePerfilService.CalculoCarga c, bool podeLancar)
+    {
+        var t = c.Totais;
+        var p = c.Posicao;
+        return new
+        {
+            data = c.Data,
+            placa = c.Placa,
+            arquivo = c.Arquivo,
+            numeroBoleto = c.Relatorio?.NumeroBoleto,
+            notas = (c.Relatorio?.Linhas ?? []).Select(n => new { nf = n.NF, n.Caixas, n.ProdutoE, n.Emitente }),
+            linhas = c.Calculo.Linhas.Select(l => new
+            {
+                l.Tipo, l.ProdutoE, l.Caixas, l.FretePorCaixa, quedaPorCaixa = l.DescontoPorCaixa,
+                l.Frete, queda = l.Desconto, podeTerQueda = !FretePerfilCalculo.SemQueda(l),
+            }),
+            totais = new { t.Caixas, t.FreteBruto, t.CaixasComDesconto, quedaTotal = t.DescontoTotal, t.Devido },
+            saldoAnterior = p?.SaldoAnterior ?? 0m,
+            saldoAbatido = p?.SaldoAbatido ?? 0m,
+            valorBoleto = p == null ? (c.Arquivo == null ? (decimal?)null : t.Devido) : p.ValorBoleto,
+            semBoleto = p?.SemBoleto ?? false,
+            saldoALevar = p?.SaldoALevar ?? 0m,
+            temBoleto = c.TemBoleto,
+            comQueda = c.Descontos.Count > 0,
+            descontos = c.Descontos,
+            emitido = c.Emitido,
+            atualizadoEm = c.AtualizadoEm,
+            atualizadoPor = c.AtualizadoPor,
+            avisos = c.Avisos,
+            podeLancar,
+        };
+    }
+
+    // O cálculo da carga (.txt das notas + queda guardada + saldo da cadeia). Só leitura.
+    [HttpGet("receber/frete-perfil")]
+    public async Task<IActionResult> FretePerfil([FromQuery] string? data, [FromQuery] string? placa,
+        [FromServices] FretePerfilService frete)
+    {
+        if (!Data(data, out var d) || d == null) return BadRequest(new { erro = "Informe a data da carga (aaaa-mm-dd)." });
+        if (string.IsNullOrWhiteSpace(placa)) return BadRequest(new { erro = "Informe a placa da carga." });
+        if (placa.Trim().Length > 10) return BadRequest(new { erro = "Placa inválida." });
+        var c = await frete.ObterAsync(d.Value, placa);
+        if (c.Arquivo == null)
+            return NotFound(new { erro = c.Avisos.FirstOrDefault() ?? "Não há cálculo do frete da Girassol desta data e placa." });
+        return Ok(CalculoDto(c, await PodeLancarQueda()));
+    }
+
+    // Grava a queda do volume por caixa de cada tipo normal da carga (descontos vazios = tira a queda) e
+    // devolve o cálculo novo. O cálculo das notas não se edita (Admin, 11/11/2026).
+    [HttpPut("receber/frete-perfil")]
+    public async Task<IActionResult> GravarFretePerfil([FromBody] QuedaPedido req, [FromServices] FretePerfilService frete)
+    {
+        if (!await PodeLancarQueda())
+            return StatusCode(StatusCodes.Status403Forbidden, new { erro = "Só o Admin e o Bento lançam a queda do volume." });
+        if (req.Data == null) return BadRequest(new { erro = "Informe a data da carga." });
+        if (req.Data.Value.Year is < 2000 or > 2100) return BadRequest(new { erro = "Data da carga inválida." });
+        if (string.IsNullOrWhiteSpace(req.Placa)) return BadRequest(new { erro = "Informe a placa da carga." });
+        if (req.Placa.Trim().Length > 10) return BadRequest(new { erro = "Placa inválida." });
+        var lista = req.Descontos ?? [];
+        if (lista.Count > MaxTiposQueda) return BadRequest(new { erro = "Tipos de volume demais no pedido." });
+
+        var descontos = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        foreach (var q in lista)
+        {
+            var tipo = (q.Tipo ?? "").Trim();
+            if (tipo.Length is 0 or > 100) return BadRequest(new { erro = "Tipo de volume inválido na queda." });
+            var v = q.QuedaPorCaixa ?? 0m;
+            if (v < 0 || v > FretePerfilService.QuedaMaxima || decimal.Round(v, 2) != v)
+                return BadRequest(new { erro = $"Queda por caixa de \"{tipo}\" inválida: de R$ 0,00 a R$ 999,99, com até duas casas." });
+            if (!descontos.TryAdd(tipo, v)) return BadRequest(new { erro = $"O tipo \"{tipo}\" veio repetido." });
+        }
+
+        var atual = await frete.ObterAsync(req.Data.Value, req.Placa);
+        if (atual.Arquivo == null)
+            return NotFound(new { erro = atual.Avisos.FirstOrDefault() ?? "Não há cálculo do frete da Girassol desta data e placa." });
+        foreach (var tipo in descontos.Keys)
+        {
+            var linha = atual.Calculo.Linhas.FirstOrDefault(l => l.Tipo.Trim().Equals(tipo, StringComparison.OrdinalIgnoreCase));
+            if (linha == null) return BadRequest(new { erro = $"O tipo \"{tipo}\" não está nas notas desta carga." });
+            if (FretePerfilCalculo.SemQueda(linha)) return BadRequest(new { erro = $"\"{tipo}\" não leva queda (produtoE e produtoD nunca levam)." });
+        }
+
+        var usuario = User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value ?? "";
+        FretePerfilService.CalculoCarga c;
+        try { c = await frete.SalvarAsync(req.Data.Value, req.Placa, descontos, usuario); }
+        catch (ArgumentException ex) { return BadRequest(new { erro = ex.Message }); }
+        catch (InvalidOperationException ex) { return NotFound(new { erro = ex.Message }); }
+        logger.LogInformation("Queda do volume da Girassol {Data} {Placa} gravada: {Tipos} tipo(s) com queda",
+            c.Data, c.Placa, c.Descontos.Count);
+        return Ok(CalculoDto(c, true));
+    }
+
     // ── Configuração da emissão (BOL-12): uma linha por cliente; sem ela valem os valores do BOL-11 ──
     public record ConfigEmissaoDto(string? Cliente, int DiasVencimento, string? PagadorNome, string? PagadorCnpj,
         string? PagadorEndereco, string? PagadorBairro, string? PagadorCidade, string? PagadorUf, string? PagadorCep,
@@ -403,7 +520,8 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
         if (!req.Confirmado) return BadRequest(new { erro = "Confirme a emissão do boleto." });
         if (req.Caixas is <= 0) return BadRequest(new { erro = "Informe as caixas de produtoD (mais que zero)." });
         var r = await emissao.Emitir(new(c, req.Data.Value, req.Placa, req.Valor.Value, req.Vencimento.Value,
-            c == BoletoReceberLeitor.Perfil ? null : req.Caixas), ct);
+            c == BoletoReceberLeitor.Perfil ? null : req.Caixas,
+            User.FindFirst(System.Security.Claims.ClaimTypes.Name)?.Value), ct);
         if (r.Erro != null)
             return r.Incerto ? StatusCode(StatusCodes.Status502BadGateway, new { erro = r.Erro, r.Id, incerto = true })
                              : UnprocessableEntity(new { erro = r.Erro });

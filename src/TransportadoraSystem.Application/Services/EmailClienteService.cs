@@ -23,9 +23,10 @@ namespace TransportadoraSystem.Application.Services;
 /// assunto e texto saem do relatório de frete .txt da carga (FRE-05), guardado em
 /// PlanilhasCarga. Ver BOL-05.
 /// </summary>
-public class EmailClienteService(AppDbContext db, EmailService email)
+public class EmailClienteService(AppDbContext db, EmailService email, FretePerfilService? fretePerfil = null)
 {
     private static readonly CultureInfo PtBr = new("pt-BR");
+    private readonly FretePerfilService frete = fretePerfil ?? new FretePerfilService(db, new TiposVolumeService(db));
 
     public record Cliente(
         string Chave,                 // "CEDRO FRUTAS" — o apelido do romaneio e a chave da configuração
@@ -68,7 +69,16 @@ public class EmailClienteService(AppDbContext db, EmailService email)
 
     public record Montagem(Cliente Cliente, DateOnly Data, List<Peca> Pecas, List<string> Faltando, List<string> Avisos,
         List<string> NumerosNF, string Placa, string? Motorista,
-        RelatorioFreteLeitor.Relatorio? Frete = null, int? RelatorioId = null, string? RelatorioNome = null);
+        RelatorioFreteLeitor.Relatorio? Frete = null, int? RelatorioId = null, string? RelatorioNome = null,
+        QuedaPerfil? Queda = null);
+
+    /// <summary>
+    /// Queda do volume da carga da Girassol (BOL-17) para o texto do e-mail: a tabelinha (FretePerfilCalculo.Tabela),
+    /// os totais e o saldo. Números da fotografia do boleto emitido quando existir. <c>SemBoleto</c> = a queda
+    /// passou do frete: o e-mail vai sem anexo, com o saldo que fica para o próximo boleto.
+    /// </summary>
+    public record QuedaPerfil(List<string> Tabela, decimal TotalQueda, decimal FreteBruto, decimal SaldoAnterior,
+        decimal SaldoAbatido, DateOnly? SaldoDe, decimal? ValorBoleto, bool SemBoleto, decimal SaldoALevar);
 
     // ───────────────────────── Datas ─────────────────────────
 
@@ -299,6 +309,12 @@ public class EmailClienteService(AppDbContext db, EmailService email)
         }
         var placa = rel?.Placa ?? "";
 
+        // ── Queda do volume (BOL-17): só quando há queda lançada nesta carga ou antes ──
+        var queda = rel != null && await db.FretePerfilAjustes.AsNoTracking().AnyAsync(a => a.DataCarga <= data)
+            ? await QuedaAsync(data, placa) : null;
+        // Valor que o boleto deve ter: com queda ou saldo, o líquido; sem, o TOTAL FRETE do .txt
+        var esperado = queda is { SemBoleto: false } && queda.ValorBoleto is decimal vq ? vq : rel?.TotalFrete;
+
         // ── Boleto do frete emitido para a Girassol ──
         var emitidos = await db.BoletosReceber.AsNoTracking()
             .Where(b => b.Cliente == c.ClienteBoletoReceber && b.Pdf != null && b.DataCarga != null
@@ -329,12 +345,16 @@ public class EmailClienteService(AppDbContext db, EmailService email)
             if (!vai) continue;
             if (placa != "" && !string.IsNullOrWhiteSpace(b.Placa) && Placa(b.Placa) != placa)
                 avisos.Add($"O boleto {b.NomeArquivo} diz caminhão {Placa(b.Placa)}, mas o relatório de frete é do {placa}.");
-            if (rel?.TotalFrete is decimal total && b.Valor is decimal valor && Math.Abs(valor - total) > 0.005m)
-                avisos.Add($"O boleto {b.NomeArquivo} é de {valor.ToString("C", PtBr)}, mas o relatório de frete dá {total.ToString("C", PtBr)}. Confira antes de enviar.");
+            if (esperado is decimal total && b.Valor is decimal valor && Math.Abs(valor - total) > 0.005m)
+                avisos.Add(queda == null
+                    ? $"O boleto {b.NomeArquivo} é de {valor.ToString("C", PtBr)}, mas o relatório de frete dá {total.ToString("C", PtBr)}. Confira antes de enviar."
+                    : $"O boleto {b.NomeArquivo} é de {valor.ToString("C", PtBr)}, mas o frete com a queda do volume dá {total.ToString("C", PtBr)}. Confira antes de enviar.");
             if (placa == "" && !string.IsNullOrWhiteSpace(b.Placa)) placa = Placa(b.Placa);
         }
 
-        if (exatos.Count == 0)
+        if (exatos.Count == 0 && queda is { SemBoleto: true })
+            avisos.Add($"Carga sem boleto: a queda do volume passou do frete. O e-mail vai sem anexo, explicando a conta e o saldo de {FretePerfilCalculo.Reais(queda.SaldoALevar)} para o próximo boleto.");
+        else if (exatos.Count == 0)
         {
             faltando.Add($"Boleto da Girassol da carga de {dataBr}{(placa != "" ? $" ({placa})" : "")} não encontrado — {OndeEmitir}");
             // Os de cargas vizinhas sem relatório próprio podem ser este com a data trocada
@@ -352,7 +372,47 @@ public class EmailClienteService(AppDbContext db, EmailService email)
         }
 
         if (placa == "") avisos.Add("Não achei a placa no nome do relatório nem no boleto: o assunto sai sem a placa.");
-        return new Montagem(c, data, pecas, faltando, avisos, [], placa, null, rel, relId, relNome);
+        return new Montagem(c, data, pecas, faltando, avisos, [], placa, null, rel, relId, relNome, queda);
+    }
+
+    /// <summary>
+    /// Linhas de FretePerfilCalculo.Tabela no jeito do e-mail: "Queda por caixa" no cabeçalho e só os tipos; o
+    /// total da queda e o saldo abatido vão no texto, fora da tabela. Sem tipo com queda: vazia.
+    /// </summary>
+    private static List<string> TabelaEmail(List<string> t)
+    {
+        var tipos = t.Skip(1).Where(l => !l.StartsWith("Total do desconto |") && !l.StartsWith("Saldo anterior abatido |")).ToList();
+        return tipos.Count == 0 ? [] : ["Tipo | Caixas | Queda por caixa | Total", .. tipos];
+    }
+
+    /// <summary>
+    /// A queda da carga pelo FretePerfilService: fotografia do emitido quando existir, senão a conta atual.
+    /// Nulo quando a carga não tem queda, nem saldo abatido, nem fica sem boleto (e-mail igual ao de sempre).
+    /// </summary>
+    private async Task<QuedaPerfil?> QuedaAsync(DateOnly data, string placa)
+    {
+        var c = await frete.ObterAsync(data, placa == "" ? null : placa);
+        if (c.Relatorio == null) return null;
+        var em = c.Emitido;
+        var pos = c.Posicao;
+        var semBoleto = em == null && pos?.SemBoleto == true;
+        var desconto = em?.DescontoTotal ?? c.Totais.DescontoTotal;
+        // Sem boleto, o SaldoAbatido da cadeia é o saldo anterior todo (vai adiante junto)
+        var abatido = semBoleto ? 0m : em?.SaldoAbatido ?? pos?.SaldoAbatido ?? 0m;
+        var anterior = pos?.SaldoAnterior ?? 0m;
+        if (desconto <= 0 && abatido <= 0 && !semBoleto) return null;
+
+        // Carga de onde veio o saldo: a última sem boleto antes desta
+        DateOnly? de = null;
+        if (abatido > 0 || (semBoleto && anterior > 0))
+        {
+            var cadeia = await frete.CadeiaAsync();
+            var i = cadeia.FindIndex(p => p.Data == c.Data && p.Placa == c.Placa);
+            de = (i < 0 ? cadeia.AsEnumerable() : cadeia.Take(i)).LastOrDefault(p => p.SemBoleto)?.Data;
+        }
+        var valor = em?.Valor ?? (pos is { TemBoleto: true } ? c.Totais.Devido - abatido : pos?.ValorBoleto);
+        return new QuedaPerfil(TabelaEmail(em?.Tabela ?? FretePerfilCalculo.Tabela(c.Calculo)), desconto,
+            em?.FreteBruto ?? c.Totais.FreteBruto, anterior, abatido, de, valor, semBoleto, pos?.SaldoALevar ?? 0m);
     }
 
     // A ordem do .zip de sempre: romaneio, boletos da fazenda, produtosD, nota
@@ -393,10 +453,38 @@ public class EmailClienteService(AppDbContext db, EmailService email)
             if (m.Frete?.CaixasProdutoE is double cp && cp > 0)
                 partes.Add($"{RelatorioFreteLeitor.Caixas(cp)} {(cp == 1 ? "caixa" : "caixas")} de produtoE");
             var detalhe = partes.Count > 0 ? $" ({string.Join(" e ", partes)})" : "";
+            var q = m.Queda;
+            string R(decimal v) => FretePerfilCalculo.Reais(v);
+            // Tabelinha da queda (linhas com " | ", que o HTML vira <table>) e o total
+            var linhasQueda = q == null || q.Tabela.Count <= 1 ? new List<string>()
+                : ["Queda do preço do volume:", .. q.Tabela, $"Total da queda: {R(q.TotalQueda)}"];
+            if (q is { SemBoleto: true })
+            {
+                var conta = new List<string>(linhasQueda.Count > 0 ? linhasQueda : [$"Total da queda: {R(q.TotalQueda)}"]);
+                conta.Add($"Frete da carga: {R(q.FreteBruto)}");
+                if (q.SaldoAnterior > 0)
+                    conta.Add($"Saldo de desconto anterior{(q.SaldoDe is DateOnly d0 ? $" (carga de {d0:dd/MM/yyyy})" : "")}: {R(q.SaldoAnterior)}");
+                conta.Add($"Saldo de desconto: {R(q.SaldoALevar)}, que será abatido no próximo boleto de frete.");
+                return $"""
+                    {saudacao},
+
+                    Informamos que, na carga de {m.Data:dd/MM/yyyy}{detalhe}, a queda do preço do volume ficou maior que o valor do frete. Por isso, não será emitido boleto para esta carga.
+
+                    {string.Join("\n", conta)}
+
+                    Qualquer dúvida, estamos à disposição.
+
+                    Atenciosamente,
+                    {email.RemetenteNome}
+                    """;
+            }
+            if (q is { SaldoAbatido: > 0 })
+                linhasQueda.Add($"Saldo de desconto{(q.SaldoDe is DateOnly d1 ? $" da carga de {d1:dd/MM/yyyy}" : " anterior")} abatido neste boleto: {R(q.SaldoAbatido)}");
+            var blocoQueda = linhasQueda.Count > 0 ? $"\n\n{string.Join("\n", linhasQueda)}" : "";
             return $"""
                 {saudacao},
 
-                Segue em anexo o boleto do frete da carga de {m.Data:dd/MM/yyyy}{detalhe}.
+                Segue em anexo o boleto do frete da carga de {m.Data:dd/MM/yyyy}{detalhe}.{blocoQueda}
 
                 Qualquer dúvida, estamos à disposição.
 
@@ -534,13 +622,20 @@ public class EmailClienteService(AppDbContext db, EmailService email)
                 escolhidas.Add(peca);
             }
             escolhidas = Ordenar(escolhidas);
-            if (escolhidas.Count == 0)
+            // Carga da Girassol sem boleto (queda passou do frete): o e-mail vai sem anexo
+            if (escolhidas.Count == 0 && montagem.Queda is not { SemBoleto: true })
                 return new Resultado(false, false, "Escolha pelo menos um arquivo.", null, [], modoTeste, [], null);
 
             List<EmailService.Anexo> anexos;
             List<string> nomes;
             int tamanho;
-            if (string.IsNullOrEmpty(p.Cliente.NomeZip))
+            if (escolhidas.Count == 0)
+            {
+                anexos = [];
+                nomes = [];
+                tamanho = 0;
+            }
+            else if (string.IsNullOrEmpty(p.Cliente.NomeZip))
             {
                 var usados = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 anexos = escolhidas.Select(x => new EmailService.Anexo(NomeUnico(x.Nome, usados), x.Conteudo)).ToList();

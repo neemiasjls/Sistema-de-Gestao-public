@@ -242,7 +242,7 @@ export default function EmailsClientePage() {
   const abrirConfirmacao = (e: PreviaEmail) => {
     const r = rascunhos[e.cliente]
     if (enderecos(r.para).length === 0) { toast.error('Informe pelo menos um destinatário.'); return }
-    if (r.chaves.length === 0) { toast.error('Escolha pelo menos um arquivo.'); return }
+    if (r.chaves.length === 0 && !e.semBoleto) { toast.error('Escolha pelo menos um arquivo.'); return }
     if (!r.assunto.trim()) { toast.error('Informe o assunto.'); return }
     const jaFoi = enviosValidos(e).find(x => !x.erro && x.modoTeste === previa?.modoTeste)
     setConfirmar({
@@ -539,7 +539,7 @@ export default function EmailsClientePage() {
                   Baixar o .zip
                 </Botao>
               )}
-              <Botao variante="primario" icone={Send} onClick={() => abrirConfirmacao(e)} disabled={carregando || escolhidos.length === 0}>
+              <Botao variante="primario" icone={Send} onClick={() => abrirConfirmacao(e)} disabled={carregando || (escolhidos.length === 0 && !e.semBoleto)}>
                 {previa.modoTeste ? 'Enviar teste' : enviosValidos(e).some(x => !x.erro && !x.modoTeste) ? 'Enviar de novo' : 'Enviar'}
               </Botao>
             </footer>

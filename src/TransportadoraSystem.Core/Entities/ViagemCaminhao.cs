@@ -40,6 +40,8 @@ public class MotoristaFrota
     public DateTime? CnhAtualizadaEm { get; set; }
     // Usuário de acesso (perfil motorista) criado para ele
     public int? UsuarioId { get; set; }
+    // E-mail do motorista (USU-11); pode ficar vazio. O login dele ainda não usa.
+    public string? Email { get; set; }
     public DateTime CriadoEm { get; set; } = DateTime.UtcNow;
     public DateTime AtualizadoEm { get; set; } = DateTime.UtcNow;
 }

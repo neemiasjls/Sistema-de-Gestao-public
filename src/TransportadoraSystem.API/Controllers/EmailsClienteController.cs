@@ -73,6 +73,8 @@ public class EmailsClienteController(
                     Arquivos = m.Pecas.Select(p => new { p.Chave, p.Nome, p.Tipo, p.Descricao, Tamanho = p.Conteudo.Length, Incluir = p.Padrao }),
                     m.Faltando,
                     m.Avisos,
+                    // Perfil sem boleto (queda do volume passou do frete, BOL-17): envia sem anexo
+                    SemBoleto = m.Queda?.SemBoleto == true,
                     Envios = envios.Select(Resumir),
                     // Boleto substituído depois do último envio: a tela volta o e-mail para enviar
                     BoletoTrocadoEm = troca != null && envios.Any(e => e.Erro == null && e.EnviadoEm < troca)

@@ -65,7 +65,7 @@ export default function PrecosPage() {
       </div>
       <p className="text-sm text-gray-600 max-w-prose">
         {vista === 'frete'
-          ? 'Frete por caixa (normal, produtoE, produtoD) e por pacote (produtoB de 150 e produtoC de 100). Zero = não paga.'
+          ? 'Frete por caixa (normal, produtoE, produtoD) e por pacote de produtoB. Zero = não paga.'
           : 'O que o cliente paga por pacote de produtoB e de produtoC e por quilo de produtoA. Em branco = sem preço: a saída entra sem valor e avisa.'}
       </p>
 
@@ -369,7 +369,7 @@ function ModalPreco({ linha, painel, vista, onClose, onSalvou }: {
           <fieldset className="space-y-2">
             <legend className="font-display text-base font-semibold text-gray-900">Frete por pacote</legend>
             <div className="grid grid-cols-2 gap-3">
-              <CampoPreco rotulo="ProdutoB (150)" valor={produtoB} onChange={setProdutoB} dica="0 = não paga" />
+              <CampoPreco rotulo="ProdutoB" valor={produtoB} onChange={setProdutoB} dica="0 = não paga" />
               {vista !== 'frete' && <CampoPreco rotulo="ProdutoC (100)" valor={produtoC} onChange={setProdutoC} dica="0 = não paga" />}
             </div>
           </fieldset>

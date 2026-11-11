@@ -51,7 +51,7 @@ public class MotoristasFrotaController(AppDbContext db, AuthService auth, ILogge
             PlacaCavalo = m.PlacaCavalo, PlacaCarreta = m.PlacaCarreta, Ativo = m.Ativo, UsuarioId = m.UsuarioId,
             Cpf = m.Cpf, Rg = m.Rg, RgOrgaoUf = m.RgOrgaoUf, DataNascimento = m.DataNascimento,
             CidadeNascimento = m.CidadeNascimento, UfNascimento = m.UfNascimento, CnhRegistro = m.CnhRegistro,
-            CnhCategoria = m.CnhCategoria, CnhEmissao = m.CnhEmissao, CnhValidade = m.CnhValidade, Pai = m.Pai, Mae = m.Mae,
+            CnhCategoria = m.CnhCategoria, CnhEmissao = m.CnhEmissao, CnhValidade = m.CnhValidade, Pai = m.Pai, Mae = m.Mae, Email = m.Email,
             CnhPdfNome = m.CnhPdfNome, CnhAtualizadaEm = m.CnhAtualizadaEm, CriadoEm = m.CriadoEm, AtualizadoEm = m.AtualizadoEm,
         });
 
