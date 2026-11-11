@@ -203,7 +203,20 @@ public record ViagemLida(
     List<VolumesLido> Volumes, List<AbastLido> Abastecimentos, List<DespesaLida> Despesas, List<RetornoDaViagem> Retornos,
     Dictionary<string, decimal?> Conferencia);
 
-public record AcertoLido(string Placa, int Mes, int Ano, List<ViagemLida> Viagens, List<string> Avisos);
+public record AcertoLido(string Placa, int Mes, int Ano, List<ViagemLida> Viagens, List<string> Avisos)
+{
+    /// <summary>A aba DESPESAS DO MES do mesmo arquivo (VIA-29); nula sem a aba.</summary>
+    public DespesasDoMesLidas? DespesasDoMes { get; init; }
+}
+
+/// <summary>Uma linha da aba DESPESAS DO MES (B data, C referência, D valor, E nº parc., F observações).</summary>
+public record DespesaMesLida(int Linha, DateOnly? Data, string Referencia, decimal Valor, string? Parcela, string? Observacao);
+/// <summary>Uma linha dos CREDITOS RELATIVO AO PERIODO (parte de baixo da mesma aba).</summary>
+public record CreditoMesLido(int Linha, string Referencia, decimal Valor);
+public record DespesasDoMesLidas(string? Placa, string? MesTexto, int? Ano, List<DespesaMesLida> Linhas, decimal? TotalPlanilha, List<string> Avisos)
+{
+    public List<CreditoMesLido> Creditos { get; init; } = [];
+}
 
 /// <summary>
 /// Acerto mensal do caminhão ("9-V -SETEMBRO-2026.xlsx"), uma aba VIAGEMn por
@@ -217,7 +230,8 @@ public static class AcertoCaminhaoLeitor
 {
     public static AcertoLido Ler(byte[] bytes, string nomeArquivo, string? placaInformada)
     {
-        var abas = AbaPlanilha.Ler(bytes).Where(a => System.Text.RegularExpressions.Regex.IsMatch(a.Nome.Trim().ToUpperInvariant(), @"^VIAGEM\s*\d+$")).ToList();
+        var todas = AbaPlanilha.Ler(bytes);
+        var abas = todas.Where(a => System.Text.RegularExpressions.Regex.IsMatch(a.Nome.Trim().ToUpperInvariant(), @"^VIAGEM\s*\d+$")).ToList();
         if (abas.Count == 0) throw new InvalidOperationException("Não achei abas VIAGEM1, VIAGEM2...: não parece o acerto do caminhão.");
         var avisos = new List<string>();
         var viagens = new List<ViagemLida>();
@@ -303,7 +317,111 @@ public static class AcertoCaminhaoLeitor
             mes = (d.Value.Month, d.Value.Year);
             avisos.Add($"Mês tirado das datas das viagens: {NomeMes(mes.Value.Mes)} de {mes.Value.Ano}.");
         }
-        return new AcertoLido(placa, mes.Value.Mes, mes.Value.Ano, viagens, avisos);
+        var abaDespesas = todas.FirstOrDefault(a => Normalizar(a.Nome).Contains("DESPESAS DO MES"));
+        DespesasDoMesLidas? despesasMes = null;
+        if (abaDespesas == null) avisos.Add("Sem a aba DESPESAS DO MES: as despesas do mês não entram no fechamento.");
+        else
+        {
+            despesasMes = LerDespesasDoMes(abaDespesas);
+            avisos.AddRange(despesasMes.Avisos);
+        }
+        return new AcertoLido(placa, mes.Value.Mes, mes.Value.Ano, viagens, avisos) { DespesasDoMes = despesasMes };
+    }
+
+    /// <summary>
+    /// Aba DESPESAS DO MES (VIA-29): cabeçalho achado pelo rótulo REFERENCIA nas 6 primeiras linhas;
+    /// colunas pelo cabeçalho; despesas até a linha "CREDITOS RELATIVO AO PERIODO" (ou 60 linhas).
+    /// Linha com referência vazia ou "=", ou valor 0, fica de fora. Parcela "-" = sem parcela.
+    /// O total da planilha (F32 no modelo) fica na coluna das observações da última linha.
+    /// </summary>
+    public static DespesasDoMesLidas LerDespesasDoMes(AbaPlanilha a)
+    {
+        var avisos = new List<string>();
+        // Linha 2 do modelo: PLACA, MÊS REFERENTE e ANO REFER., cada valor na célula à direita do rótulo
+        (int Linha, int Coluna)? Depois(string rotulo) => a.Achar(rotulo, 6, 15) is { } p ? (p.Linha, p.Coluna + 1) : null;
+        var placa = Depois("PLACA") is { } cp ? Nulo(a.Texto(cp.Linha, cp.Coluna)) : null;
+        var mesTexto = Depois("MES REFERENTE") is { } cm ? Nulo(a.Texto(cm.Linha, cm.Coluna)) : null;
+        int? ano = Depois("ANO REFER") is { } ca && a.Numero(ca.Linha, ca.Coluna) is { } n ? (int)n : null;
+
+        // Cabeçalho: a célula REFERENCIA mais à esquerda (à direita, K2, fica o quadro
+        // "DADOS PAGAMENTOS MOTORISTA", com outra REFERÊNCIA, que não é a lista de despesas)
+        int hl = 0, hc = 99;
+        var col = new Dictionary<string, int>();
+        for (var r = 1; r <= Math.Min(6, a.TotalLinhas); r++)
+            for (var c = 1; c < hc; c++)
+                if (Normalizar(a.Texto(r, c)) == "REFERENCIA") { hl = r; hc = c; break; }
+        if (hl == 0)
+        {
+            avisos.Add("DESPESAS DO MES: não achei o cabeçalho (REFERENCIA); as despesas do mês não foram lidas.");
+            return new DespesasDoMesLidas(placa, mesTexto, ano, [], null, avisos);
+        }
+        for (var c = 1; c <= hc + 4; c++)
+        {
+            var t = Normalizar(a.Texto(hl, c));
+            if (t.StartsWith("DATA")) col.TryAdd("data", c);
+            else if (t == "REFERENCIA") col.TryAdd("ref", c);
+            else if (t.StartsWith("VALOR")) col.TryAdd("valor", c);
+            else if (t.StartsWith("N PARC") || t.StartsWith("PARC")) col.TryAdd("parc", c);
+            else if (t.StartsWith("OBSERVAC")) col.TryAdd("obs", c);
+        }
+        if (!col.ContainsKey("valor"))
+        {
+            avisos.Add("DESPESAS DO MES: não achei a coluna VALOR; as despesas do mês não foram lidas.");
+            return new DespesasDoMesLidas(placa, mesTexto, ano, [], null, avisos);
+        }
+        bool Creditos(int r) => Enumerable.Range(1, 3).Any(c => Normalizar(a.Texto(r, c)).StartsWith("CREDITOS"));
+        var fim = Math.Min(hl + 60, a.TotalLinhas);
+        var linhaCreditos = 0;
+        for (var r = hl + 1; r <= fim; r++) if (Creditos(r)) { linhaCreditos = r; fim = r - 1; break; }
+
+        var linhas = new List<DespesaMesLida>();
+        for (var r = hl + 1; r <= fim; r++)
+        {
+            var referencia = a.Texto(r, col["ref"]);
+            var valor = a.N(r, col["valor"]);
+            // Referência digitada na coluna DATA COMPRA (XAY-4I52 nov/2026, linha 23): vale, com aviso
+            if (Normalizar(referencia).Length == 0 && valor != 0 && col.TryGetValue("data", out var cdRef)
+                && a.Data(r, cdRef) == null && Normalizar(a.Texto(r, cdRef)).Length > 0)
+            {
+                referencia = a.Texto(r, cdRef);
+                avisos.Add($"DESPESAS DO MES, linha {r}: a referência \"{referencia.Trim()}\" estava na coluna DATA COMPRA; lida como referência.");
+            }
+            if (Normalizar(referencia).Length == 0 || valor == 0) continue;
+            var parcela = col.TryGetValue("parc", out var cpar) ? Nulo(a.Texto(r, cpar)) : null;
+            if (parcela is "-" or "=") parcela = null;
+            var obs = col.TryGetValue("obs", out var cob) && a.Numero(r, cob) == null ? Nulo(a.Texto(r, cob)) : null;
+            linhas.Add(new DespesaMesLida(r, col.TryGetValue("data", out var cd) && Normalizar(a.Texto(r, cd)) != Normalizar(referencia) ? a.Data(r, cd) : null, referencia.Trim(),
+                Math.Round(valor, 2), parcela, obs));
+        }
+        decimal? total = col.TryGetValue("obs", out var cTotal) ? a.Numero(fim, cTotal) : null;
+        var soma = linhas.Sum(l => l.Valor);
+        if (total is { } tp && Math.Abs(tp - soma) > 0.01m)
+            avisos.Add($"DESPESAS DO MES: li R$ {soma:N2} e a planilha soma R$ {tp:N2}.");
+
+        // Créditos do período: REFERENCIA e VALOR no cabeçalho logo abaixo do título
+        var creditos = new List<CreditoMesLido>();
+        if (linhaCreditos > 0)
+        {
+            int cl = 0, cRef = 0, cVal = 0;
+            for (var r = linhaCreditos; r <= Math.Min(linhaCreditos + 3, a.TotalLinhas) && cl == 0; r++)
+                for (var c = 1; c <= 15; c++)
+                {
+                    var t = Normalizar(a.Texto(r, c));
+                    if (t == "REFERENCIA") { cl = r; cRef = c; }
+                    else if (cl == r && t.StartsWith("VALOR")) cVal = c;
+                }
+            if (cl > 0 && cVal == 0)
+                for (var c = cRef + 1; c <= 15; c++) if (Normalizar(a.Texto(cl, c)).StartsWith("VALOR")) { cVal = c; break; }
+            if (cl > 0 && cVal > 0)
+                for (var r = cl + 1; r <= Math.Min(cl + 20, a.TotalLinhas); r++)
+                {
+                    var referencia = a.Texto(r, cRef);
+                    var valor = a.N(r, cVal);
+                    if (valor == 0 || Normalizar(referencia) is "" or "0") continue;
+                    creditos.Add(new CreditoMesLido(r, referencia.Trim(), Math.Round(valor, 2)));
+                }
+        }
+        return new DespesasDoMesLidas(placa, mesTexto, ano, linhas, total, avisos) { Creditos = creditos };
     }
 
     public static string TipoDoRotulo(string rotulo)

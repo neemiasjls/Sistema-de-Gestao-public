@@ -132,6 +132,12 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     {
         base.OnModelCreating(modelBuilder);
 
+        // Fechamento do mês: a coluna de ligação no banco é "FechamentoId" (Ddl.cs). Sem isto o EF
+        // inventava "FechamentoMensalId" e gravar despesa/crédito/vale dava 42703 (coluna não existe).
+        modelBuilder.Entity<FechamentoMensal>().HasMany(f => f.Despesas).WithOne().HasForeignKey(d => d.FechamentoId);
+        modelBuilder.Entity<FechamentoMensal>().HasMany(f => f.Creditos).WithOne().HasForeignKey(c => c.FechamentoId);
+        modelBuilder.Entity<FechamentoMensal>().HasMany(f => f.Vales).WithOne().HasForeignKey(v => v.FechamentoId);
+
         // Precisão monetária padrão
         foreach (var property in modelBuilder.Model.GetEntityTypes()
             .SelectMany(e => e.GetProperties())

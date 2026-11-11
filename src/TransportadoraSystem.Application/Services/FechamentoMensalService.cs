@@ -362,6 +362,131 @@ public class FechamentoMensalService(AppDbContext db)
         await db.SaveChangesAsync();
     }
 
+    // ───────────────────────── Despesas da planilha do acerto ─────────────────────────
+
+    /// <summary>
+    /// Aba DESPESAS DO MES do acerto entra sozinha no fechamento (VIA-29, UI-22): mescla com o que já
+    /// está gravado (<see cref="FechamentoDespesasPlanilha.Mesclar"/>) e grava só a diferença, linha a
+    /// linha (nunca o apagar-e-regravar do <see cref="SalvarAsync"/>). Mês fechado: não grava nada e
+    /// devolve as diferenças. Não toca em vales, saldo anterior, salário, horas extras, observação
+    /// nem no cadastro de consórcios.
+    /// </summary>
+    public async Task<object> ImportarDespesasDaPlanilhaAsync(int motoristaId, int ano, int mes, DespesasDoMesLidas lidas)
+    {
+        var mot = await MotoristaValidoAsync(motoristaId);
+        MesValido(ano, mes);
+        var rec = await CarregarAsync(mot.Id, ano, mes);
+        var fechado = rec?.Fechado == true;
+        var sal = rec == null ? new DadosSalarioFechamento(0, 0, 0, 0, 0, 0)
+            : new DadosSalarioFechamento(rec.Salario, rec.HorasExtras, rec.Fgts, rec.Inss, rec.Irr, rec.Quinquenio);
+
+        List<FechamentoDespesasPlanilha.LinhaAutomatica> automaticas;
+        if (fechado)
+            automaticas = [.. rec!.Despesas.Where(d => d.Origem != "manual").OrderBy(d => d.Ordem)
+                .Select(d => new FechamentoDespesasPlanilha.LinhaAutomatica(d.Origem, d.Referencia, d.Valor, d.Parcela, d.Observacao))];
+        else
+            automaticas = [.. (await AutomaticasAsync(mot.Id, ano, mes, sal)).Select(a =>
+            {
+                // Como MontarModeloAsync: a linha corrigida vale no lugar da calculada
+                var c = rec?.Despesas.FirstOrDefault(d => d.Origem == a.Origem && d.Corrigido);
+                return c == null ? new FechamentoDespesasPlanilha.LinhaAutomatica(a.Origem, a.Referencia, a.Valor, a.Parcela, a.Observacao)
+                    : new FechamentoDespesasPlanilha.LinhaAutomatica(a.Origem, a.Referencia, c.Valor, c.Parcela, c.Observacao);
+            })];
+        var estado = new FechamentoDespesasPlanilha.Estado(fechado,
+            [.. (rec?.Despesas ?? []).Where(d => d.Origem == "manual")
+                .Select(d => new FechamentoDespesasPlanilha.LinhaManual(d.Id, d.Data, d.Referencia, d.Valor, d.Parcela, d.Observacao, d.Ordem))],
+            sal.Fgts, sal.Inss, sal.Irr, sal.Quinquenio, automaticas)
+        {
+            Creditos = [.. (rec?.Creditos ?? []).Select(c => new FechamentoDespesasPlanilha.CreditoGravado(c.Id, c.Referencia, c.Valor))],
+        };
+        var p = FechamentoDespesasPlanilha.Mesclar(estado, lidas.Linhas, lidas.Creditos);
+
+        if (!fechado && !p.NadaAGravar)
+        {
+            if (rec == null)
+            {
+                rec = new FechamentoMensal { MotoristaId = mot.Id, Placa = "", Ano = ano, Mes = mes };
+                db.FechamentosMensais.Add(rec);
+            }
+            var ordem = rec.Despesas.Count == 0 ? 0 : rec.Despesas.Max(d => d.Ordem) + 1;
+            foreach (var l in p.Novas)
+                rec.Despesas.Add(new FechamentoDespesa
+                {
+                    Data = l.Data, Referencia = l.Referencia, Valor = l.Valor, Parcela = l.Parcela, Observacao = l.Observacao,
+                    Origem = "manual", Ordem = ordem++,
+                });
+            foreach (var s in p.Substituidas)
+            {
+                var d = rec.Despesas.First(x => x.Id == s.Id);
+                d.Valor = s.Lida.Valor;
+                if (s.Lida.Data != null) d.Data = s.Lida.Data;
+                if (s.Lida.Parcela != null) d.Parcela = s.Lida.Parcela;
+                if (s.Lida.Observacao != null) d.Observacao = s.Lida.Observacao;
+            }
+            foreach (var c in p.CamposSalario)
+                switch (c.Campo)
+                {
+                    case "Fgts": rec.Fgts = c.Atual; break;
+                    case "Inss": rec.Inss = c.Atual; break;
+                    case "Irr": rec.Irr = c.Atual; break;
+                    case "Quinquenio": rec.Quinquenio = c.Atual; break;
+                }
+            foreach (var a in p.AutomaticasCorrigidas)
+            {
+                var d = rec.Despesas.FirstOrDefault(x => x.Origem == a.Origem && x.Corrigido) ?? rec.Despesas.FirstOrDefault(x => x.Origem == a.Origem);
+                if (d == null)
+                    rec.Despesas.Add(new FechamentoDespesa
+                    {
+                        Referencia = a.Referencia, Valor = a.Valor, Parcela = a.Parcela, Observacao = a.Observacao,
+                        Origem = a.Origem, Corrigido = true, Ordem = ordem++,
+                    });
+                else { d.Valor = a.Valor; d.Corrigido = true; }
+            }
+            foreach (var g in p.GemeasARetirar)
+            {
+                var d = rec.Despesas.First(x => x.Id == g.Id);
+                rec.Despesas.Remove(d);
+                db.FechamentoDespesas.Remove(d);
+            }
+            foreach (var c in p.CreditosNovos)
+                rec.Creditos.Add(new FechamentoCredito { Referencia = c.Referencia, Valor = c.Valor });
+            foreach (var c in p.CreditosSubstituidos)
+                rec.Creditos.First(x => x.Id == c.Id).Valor = c.Atual;
+            await db.SaveChangesAsync();
+        }
+
+        return new
+        {
+            motoristaId = (int?)mot.Id, motorista = (string?)mot.Nome, ano, mes, situacao = fechado ? "fechado" : "aberto", motivo = (string?)null,
+            novas = p.Novas.Select(l => new { referencia = l.Referencia, valor = l.Valor, parcela = l.Parcela, observacao = l.Observacao }).ToList(),
+            substituidas = p.Substituidas.Select(s => new
+            {
+                referencia = s.Lida.Referencia,
+                trocas = s.Trocas.Select(t => new { campo = t.Campo, anterior = t.Anterior, atual = t.Atual }).ToList(),
+            }).ToList(),
+            iguais = p.Iguais,
+            soNoSistema = p.SoNoSistema.Select(m => new { referencia = m.Referencia, valor = m.Valor }).ToList(),
+            salario = p.CamposSalario.Select(c => new { campo = c.Campo, anterior = c.Anterior, atual = c.Atual }).ToList(),
+            automaticas = p.AutomaticasCorrigidas.Select(a => new { referencia = a.Referencia, anterior = a.Anterior, atual = a.Valor }).ToList(),
+            retiradas = p.GemeasARetirar.Select(m => new { referencia = m.Referencia, valor = m.Valor }).ToList(),
+            creditosNovos = p.CreditosNovos.Select(c => new { referencia = c.Referencia, valor = c.Valor }).ToList(),
+            creditosSubstituidos = p.CreditosSubstituidos.Select(c => new { referencia = c.Referencia, anterior = c.Anterior, atual = c.Atual }).ToList(),
+            creditosIguais = p.CreditosIguais,
+            diferencas = p.Diferencas,
+            avisos = p.Avisos,
+        };
+    }
+
+    /// <summary>Resultado quando as despesas da planilha não entram sozinhas (motivo sempre na tela, UI-04).</summary>
+    public static object DespesasNaoImportadas(int? motoristaId, string? motorista, int ano, int mes, string motivo) => new
+    {
+        motoristaId, motorista, ano, mes, situacao = "nao_importado", motivo,
+        novas = Array.Empty<object>(), substituidas = Array.Empty<object>(), iguais = 0, soNoSistema = Array.Empty<object>(),
+        salario = Array.Empty<object>(), automaticas = Array.Empty<object>(), retiradas = Array.Empty<object>(),
+        creditosNovos = Array.Empty<object>(), creditosSubstituidos = Array.Empty<object>(), creditosIguais = 0,
+        diferencas = Array.Empty<string>(), avisos = Array.Empty<string>(),
+    };
+
     // ───────────────────────── Consórcios ─────────────────────────
 
     public Task<List<Consorcio>> ConsorciosAsync(string? placa)

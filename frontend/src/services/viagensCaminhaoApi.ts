@@ -184,6 +184,24 @@ export type ResultadoAcerto = {
   arquivo: string; erro?: string; placa?: string; mes?: number; ano?: number; criadas?: number; puladas?: number
   iguais?: number; substituidas?: number; completadas?: number; viagens?: ViagemDoAcerto[]
   avisos?: string[]; conferencia?: { aba: string; viagemId: number; confere: boolean; diferencas: string[]; comissao: number; comissaoPlanilha: number | null; sobra: number }[]
+  /** A aba DESPESAS DO MES no Fechamento do mês (VIA-29) */
+  fechamento?: FechamentoDoArquivo
+}
+/** Resultado da aba DESPESAS DO MES no fechamento: "nao_importado" sempre traz o motivo (UI-04) */
+export type FechamentoDoArquivo = {
+  motoristaId: number | null; motorista: string | null; ano: number; mes: number
+  situacao: 'aberto' | 'fechado' | 'nao_importado'; motivo: string | null
+  novas: { referencia: string; valor: number; parcela: string | null; observacao: string | null }[]
+  substituidas: { referencia: string; trocas: { campo: string; anterior: string; atual: string }[] }[]
+  iguais: number
+  soNoSistema: { referencia: string; valor: number | null }[]
+  salario: { campo: string; anterior: number; atual: number }[]
+  automaticas: { referencia: string; anterior: number | null; atual: number }[]
+  retiradas: { referencia: string; valor: number | null }[]
+  creditosNovos: { referencia: string; valor: number }[]
+  creditosSubstituidos: { referencia: string; anterior: number; atual: number }[]
+  creditosIguais: number
+  diferencas: string[]; avisos: string[]
 }
 export type ResultadoCarregamento = {
   arquivo: string; erro?: string

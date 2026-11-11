@@ -49,7 +49,11 @@ const despesaVazia = (): DespesaFechamento => ({
   automatica: false, corrigida: false, valorAutomatico: null, deOndeVem: null, aviso: null,
 })
 
-export default function FechamentoMes({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: number, a: number) => void }) {
+export default function FechamentoMes({ mes, ano, onMes, motoristaInicial }: {
+  mes: number; ano: number; onMes: (m: number, a: number) => void
+  /** Atalho "Abrir o fechamento" da importação do acerto: abre já no motorista do arquivo */
+  motoristaInicial?: number
+}) {
   const confirmar = useConfirmar()
   const [motoristas, setMotoristas] = useState<MotoristaFechamento[] | null>(null)
   const [motoristaId, setMotoristaId] = useState<number | null>(null)
@@ -66,7 +70,7 @@ export default function FechamentoMes({ mes, ano, onMes }: { mes: number; ano: n
   }, [])
 
   useEffect(() => {
-    fechamentosApi.motoristas().then(l => { setMotoristas(l); setMotoristaId(id => id ?? l[0]?.id ?? null) })
+    fechamentosApi.motoristas().then(l => { setMotoristas(l); setMotoristaId(id => id ?? l.find(m => m.id === motoristaInicial)?.id ?? l[0]?.id ?? null) })
       .catch(() => setFalhou(true))
   }, [])
 

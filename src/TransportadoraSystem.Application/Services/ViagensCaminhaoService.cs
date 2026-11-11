@@ -1442,6 +1442,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         var trocar = abasSubstituir?.Select(NormalizarAba).ToHashSet();
         var placaArquivo = NormalizarPlaca(lido.Placa);
         var jaAchadas = new HashSet<int>();
+        var motoristasDasAbas = new List<(string Aba, string Nome, MotoristaFrota? Mot)>();
 
         // Antes: o que casa pela chave ou pela data fica reservado para a sua aba (a regra "provável"
         // de outra aba não pode tomar a viagem que é exatamente de uma aba deste arquivo).
@@ -1456,6 +1457,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         {
             var chave = ChaveAcerto(lido, a.Aba);
             var mot = AcharMotorista(a.Motorista, motoristas);
+            motoristasDasAbas.Add((a.Aba, a.Motorista, mot));
             var novo = MontarDoAcerto(a, lido, nome, mot, tabela, chave);
             // Diária que não fecha em meia (R$ 50): fica a quantidade quebrada e um aviso
             if (a.Diarias % 50 != 0) avisos.Add($"{a.Aba}: diárias de R$ {a.Diarias:N2} não fecham em meia diária.");
@@ -1561,7 +1563,40 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
                 comissao = c.Comissao, comissaoPlanilha = a.Conferencia.GetValueOrDefault("ComissaoPlanilha"), sobra = c.Sobra,
             });
         }
-        return new { arquivo = nome, placa = lido.Placa, mes = lido.Mes, ano = lido.Ano, criadas, puladas, iguais, substituidas, completadas, avisos, conferencia, viagens };
+        var fechamento = await DespesasDoMesNoFechamentoAsync(lido, motoristasDasAbas, avisos);
+        return new { arquivo = nome, placa = lido.Placa, mes = lido.Mes, ano = lido.Ano, criadas, puladas, iguais, substituidas, completadas, avisos, conferencia, viagens, fechamento };
+    }
+
+    /// <summary>
+    /// VIA-29 (Admin, 10/11/2026): a aba DESPESAS DO MES entra sozinha no fechamento do motorista das
+    /// abas VIAGEMn, no mês do acerto. Nenhum motorista reconhecido ou mais de um no arquivo: não entra
+    /// e o resultado diz o motivo (lançar à mão). Erro ao gravar não desfaz as viagens: vira motivo.
+    /// </summary>
+    private async Task<object> DespesasDoMesNoFechamentoAsync(AcertoLido lido, List<(string Aba, string Nome, MotoristaFrota? Mot)> abas, List<string> avisos)
+    {
+        if (lido.DespesasDoMes is not { } dm)
+            return FechamentoMensalService.DespesasNaoImportadas(null, null, lido.Ano, lido.Mes, "O arquivo não tem a aba DESPESAS DO MES.");
+        if (dm.MesTexto != null && Normalizar(dm.MesTexto) != Normalizar(NomeMes(lido.Mes)) || dm.Ano != null && dm.Ano != lido.Ano)
+            avisos.Add($"DESPESAS DO MES diz {dm.MesTexto} de {dm.Ano}; valeu o mês do acerto, {NomeMes(lido.Mes)} de {lido.Ano}.");
+
+        var semNome = abas.Where(x => x.Mot == null).Select(x => $"{x.Aba} ({(x.Nome.Trim().Length > 0 ? x.Nome.Trim() : "sem nome")})").ToList();
+        var mots = abas.Where(x => x.Mot != null).Select(x => x.Mot!).DistinctBy(m => m.Id).ToList();
+        string? motivo = null;
+        if (abas.Count == 0) motivo = "Nenhuma aba VIAGEM com data de saída: não sei de quem são as despesas do mês; lance no Fechamento do mês.";
+        else if (semNome.Count > 0) motivo = $"Não reconheci o motorista de {string.Join(", ", semNome)}: as despesas do mês não entraram; lance no Fechamento do mês.";
+        else if (mots.Count > 1) motivo = $"O arquivo tem viagens de {mots.Count} motoristas ({string.Join(", ", mots.Select(m => m.Nome))}): as despesas do mês não entraram sozinhas; lance no fechamento de cada um.";
+        else if (!FechamentoMensalService.MotoristasDoAcerto.Contains(mots[0].Id)) motivo = $"{mots[0].Nome} não tem fechamento mensal: as despesas do mês não entraram.";
+        var unico = mots.Count == 1 ? mots[0] : null;
+        if (motivo != null)
+            return FechamentoMensalService.DespesasNaoImportadas(unico?.Id, unico?.Nome, lido.Ano, lido.Mes, motivo);
+        try
+        {
+            return await new FechamentoMensalService(db).ImportarDespesasDaPlanilhaAsync(unico!.Id, lido.Ano, lido.Mes, dm);
+        }
+        catch (Exception ex) when (ex is ErroViagem or InvalidOperationException or DbUpdateException)
+        {
+            return FechamentoMensalService.DespesasNaoImportadas(unico!.Id, unico.Nome, lido.Ano, lido.Mes, "Erro ao gravar as despesas do mês: " + ex.Message);
+        }
     }
 
     private static string NormalizarAba(string aba) => aba.ToUpperInvariant().Replace(" ", "");

@@ -16,7 +16,7 @@ import { erroDaApi } from '../services/semPararApi'
 import {
   viagensApi,
   type ListaViagens, type ViagemResumo, type Carregamento,
-  type ResultadoAcerto, type ResultadoCarregamento, type ViagemDoAcerto,
+  type ResultadoAcerto, type ResultadoCarregamento, type ViagemDoAcerto, type FechamentoDoArquivo,
 } from '../services/viagensCaminhaoApi'
 import { Modal } from '../components/ModalBase'
 import FechamentoMes from '../components/viagens/FechamentoMes'
@@ -53,7 +53,8 @@ export default function ViagensCaminhaoPage() {
       <PainelAba id={idAbas} valor={aba}>
         {aba === 'viagens' && <Viagens mes={mes} ano={ano} onMes={(m, a) => mudar({ mes: String(m), ano: String(a) })} />}
         {aba === 'carregamentos' && <Carregamentos mes={mes} ano={ano} onMes={(m, a) => mudar({ mes: String(m), ano: String(a) })} />}
-        {aba === 'fechamento' && <FechamentoMes mes={mes} ano={ano} onMes={(m, a) => mudar({ mes: String(m), ano: String(a) })} />}
+        {aba === 'fechamento' && <FechamentoMes mes={mes} ano={ano} onMes={(m, a) => mudar({ mes: String(m), ano: String(a) })}
+                                                     motoristaInicial={Number(params.get('motorista')) || undefined} />}
       </PainelAba>
     </div>
   )
@@ -161,7 +162,8 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
               {(r.completadas ?? 0) > 0 && <> · {r.completadas} completadas</>}
               {(r.substituidas ?? 0) > 0 && <> · {r.substituidas} substituídas</>}
               {esperando(r) > 0 && <> · {esperando(r)} parecidas com outra viagem, esperando confirmar</>}
-              {' · '}{(r.conferencia ?? []).length - dif.length} de {(r.conferencia ?? []).length} abas conferem com a planilha</>,
+              {' · '}{(r.conferencia ?? []).length - dif.length} de {(r.conferencia ?? []).length} abas conferem com a planilha
+              {r.fechamento && <FechamentoDoAcerto f={r.fechamento} />}</>,
           }
         })} />
       )}
@@ -246,6 +248,45 @@ function Valor({ rotulo, valor }: { rotulo: string; valor: number }) {
       <span className="text-gray-500 lg:block lg:text-xs">{rotulo}</span>
       <span className="font-medium tabular-nums text-gray-900">{brl(valor)}</span>
     </p>
+  )
+}
+
+// ───────────────────────────── Despesas do mês no fechamento ─────────────────────────────
+
+/** O que a aba DESPESAS DO MES do arquivo fez no Fechamento do mês (VIA-29, UI-22) */
+function FechamentoDoAcerto({ f }: { f: FechamentoDoArquivo }) {
+  const titulo = `Fechamento de ${mesExtenso(f.mes, f.ano)}${f.motorista ? ` — ${f.motorista}` : ''}`
+  const link = f.motoristaId != null ? `/viagens-caminhoes?aba=fechamento&mes=${f.mes}&ano=${f.ano}&motorista=${f.motoristaId}` : null
+  const nada = f.novas.length + f.substituidas.length + f.salario.length + f.automaticas.length + f.retiradas.length
+    + f.creditosNovos.length + f.creditosSubstituidos.length === 0
+  const trocas = [
+    ...f.substituidas.flatMap(s => s.trocas.map(t => `${s.referencia}${t.campo === 'Valor' ? '' : ` (${t.campo.toLowerCase()})`}: ${t.anterior} → ${t.atual}`)),
+    ...f.salario.map(c => `${c.campo.toUpperCase()}: ${brl(c.anterior)} → ${brl(c.atual)}`),
+    ...f.automaticas.map(a => `${a.referencia}: ${a.anterior == null ? 'sem valor' : brl(a.anterior)} → ${brl(a.atual)}`),
+    ...f.creditosSubstituidos.map(c => `Crédito ${c.referencia}: ${brl(c.anterior)} → ${brl(c.atual)}`),
+  ]
+  return (
+    <div className="mt-2 pt-2 border-t border-gray-100 space-y-1 font-sans">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+        <p className="font-medium text-gray-900">{titulo}</p>
+        {link && f.situacao !== 'nao_importado' && <Link to={link} className="text-sm font-medium text-tinta-700 underline underline-offset-2 min-h-10 inline-flex items-center">Abrir o fechamento</Link>}
+      </div>
+      {f.situacao === 'nao_importado' ? (
+        <p className="text-amber-800">As despesas do mês não entraram: {f.motivo || 'motivo não informado pelo servidor'}</p>
+      ) : (
+        <>
+          <p className="text-gray-700">
+            {nada && f.situacao === 'aberto' ? `Tudo igual (${f.iguais} ${f.iguais === 1 ? 'linha' : 'linhas'}).`
+              : <>{f.novas.length} {f.novas.length === 1 ? 'despesa nova' : 'despesas novas'} · {f.substituidas.length} substituídas · {f.iguais} iguais
+                {f.creditosNovos.length > 0 && <> · {f.creditosNovos.length} {f.creditosNovos.length === 1 ? 'crédito novo' : 'créditos novos'}</>}
+                {f.retiradas.length > 0 && <> · {f.retiradas.length} {f.retiradas.length === 1 ? 'linha repetida retirada' : 'linhas repetidas retiradas'}</>}</>}
+          </p>
+          {trocas.map((t, i) => <p key={`t${i}`} className="text-gray-700">{t}</p>)}
+          {f.diferencas.map((d, i) => <p key={`d${i}`} className="text-amber-800">{d}</p>)}
+          {f.avisos.map((a, i) => <p key={`a${i}`} className="text-amber-800">{a}</p>)}
+        </>
+      )}
+    </div>
   )
 }
 
