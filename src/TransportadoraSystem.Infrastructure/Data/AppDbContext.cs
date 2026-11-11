@@ -278,7 +278,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             .Ignore(r => r.Desconto)
             .Ignore(r => r.FreteTotal)
             .Ignore(r => r.AdiantamentoDescarga)
-            .Ignore(r => r.ReembolsoDescarga);
+            .Ignore(r => r.ReembolsoDescarga)
+            .Ignore(r => r.DescargaPaga);
         modelBuilder.Entity<StradaContrato>()
             .HasOne<RetornoFrete>().WithMany()
             .HasForeignKey(c => c.RetornoId)

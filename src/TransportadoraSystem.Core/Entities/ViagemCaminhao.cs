@@ -230,8 +230,14 @@ public class RetornoFrete
     /// <summary>Contrato (PDF) − frete contratado; nulo sem contrato.</summary>
     public decimal? AdiantamentoDescarga => ValorContrato is decimal c ? c - ValorFrete : null;
 
+    /// <summary>
+    /// A descarga é o ADICIONAL (coluna F da planilha de retornos, Admin 10/11/2026); a coluna Descarga só vale
+    /// quando digitada à parte. Nulo = sem descarga lançada.
+    /// </summary>
+    public decimal? DescargaPaga => Descarga ?? (Adicional > 0 ? Adicional : null);
+
     /// <summary>Descarga − adiantamento, nunca abaixo de 0; nulo sem descarga, sem contrato ou com adiantamento negativo.</summary>
-    public decimal? ReembolsoDescarga => Descarga is decimal d && AdiantamentoDescarga is decimal a && a >= 0
+    public decimal? ReembolsoDescarga => DescargaPaga is decimal d && AdiantamentoDescarga is decimal a && a >= 0
         ? Math.Max(0, d - a) : null;
 
     public decimal Desconto => DescontoManual ?? Math.Round((ValorFrete + Adicional - Pedagio) / 100m * (PorcentagemTip ?? 0), 4);
