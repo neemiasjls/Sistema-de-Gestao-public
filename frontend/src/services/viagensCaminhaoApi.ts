@@ -61,7 +61,15 @@ export type Retorno = {
   freteTotal: number; motorista: string | null; placa: string | null; observacoes: string | null; formaPagamento: string | null
   viagemId: number | null; porcentagemIcms: number; foraDoControle: boolean; origem: 'escritorio' | 'motorista' | 'importacao'
   conferido: boolean
+  /** VIA-27: descarga paga (= Adicional); contrato da Strada (PDF) e o que sai dele. Nulo = falta dado */
+  descarga?: number | null; contrato?: string | null; valorContrato?: number | null
+  adiantamentoDescarga?: number | null; reembolsoDescarga?: number | null
+  /** ligado, manual, conferir, sem_par, solto (nulo = ainda não procurado) */
+  contratoLigacao?: string | null; contratoAviso?: string | null
 }
+
+/** Contrato da Strada com PDF ainda sem retorno (para escolher à mão) */
+export type ContratoLivre = { numero: string; placa: string | null; data: string | null; valor: number | null; nf: string | null }
 
 export type Calculo = {
   totalVolumes: number; totalRetornos: number; valorTotal: number; dieselNota: number; dieselPago: number; totalDiesel: number
@@ -204,6 +212,8 @@ export type RetornoEntrada = {
   adicional: number; descontoSeguro: number; porcentagemTip: number | null; descontoManual: number | null
   motorista: string | null; placa: string | null; observacoes: string | null; formaPagamento: string | null
   viagemId: number | null; porcentagemIcms: number; foraDoControle: boolean; conferido: boolean | null
+  /** VIA-27: contratoManual com número = escolhido à mão; sem número = solto; false = o sistema procura */
+  contrato?: string | null; contratoManual?: boolean
 }
 
 const multipart = { headers: { 'Content-Type': 'multipart/form-data' } }
@@ -329,6 +339,8 @@ export const retornosApi = {
   salvar: (id: number, e: RetornoEntrada) => api.put(`/api/retornos/${id}`, e),
   excluir: (id: number) => api.delete(`/api/retornos/${id}`),
   vincular: (id: number, viagemId: number | null) => api.put(`/api/retornos/${id}/viagem`, { viagemId }),
+  contratosLivres: (placa: string | null, data: string | null) => api.get('/api/retornos/contratos-livres', { params: { placa, data } })
+    .then(r => comoLista<ContratoLivre>(r.data, 'contratos')),
   importar: (lista: File[]) => api.post('/api/retornos/importar', arquivos(lista), multipart).then(r => comoLista<ResultadoRetornos>(r.data, 'importação')),
   exportar: async (ano: number, mes: number) => {
     const r = await api.get('/api/retornos/excel', { params: { ano, mes }, responseType: 'blob' })

@@ -402,6 +402,11 @@ public class RetornosController(ViagensCaminhaoService svc, ILogger<RetornosCont
         return Ok(await svc.RetornosDoMesAsync(ano, mes));
     }
 
+    /// <summary>VIA-27: contratos da Strada com PDF ainda sem retorno, para escolher à mão.</summary>
+    [HttpGet("contratos-livres")]
+    public async Task<IActionResult> ContratosLivres([FromQuery] string? placa, [FromQuery] DateOnly? data) =>
+        Ok(await svc.ContratosLivresAsync(placa, data));
+
     [HttpPost]
     public Task<IActionResult> Criar([FromBody] RetornoEntrada e) => Salvar(null, e);
 

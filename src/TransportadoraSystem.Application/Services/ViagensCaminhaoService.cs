@@ -28,7 +28,10 @@ public record ViagemEntrada(
 public record RetornoEntrada(
     DateOnly? Data, string? Destino, string? Transportadora, decimal ValorFrete, decimal Pedagio, decimal Adicional,
     decimal DescontoSeguro, decimal? PorcentagemTip, decimal? DescontoManual, string? Motorista, string? Placa,
-    string? Observacoes, string? FormaPagamento, int? ViagemId, decimal PorcentagemIcms, bool ForaDoControle, bool? Conferido);
+    string? Observacoes, string? FormaPagamento, int? ViagemId, decimal PorcentagemIcms, bool ForaDoControle, bool? Conferido,
+    // VIA-27: a descarga é o Adicional (não há campo à parte). ContratoManual com número = escolhido à mão;
+    // sem número = solto (não liga sozinho); false = automático. O adiantamento nunca vem da tela.
+    string? Contrato = null, bool ContratoManual = false);
 
 public class ErroViagem(string mensagem) : Exception(mensagem);
 
@@ -613,6 +616,9 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         r.Id, r.Data, r.Destino, r.Transportadora, r.ValorFrete, r.Pedagio, r.Adicional, r.DescontoSeguro, r.PorcentagemTip,
         r.DescontoManual, r.Desconto, r.FreteTotal, r.Motorista, r.Placa, r.Observacoes, r.FormaPagamento, r.ViagemId,
         r.PorcentagemIcms, r.ForaDoControle, r.Origem, r.Conferido,
+        // VIA-27: descarga = Adicional (ou a coluna Descarga, se um dia for gravada)
+        Descarga = r.DescargaPaga, r.Contrato, r.ValorContrato, r.AdiantamentoDescarga, r.ReembolsoDescarga,
+        r.ContratoLigacao, r.ContratoAviso,
     };
 
     public async Task<object> RetornosDoMesAsync(int ano, int mes)
@@ -683,9 +689,46 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         else r.ViagemId = null;
         if (r.ViagemId != null && r.MotoristaId == null)
             r.MotoristaId = await db.ViagensCaminhao.Where(v => v.Id == r.ViagemId).Select(v => v.MotoristaId).FirstOrDefaultAsync();
+        AplicarEscolhaDoContrato(r, e);
         await db.SaveChangesAsync();
         await AtualizarCargaDoRetornoAsync(r);
+        // VIA-27: liga ao contrato da Strada (PDF) e recalcula o adiantamento com o frete novo
+        await StradaRetornos.SincronizarAsync(db);
         return r;
+    }
+
+    private static void AplicarEscolhaDoContrato(RetornoFrete r, RetornoEntrada e)
+    {
+        var numero = Limpo(e.Contrato);
+        if (e.ContratoManual)
+        {
+            var situacao = numero == null ? RetornoContratoLigador.Solto : RetornoContratoLigador.Manual;
+            if (r.ContratoLigacao == situacao && r.Contrato == numero) return;
+            r.ContratoLigacao = situacao;
+            r.Contrato = numero;
+            r.ValorContrato = null; r.ContratoAviso = null;   // o SincronizarAsync preenche
+        }
+        else if (r.ContratoLigacao is RetornoContratoLigador.Manual or RetornoContratoLigador.Solto)
+        {
+            // Volta ao automático: o sincronizador procura de novo pela placa e data
+            r.ContratoLigacao = null; r.Contrato = null; r.ValorContrato = null; r.ContratoAviso = null;
+        }
+    }
+
+    /// <summary>Contratos da Strada com PDF ainda sem retorno; os da placa primeiro, depois pela data mais perto.</summary>
+    public async Task<object> ContratosLivresAsync(string? placa, DateOnly? data)
+    {
+        var linhas = await db.StradaContratos.AsNoTracking().ToListAsync();
+        var chave = RetornoAnotacaoLigador.ChavePlaca(placa);
+        return linhas.GroupBy(c => c.Contrato)
+            .Where(g => g.Any(c => c.ValorContratoPdf != null) && g.All(c => c.RetornoId == null))
+            .Select(g => g.Where(c => c.ValorContratoPdf != null).OrderByDescending(c => c.DataContrato.HasValue).First())
+            .Select(c => new { Numero = c.Contrato, c.Placa, Data = c.DataContrato, Valor = c.ValorContratoPdf, c.Nf })
+            .OrderByDescending(c => chave.Length > 0 && RetornoAnotacaoLigador.ChavePlaca(c.Placa) == chave)
+            .ThenBy(c => data is { } d && c.Data is { } cd ? Math.Abs(cd.DayNumber - d.DayNumber) : int.MaxValue)
+            .ThenByDescending(c => c.Data)
+            .Take(200)
+            .ToList();
     }
 
     // Retorno tirado da viagem (ou posto em outra) solta a anotação do motorista ligada a ele e ela
@@ -717,8 +760,18 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         var r = await db.RetornosFrete.FindAsync(id) ?? throw new ErroViagem("Retorno não encontrado.");
         var cargas = await db.ViagemCaminhaoCargas.Where(c => c.RetornoId == id).ToListAsync();
         foreach (var c in cargas) { c.RetornoId = null; c.Ligacao = null; c.LigacaoAviso = null; }
+        // VIA-27: o contrato da Strada ligado a ele volta a "sem viagem" (a FK só zera o RetornoId e deixava "ligado").
+        // Linha com viagem da base AGROTRADE ou ligada à mão só perde o RetornoId.
+        var contratos = await db.StradaContratos.Where(c => c.RetornoId == id).ToListAsync();
+        foreach (var c in contratos)
+        {
+            c.RetornoId = null;
+            if (c.ViagemId == null && c.Situacao != StradaService.Manual) { c.Tipo = "indefinido"; c.Situacao = StradaService.SemViagem; }
+            c.AtualizadoEm = DateTime.UtcNow;
+        }
         db.RetornosFrete.Remove(r);
         await db.SaveChangesAsync();
+        if (contratos.Count > 0) await StradaRetornos.SincronizarAsync(db);
         // A anotação que estava nele procura outro retorno (ou fica sem par)
         foreach (var vid in cargas.Select(c => c.ViagemId).Distinct()) await LigarAnotacoesAsync(vid);
     }
