@@ -7,15 +7,15 @@ import { useAuth } from '../contexts/AuthContext'
 import { portalProdutosAApi, type AnotacaoPortal, type ClientePortal } from '../services/api'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
 import Aviso from '../components/ui/Aviso'
-import { Segmentado } from '../components/ui/Abas'
 import { Carregando, ErroCarga, Vazio } from '../components/ui/Estados'
 import { useConfirmar } from '../components/ui/Confirmar'
 import ServidorAcordando from '../components/ui/ServidorAcordando'
 
 // Portal das produtosA no celular (EST-09). Quem entra anota a retirada do barracão
 // (data, cliente, pesos em gramas, EST-04) e vê/altera/exclui só as dele. Rapidez
-// é o requisito: os pesos se digitam um atrás do outro, só com dígitos + Enter,
-// sem fechar o teclado. Nada de preço, valor, carga ou custo aqui.
+// é o requisito: os pesos se digitam um atrás do outro, só com dígitos + o botão
+// Adicionar (o teclado numérico do celular não tem Enter), sem fechar o teclado (EST-11).
+// Nada de preço, valor, carga ou custo aqui.
 
 const PESO_MIN = 1000, PESO_MAX = 30000          // o que a API aceita
 const PESO_COMUM_MIN = 8000, PESO_COMUM_MAX = 16000 // fora disso, pede confirmação (pega "1274" ou "127400")
@@ -77,7 +77,11 @@ export default function PortalProdutosAPage({ dentroDoSistema = false }: { dentr
   const navigate = useNavigate()
   const chave = chaveRascunho(usuario?.id ?? 0)
   // Recarregou no meio da anotação: volta direto para ela
-  const [rascunho, setRascunho] = useState<Rascunho | null>(() => lerRascunho(chave))
+  // Rascunho ainda sem cliente nem pesos abre com a data de hoje
+  const [rascunho, setRascunho] = useState<Rascunho | null>(() => {
+    const r = lerRascunho(chave)
+    return r && r.editandoId === null && r.clienteId === null && r.pesos.length === 0 ? { ...r, data: diasAtras(0) } : r
+  })
 
   function sair() {
     navigate('/produtosA', { replace: true })
@@ -209,8 +213,8 @@ function Anotar({ inicial, chave, dentroDoSistema, onFechar }: {
 }) {
   const confirmar = useConfirmar()
   const [r, setR] = useState<Rascunho>(inicial)
-  const [outraData, setOutraData] = useState(() => inicial.data !== diasAtras(0) && inicial.data !== diasAtras(1))
-  const [aConfirmar, setAConfirmar] = useState<number | null>(null)   // peso fora do comum esperando o 2º Enter
+  const [aConfirmar, setAConfirmar] = useState<number | null>(null)   // peso fora do comum esperando o 2º toque
+  const [novaId, setNovaId] = useState<number | null>(null)           // índice da última incluída (pisca de leve)
   const [erroPeso, setErroPeso] = useState<string | null>(null)
   const [corrigindo, setCorrigindo] = useState<number | null>(null)  // índice da produtoA em correção
   const [salvando, setSalvando] = useState(false)
@@ -221,8 +225,7 @@ function Anotar({ inicial, chave, dentroDoSistema, onFechar }: {
   useEffect(() => { gravarRascunho(chave, r) }, [chave, r])
 
   const total = r.pesos.reduce((s, p) => s + p, 0)
-  const hoje = diasAtras(0), ontem = diasAtras(1), limite = diasAtras(DIAS_PARA_TRAS)
-  const escolhaData = outraData ? 'outra' : r.data === hoje ? 'hoje' : r.data === ontem ? 'ontem' : 'outra'
+  const hoje = diasAtras(0), limite = diasAtras(DIAS_PARA_TRAS)
 
   function mudar(p: Partial<Rascunho>) { setR(x => ({ ...x, ...p })); setErroSalvar(null) }
 
@@ -237,16 +240,26 @@ function Anotar({ inicial, chave, dentroDoSistema, onFechar }: {
     setErroPeso(null); setAConfirmar(null)
   }
 
-  function confirmarPeso() {
+  // Devolve os pesos com o digitado incluído, ou null se não incluiu (vazio, inválido ou pedindo confirmação)
+  function confirmarPeso(): number[] | null {
     const texto = r.digitando
-    if (!texto) return
+    if (!texto) return null
     const g = parseInt(texto, 10)
-    if (g < PESO_MIN || g > PESO_MAX) { setErroPeso('Peso em gramas, entre 1.000 e 30.000 (ex.: 12740).'); return }
-    if (corrigindo === null && r.pesos.length >= MAX_PRODUTOSA) { setErroPeso(`No máximo ${MAX_PRODUTOSA} produtosA por anotação.`); return }
-    if (foraDoComum(g) && aConfirmar !== g) { setAConfirmar(g); return }
+    if (g < PESO_MIN || g > PESO_MAX) { setErroPeso('Peso em gramas, entre 1.000 e 30.000 (ex.: 12740).'); return null }
+    if (corrigindo === null && r.pesos.length >= MAX_PRODUTOSA) { setErroPeso(`No máximo ${MAX_PRODUTOSA} produtosA por anotação.`); return null }
+    if (foraDoComum(g) && aConfirmar !== g) { setAConfirmar(g); return null }
     const pesos = corrigindo === null ? [...r.pesos, g] : r.pesos.map((p, i) => (i === corrigindo ? g : p))
     mudar({ pesos, digitando: '' })
+    setNovaId(corrigindo ?? pesos.length - 1)
     setAConfirmar(null); setErroPeso(null); setCorrigindo(null)
+    try { navigator.vibrate?.(30) } catch { /* aparelho sem vibração */ }
+    return pesos
+  }
+
+  // Botão "+ Adicionar": inclui e devolve o foco ao campo no mesmo toque (o teclado numérico não fecha)
+  function adicionarPeloBotao() {
+    confirmarPeso()
+    pesosRef.current?.focus()
   }
 
   function corrigir(i: number) {
@@ -257,6 +270,7 @@ function Anotar({ inicial, chave, dentroDoSistema, onFechar }: {
 
   function tirar(i: number) {
     mudar({ pesos: r.pesos.filter((_, j) => j !== i) })
+    setNovaId(null)
     if (corrigindo === i) { setCorrigindo(null); mudar({ digitando: '' }) }
     else if (corrigindo !== null && corrigindo > i) setCorrigindo(corrigindo - 1)
   }
@@ -275,15 +289,23 @@ function Anotar({ inicial, chave, dentroDoSistema, onFechar }: {
   async function salvar() {
     if (salvando) return
     if (!r.clienteId) { setErroSalvar({ texto: 'Escolha o cliente.', rede: false }); return }
-    if (r.digitando) { setErroSalvar({ texto: 'Tem um peso digitado sem Enter. Aperte Enter para incluir ou apague.', rede: false }); pesosRef.current?.focus(); return }
-    if (r.pesos.length === 0) { setErroSalvar({ texto: 'Digite o peso de pelo menos uma produtoA.', rede: false }); pesosRef.current?.focus(); return }
+    let pesosFinais = r.pesos
+    if (r.digitando) {
+      // Peso ainda no campo: entra sozinho se for válido e comum; senão pede para conferir
+      const g = parseInt(r.digitando, 10)
+      const incluido = g >= PESO_COMUM_MIN && g <= PESO_COMUM_MAX ? confirmarPeso() : null
+      if (!incluido) { setErroSalvar({ texto: 'Confira o peso digitado: toque em Adicionar ou apague.', rede: false }); pesosRef.current?.focus(); return }
+      pesosFinais = incluido
+    }
+    if (pesosFinais.length === 0) { setErroSalvar({ texto: 'Digite o peso de pelo menos uma produtoA.', rede: false }); pesosRef.current?.focus(); return }
     setSalvando(true); setErroSalvar(null)
-    const dados = { data: r.data, clienteId: r.clienteId, pesos: r.pesos }
+    const dados = { data: r.data, clienteId: r.clienteId, pesos: pesosFinais }
+    const totalFinal = pesosFinais.reduce((s, p) => s + p, 0)
     try {
       if (r.editandoId) await portalProdutosAApi.alterar(r.editandoId, dados)
       else await portalProdutosAApi.anotar(dados)
       apagarRascunho(chave)
-      toast.success(`${r.editandoId ? 'Alterado' : 'Anotado'}: ${plural(r.pesos.length)}, ${kg(total)} kg para ${r.clienteNome}`, { duration: 5000 })
+      toast.success(`${r.editandoId ? 'Alterado' : 'Anotado'}: ${plural(pesosFinais.length)}, ${kg(totalFinal)} kg para ${r.clienteNome}`, { duration: 5000 })
       onFechar()
     } catch (err) {
       const texto = erroDa(err, 'Não salvou.')
@@ -302,23 +324,14 @@ function Anotar({ inicial, chave, dentroDoSistema, onFechar }: {
       <div className="space-y-6">
         {/* 1. Data */}
         <section aria-labelledby="anotar-data">
-          <h3 id="anotar-data" className="text-sm font-semibold text-gray-800 mb-2">Data</h3>
-          <Segmentado valor={escolhaData} rotulo="Data da retirada"
-                      opcoes={[['hoje', 'Hoje'], ['ontem', 'Ontem'], ['outra', 'Outro dia']] as const}
-                      onChange={v => {
-                        if (v === 'hoje') { setOutraData(false); mudar({ data: hoje }) }
-                        else if (v === 'ontem') { setOutraData(false); mudar({ data: ontem }) }
-                        else setOutraData(true)
-                      }} />
-          {escolhaData === 'outra' && (
-            <div className="mt-2">
-              <label htmlFor="anotar-outra-data" className="sr-only">Dia da retirada</label>
-              <input id="anotar-outra-data" type="date" value={r.data} min={limite} max={hoje}
-                     onChange={e => e.target.value && mudar({ data: e.target.value })}
-                     className="appearance-none w-full min-h-12 rounded-lg border border-gray-300 bg-white px-3 text-base text-gray-900 focus:outline-none focus:ring-2 focus:ring-tinta-500" />
-              <p className="text-xs text-gray-600 mt-1">Até {DIAS_PARA_TRAS} dias atrás.</p>
-            </div>
-          )}
+          <div className="flex items-baseline justify-between gap-3 mb-2">
+            <label id="anotar-data" htmlFor="anotar-data-campo" className="text-sm font-semibold text-gray-800">Data da retirada</label>
+            <span className="text-sm font-medium text-tinta-700">{dataCurta(r.data)}</span>
+          </div>
+          <input id="anotar-data-campo" type="date" value={r.data} min={limite} max={hoje}
+                 onChange={e => mudar({ data: e.target.value && e.target.value >= limite && e.target.value <= hoje ? e.target.value : hoje })}
+                 className="appearance-none w-full min-h-12 rounded-lg border border-gray-300 bg-white px-3 text-base text-gray-900 focus:outline-none focus:ring-2 focus:ring-tinta-500" />
+          <p className="text-xs text-gray-600 mt-1">Toque para escolher outro dia (até {DIAS_PARA_TRAS} dias atrás).</p>
         </section>
 
         {/* 2. Cliente */}
@@ -330,32 +343,48 @@ function Anotar({ inicial, chave, dentroDoSistema, onFechar }: {
           <h3 id="anotar-pesos" className="text-sm font-semibold text-gray-800 mb-2">
             {corrigindo === null ? 'Peso de cada produtoA, em gramas' : `Corrigindo a produtoA ${corrigindo + 1}`}
           </h3>
-          <input
-            ref={pesosRef}
-            type="text" inputMode="numeric" pattern="[0-9]*" enterKeyHint="next" autoComplete="off"
-            aria-labelledby="anotar-pesos" aria-describedby="anotar-pesos-dica"
-            aria-invalid={erroPeso ? true : undefined}
-            placeholder="Ex.: 12740"
-            value={r.digitando}
-            onChange={e => digitar(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); confirmarPeso() } }}
-            className={`w-full min-h-14 rounded-lg border bg-white px-3 text-2xl font-semibold tabular-nums text-gray-900 focus:outline-none focus:ring-2 focus:ring-tinta-500
-                        ${erroPeso || aConfirmar !== null ? 'border-amber-500' : 'border-gray-300'}`}
-          />
-          <div id="anotar-pesos-dica" aria-live="polite" className="mt-1 min-h-5 text-sm">
+          <div className="flex gap-2">
+            <input
+              ref={pesosRef}
+              type="text" inputMode="numeric" pattern="[0-9]*" enterKeyHint="done" autoComplete="off"
+              aria-labelledby="anotar-pesos" aria-describedby="anotar-pesos-dica"
+              aria-invalid={erroPeso ? true : undefined}
+              placeholder="Ex.: 12740"
+              value={r.digitando}
+              onChange={e => digitar(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); confirmarPeso() } }}
+              className={`flex-1 min-w-0 min-h-14 rounded-lg border bg-white px-3 text-2xl font-semibold tabular-nums text-gray-900 focus:outline-none focus:ring-2 focus:ring-tinta-500
+                          ${erroPeso || aConfirmar !== null ? 'border-amber-500' : 'border-gray-300'}`}
+            />
+            {/* pointerdown sem efeito padrão: o toque não tira o foco do campo e o teclado numérico fica aberto */}
+            <button type="button" onPointerDown={e => e.preventDefault()} onMouseDown={e => e.preventDefault()}
+                    onClick={adicionarPeloBotao} disabled={!r.digitando}
+                    className={`shrink-0 min-h-14 min-w-28 px-3 rounded-lg text-base font-semibold text-white inline-flex items-center justify-center gap-1.5
+                                disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-tinta-500
+                                ${aConfirmar !== null ? 'bg-amber-600 hover:bg-amber-700' : 'bg-tinta-700 hover:bg-tinta-800'}`}>
+              {aConfirmar !== null ? 'Incluir assim mesmo' : corrigindo !== null ? 'Trocar' : <><Plus size={20} aria-hidden /> Adicionar</>}
+            </button>
+          </div>
+          <div id="anotar-pesos-dica" className="mt-1 min-h-5 text-sm">
             {erroPeso ? <span className="text-red-700">{erroPeso}</span>
               : aConfirmar !== null ? (
                 <span className="text-amber-800 font-medium">
-                  {gramas(aConfirmar)} g ({kg(aConfirmar)} kg) está fora do comum. Confira e aperte Enter de novo para incluir.
+                  {gramas(aConfirmar)} g ({kg(aConfirmar)} kg) está fora do comum. Confira e toque em Incluir assim mesmo.
                 </span>
-              ) : r.digitando ? <span className="text-gray-700 tabular-nums">{gramas(+r.digitando)} g · {kg(+r.digitando)} kg — aperte Enter</span>
-              : <span className="text-gray-600">Digite o peso e aperte Enter (ou Próximo). O campo limpa para a próxima.</span>}
+              ) : r.digitando ? <span className="text-gray-700 tabular-nums">{gramas(+r.digitando)} g · {kg(+r.digitando)} kg</span>
+              : <span className="text-gray-600">Digite o peso e toque em Adicionar. O campo limpa para a próxima.</span>}
           </div>
+          <p className="sr-only" aria-live="polite">
+            {novaId !== null && r.pesos[novaId] !== undefined ? `ProdutoA ${novaId + 1}: ${gramas(r.pesos[novaId])} gramas` : ''}
+          </p>
 
           {r.pesos.length > 0 && (
-            <ol className="mt-3 divide-y divide-gray-200 border border-gray-200 rounded-xl bg-white overflow-hidden">
-              {r.pesos.map((p, i) => (
-                <li key={i} className={`flex items-center ${corrigindo === i ? 'bg-tinta-50' : ''}`}>
+            <p className="mt-3 text-base font-semibold text-gray-900 tabular-nums">{plural(r.pesos.length)} · {kg(total)} kg</p>
+          )}
+          {r.pesos.length > 0 && (
+            <ol className="mt-2 divide-y divide-gray-200 border border-gray-200 rounded-xl bg-white overflow-hidden">
+              {r.pesos.map((p, i) => ({ p, i })).reverse().map(({ p, i }) => (
+                <li key={i} className={`flex items-center ${corrigindo === i ? 'bg-tinta-50' : novaId === i ? 'animate-entrada' : ''}`}>
                   <button type="button" onClick={() => corrigir(i)}
                           aria-label={`Corrigir a produtoA ${i + 1}, ${gramas(p)} gramas`}
                           className="flex-1 min-w-0 flex items-center gap-3 px-3 min-h-12 text-left hover:bg-gray-50">
@@ -420,8 +449,10 @@ function EscolhaCliente({ clienteId, clienteNome, onEscolher, onTrocar }: {
   const filtrados = useMemo(() => {
     if (!clientes) return []
     const b = semAcento(busca.trim())
-    return b ? clientes.filter(c => semAcento(c.nome).includes(b)).slice(0, 30) : clientes.slice(0, 6)
+    // EST-11: a lista só aparece depois de digitar
+    return b ? clientes.filter(c => semAcento(c.nome).includes(b)).slice(0, 30) : []
   }, [clientes, busca])
+  const [tocou, setTocou] = useState(false)
 
   if (clienteId) return (
     <section aria-labelledby="anotar-cliente">
@@ -443,15 +474,17 @@ function EscolhaCliente({ clienteId, clienteNome, onEscolher, onTrocar }: {
           <>
             <div className="relative">
               <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" aria-hidden />
-              <input type="search" value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar cliente"
+              <input type="search" value={busca} onChange={e => setBusca(e.target.value)} onFocus={() => setTocou(true)}
+                     placeholder="Toque e digite o nome do cliente"
                      aria-label="Buscar cliente" autoComplete="off"
                      className="w-full min-h-12 rounded-lg border border-gray-300 bg-white pl-10 pr-3 text-base text-gray-900 focus:outline-none focus:ring-2 focus:ring-tinta-500" />
             </div>
             <div className="mt-2">
               {erro ? <ErroCarga mensagem="Não consegui carregar os clientes." onTentar={carregar} />
+                : !busca.trim() ? (tocou ? <p className="text-sm text-gray-600 py-1">Digite o nome para ver os clientes.</p> : null)
                 : clientes === null ? <Carregando linhas={3} rotulo="Carregando os clientes" />
                 : filtrados.length === 0 ? (
-                  <p className="text-sm text-gray-600 py-2">{busca ? 'Nenhum cliente com esse nome.' : 'Nenhum cliente cadastrado.'}</p>
+                  <p className="text-sm text-gray-600 py-2">Nenhum cliente com esse nome.</p>
                 ) : (
                   <ul className="grid grid-cols-1 gap-2">
                     {filtrados.map(c => (
@@ -464,9 +497,6 @@ function EscolhaCliente({ clienteId, clienteNome, onEscolher, onTrocar }: {
                     ))}
                   </ul>
                 )}
-              {!busca && clientes && clientes.length > 6 && (
-                <p className="text-xs text-gray-600 mt-2">Os que você mais usa ficam em cima. Busque para ver os outros.</p>
-              )}
             </div>
             <Botao variante="secundario" bloco icone={Plus} onClick={() => setNovoAberto(true)} className="mt-3">
               Cadastrar cliente novo
@@ -481,7 +511,6 @@ function ClienteNovo({ nomeInicial, onCriado, onCancelar }: {
   nomeInicial: string; onCriado: (c: ClientePortal) => void; onCancelar: () => void
 }) {
   const [nome, setNome] = useState(nomeInicial)
-  const [cidade, setCidade] = useState('')
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
 
@@ -489,7 +518,7 @@ function ClienteNovo({ nomeInicial, onCriado, onCancelar }: {
     if (nome.trim().length < 2) { setErro('Escreva o nome do cliente.'); return }
     setSalvando(true); setErro(null)
     try {
-      const r = await portalProdutosAApi.criarCliente({ nome: nome.trim(), cidade: cidade.trim() || null })
+      const r = await portalProdutosAApi.criarCliente({ nome: nome.trim(), cidade: null })
       if (r.data.jaExistia) toast(`${r.data.nome} já estava cadastrado. Escolhido.`)
       onCriado({ id: r.data.id, nome: r.data.nome })
     } catch (err) {
@@ -505,12 +534,8 @@ function ClienteNovo({ nomeInicial, onCriado, onCancelar }: {
       <div>
         <label htmlFor="cliente-novo-nome" className="block text-sm font-medium text-gray-700 mb-1">Nome</label>
         <input id="cliente-novo-nome" type="text" value={nome} onChange={e => setNome(e.target.value)} autoCapitalize="characters"
+               enterKeyHint="done" onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); criar() } }}
                autoFocus className={campo} />
-      </div>
-      <div>
-        <label htmlFor="cliente-novo-cidade" className="block text-sm font-medium text-gray-700 mb-1">Cidade (se souber)</label>
-        <input id="cliente-novo-cidade" type="text" value={cidade} onChange={e => setCidade(e.target.value)} autoCapitalize="characters"
-               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); criar() } }} className={campo} />
       </div>
       {erro && <Aviso tipo="erro">{erro}</Aviso>}
       <div className="flex gap-2">
