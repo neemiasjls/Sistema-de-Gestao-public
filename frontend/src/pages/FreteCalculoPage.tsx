@@ -18,6 +18,13 @@ import CityAutocomplete from '../components/CityAutocomplete'
 import api, { ctesApi, calculosFreteApi, downloadBlob, formatBRL, guardarArquivosNFe, nomeDoArquivo, type FreteCalculoResult, type ItemFreteCalculo, type NfDetalhe, type CalculoFreteSalvoResumo, type PlanilhaDaCarga, type ConflitoTipo, type CorrecaoTipo } from '../services/api'
 import ClienteBadge from '../components/ClienteBadge'
 import { recalcularRotasFrete } from '../services/freteRotas'
+import CalculoFretePerfil from '../components/CalculoFretePerfil'
+import { boletosContasApi } from '../services/boletosContasApi'
+import { dataBr } from '../utils/formato'
+import { calculoPerfilDoNome, linkBoletosPerfil } from '../utils/calculoPerfil'
+
+// Cálculo do frete Perfil (BOL-17): o .txt "dd-MM-aaaa PLACA.txt" fica guardado na carga, não baixa.
+const ehTxt = (nome: string) => /\.txt$/i.test(nome)
 
 interface AnaliseNFe {
   totalXmls: number
@@ -166,6 +173,12 @@ export default function FreteCalculoPage() {
   const [planilhasGeradas, setPlanilhasGeradas] = useState<{ nome: string; conteudo: string }[]>([])
   const [planilhasSalvas, setPlanilhasSalvas]   = useState<PlanilhaDaCarga[]>([])
   const [cargaAbertaId, setCargaAbertaId]       = useState<number | null>(null)
+  const [verCalculoPerfil, setVerCalculoPerfil] = useState<{ data: string; placa: string } | null>(null)
+  // Carga com queda do volume lançada em Boletos: calcular de novo apagaria a queda do .txt (Admin, 11/11/2026)
+  const [quedaLancada, setQuedaLancada]         = useState<{ data: string; placa: string } | null>(null)
+  // Enquanto não se sabe (conferindo) ou a conferência falhou, o Calcular fica travado: só libera com a certeza de que não há queda
+  const [conferenciaQueda, setConferenciaQueda] = useState<'livre' | 'conferindo' | 'falhou'>('livre')
+  const [tentativaQueda, setTentativaQueda]     = useState(0)
 
   // ── Cargas salvas ─────────────────────────────────────────────
   const [salvos, setSalvos]             = useState<CalculoFreteSalvoResumo[]>([])
@@ -637,7 +650,7 @@ export default function FreteCalculoPage() {
     if (!xmlFiles.length) { if (!automatico) toast.error('Importe os XMLs primeiro.'); return }
     if (automatico && ultimaGeracao.current === chaveGeracao()) return
     const falha = (msg: string) => {
-      if (automatico) setAvisos(v => [...v, `Romaneios e .txt não foram gerados: ${msg} Depois clique de novo em "Calcular frete e pedágio e gerar romaneios".`])
+      if (automatico) setAvisos(v => [...v, `Romaneios e Cálculo do frete Perfil não foram gerados: ${msg} Depois clique de novo em "Calcular frete e pedágio e gerar romaneios".`])
       else toast.error(msg)
     }
     if (analise?.temBrz) {
@@ -664,20 +677,25 @@ export default function FreteCalculoPage() {
         { headers: { 'Content-Type': 'multipart/form-data' } }
       )
 
-      for (const arq of resp.data.arquivos) {
+      // O .txt (Cálculo do frete Perfil) não baixa: fica guardado na carga (BOL-17)
+      const paraBaixar = resp.data.arquivos.filter(a => !ehTxt(a.nome))
+      for (const arq of paraBaixar) {
         const bin = atob(arq.conteudo)
         const bytes = new Uint8Array(bin.length)
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
         downloadBlob(new Blob([bytes]), arq.nome)
         await new Promise(r => setTimeout(r, 300))
       }
-      toast.success(`${resp.data.arquivos.length} arquivo(s) baixado(s)!`)
+      const temTxt = paraBaixar.length < resp.data.arquivos.length
+      toast.success(paraBaixar.length
+        ? `${paraBaixar.length} romaneio(s) baixado(s)!${temTxt ? ' O Cálculo do frete Perfil fica guardado na carga.' : ''}`
+        : 'Cálculo do frete Perfil pronto: fica guardado na carga.')
       if (resp.data.avisos?.length) setAvisos(v => [...v, ...resp.data.avisos!])
 
       setPlanilhasGeradas(resp.data.arquivos)
       ultimaGeracao.current = chaveGeracao()
       if (automatico && analise?.temFrete && !analise.produtosENasNotas && caixasProdutoE <= 0)
-        setAvisos(v => [...v, 'O .txt do frete da Girassol saiu com 0 caixas de produtoE (a nota do Beta não veio). Se teve produtoE, informe e clique de novo em "Calcular frete e pedágio e gerar romaneios".'])
+        setAvisos(v => [...v, 'O Cálculo do frete Perfil saiu com 0 caixas de produtoE (a nota do Beta não veio). Se teve produtoE, informe e clique de novo em "Calcular frete e pedágio e gerar romaneios".'])
 
       // Carga já salva: guarda agora. Ainda não salva: vai junto no salvar.
       if (cargaAbertaId) {
@@ -702,6 +720,31 @@ export default function FreteCalculoPage() {
       toast.error(`NF ${numero}: PDF não guardado. Suba o PDF em Notas Fiscais.`)
     }
   }
+
+  // Carga aberta com Cálculo do frete Perfil: confere em Boletos se a queda do volume já foi lançada
+  useEffect(() => {
+    setQuedaLancada(null)
+    setConferenciaQueda('livre')
+    if (!cargaAbertaId) return
+    const calculos = planilhasSalvas.map(pl => calculoPerfilDoNome(pl.nome)).filter((c): c is { data: string; placa: string } => !!c)
+    if (!calculos.length) return
+    let vivo = true
+    setConferenciaQueda('conferindo')
+    ;(async () => {
+      try {
+        for (const c of calculos) {
+          const r = await boletosContasApi.fretePerfil(c.data, c.placa)
+          if (!vivo) return
+          if (r.data.comQueda) { setQuedaLancada(c); setConferenciaQueda('livre'); return }
+        }
+        if (vivo) setConferenciaQueda('livre')
+      } catch {
+        // Sem resposta não dá para saber se há queda: continua travado, com "Tentar de novo"
+        if (vivo) setConferenciaQueda('falhou')
+      }
+    })()
+    return () => { vivo = false }
+  }, [cargaAbertaId, planilhasSalvas, tentativaQueda])
 
   const baixarPlanilhaSalva = async (pl: PlanilhaDaCarga) => {
     if (!cargaAbertaId) return
@@ -737,6 +780,8 @@ export default function FreteCalculoPage() {
 
   // ── Calcular ─────────────────────────────────────────────────
   const calcular = async () => {
+    if (quedaLancada) { toast.error('A queda do volume desta carga já foi lançada em Boletos: não dá para calcular de novo.'); return }
+    if (conferenciaQueda !== 'livre') { toast.error('Ainda não deu para conferir se a queda do volume desta carga foi lançada em Boletos.'); return }
     const carga   = parseFloat(valorCarga.replace(',', '.'))
     const pedagio = parseFloat(valorPedagio.replace(',', '.'))
     if (!carga || !pedagio) { toast.error('Informe o valor da carga e do pedágio.'); return }
@@ -1251,18 +1296,53 @@ export default function FreteCalculoPage() {
                 </Link>
               </div>
               <ul className="rounded-lg border border-gray-200 divide-y divide-gray-100">
-                {planilhasSalvas.map(pl => (
-                  <li key={pl.id} className="flex items-center justify-between gap-2 pl-3 pr-1 py-1">
-                    <span className="flex items-center gap-2 min-w-0">
-                      <FileSpreadsheet size={16} className="text-tinta-500 shrink-0" aria-hidden />
-                      <span className="text-sm text-gray-800 truncate" title={pl.nome}>{pl.nome}</span>
-                    </span>
-                    <span className="flex items-center shrink-0">
-                      <BotaoIcone icone={Download} rotulo={`Baixar ${pl.nome}`} onClick={() => baixarPlanilhaSalva(pl)} />
-                    </span>
-                  </li>
-                ))}
+                {planilhasSalvas.map(pl => {
+                  if (ehTxt(pl.nome)) {
+                    // Cálculo do frete Perfil: só ver aqui; a queda do volume se lança em Boletos (BOL-17)
+                    const c = calculoPerfilDoNome(pl.nome)
+                    return (
+                      <li key={pl.id} className="pl-3 pr-1 py-2 space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="flex items-center gap-2 min-w-0">
+                            <FileText size={16} className="text-tinta-500 shrink-0" aria-hidden />
+                            <span className="text-sm text-gray-800 truncate">
+                              Cálculo do frete Perfil
+                              {c ? <span className="text-gray-600"> · {dataBr(c.data)} · {c.placa}</span>
+                                 : <span className="text-amber-800"> · sem data e placa no nome ({pl.nome})</span>}
+                            </span>
+                          </span>
+                          {c && (
+                            <Botao variante="secundario" tamanho="sm" onClick={() => setVerCalculoPerfil(c)}>Ver</Botao>
+                          )}
+                        </div>
+                        {c && (
+                          <p className="text-sm text-gray-600">
+                            Para lançar a queda do volume:{' '}
+                            <Link to={linkBoletosPerfil(c)} className="font-medium text-tinta-700 hover:underline">
+                              Boletos → A receber → Perfil
+                            </Link>
+                          </p>
+                        )}
+                      </li>
+                    )
+                  }
+                  return (
+                    <li key={pl.id} className="flex items-center justify-between gap-2 pl-3 pr-1 py-1">
+                      <span className="flex items-center gap-2 min-w-0">
+                        <FileSpreadsheet size={16} className="text-tinta-500 shrink-0" aria-hidden />
+                        <span className="text-sm text-gray-800 truncate" title={pl.nome}>{pl.nome}</span>
+                      </span>
+                      <span className="flex items-center shrink-0">
+                        <BotaoIcone icone={Download} rotulo={`Baixar ${pl.nome}`} onClick={() => baixarPlanilhaSalva(pl)} />
+                      </span>
+                    </li>
+                  )
+                })}
               </ul>
+              {verCalculoPerfil && (
+                <CalculoFretePerfil data={verCalculoPerfil.data} placa={verCalculoPerfil.placa} somenteLeitura
+                                    onClose={() => setVerCalculoPerfil(null)} />
+              )}
             </div>
           )}
         </section>
@@ -1555,9 +1635,27 @@ export default function FreteCalculoPage() {
         )}
       </div>
 
+      {quedaLancada && (
+        <Aviso tipo="atencao" titulo="Esta carga não pode ser calculada de novo">
+          A queda do volume da Girassol já foi lançada em Boletos. Calcular de novo apagaria a queda do Cálculo do frete Perfil.{' '}
+          <Link to={linkBoletosPerfil(quedaLancada)} className="font-medium text-tinta-700 hover:underline">
+            Ver em Boletos, A receber, Perfil
+          </Link>
+        </Aviso>
+      )}
+
+      {conferenciaQueda === 'falhou' && (
+        <Aviso tipo="atencao" titulo="Não consegui conferir a queda do volume desta carga">
+          Sem saber se a queda do volume da Girassol já foi lançada em Boletos, a carga não pode ser calculada de novo.{' '}
+          <button type="button" onClick={() => setTentativaQueda(n => n + 1)} className="font-medium text-tinta-700 hover:underline">
+            Tentar de novo
+          </button>
+        </Aviso>
+      )}
+
       <Botao variante="primario" icone={Calculator} onClick={calcular} carregando={calculando} textoCarregando="Calculando..."
-             bloco className="sm:w-auto">
-        Calcular frete e pedágio e gerar romaneios
+             disabled={!!quedaLancada || conferenciaQueda !== 'livre'} bloco className="sm:w-auto">
+        {conferenciaQueda === 'conferindo' ? 'Conferindo a queda do volume...' : 'Calcular frete e pedágio e gerar romaneios'}
       </Botao>
 
       {/* ── Resultado ── */}

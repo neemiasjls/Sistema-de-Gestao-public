@@ -593,7 +593,27 @@ function AReceber({ link }: { link?: CargaDoLink | null }) {
 
   return (
     <div className="space-y-4">
-      <Segmentado valor={verProdutosC ? 'BRZ' : cliente} onChange={escolherCliente} rotulo="Cliente" opcoes={opcoesTela} />
+      {/* Subir boleto emitido fora do sistema é exceção (o normal é emitir em "Para emitir"):
+          fica pequeno no canto de cima, à direita, e a lista sobe (BOL-17) */}
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+        <Segmentado valor={verProdutosC ? 'BRZ' : cliente} onChange={escolherCliente} rotulo="Cliente" opcoes={opcoesTela} />
+        {!verProdutosC && (
+          <div role="group" aria-label={`Subir, montar ou lançar boleto de ${resumo?.rotulo ?? cliente}`} className="min-w-0">
+            <div className="flex flex-wrap gap-2 xl:justify-end">
+              <AreaSoltar discreta className="flex-1 sm:flex-none" aceita={['.pdf']} onArquivos={subir} icone={FileUp}
+                          titulo={`Arraste aqui ou escolha os boletos de ${resumo?.rotulo ?? cliente} emitidos fora do sistema`}
+                          textoBotao="Subir boletos" carregando={subindo} textoCarregando="Lendo os boletos..." />
+              <Botao variante="secundario" icone={ClipboardCheck} className="flex-1 sm:flex-none whitespace-nowrap"
+                     onClick={() => setMontando({ data: hoje, placa: null })}>Montar boleto</Botao>
+              <Botao variante="secundario" icone={Plus} className="flex-1 sm:flex-none whitespace-nowrap"
+                     onClick={() => setEditando('novo')}>Lançar à mão</Botao>
+            </div>
+            <p className="text-xs text-gray-500 mt-1.5 xl:text-right">
+              Subir é para boleto emitido fora do sistema, em PDF. Vale a data do boleto, não a do nome do arquivo.
+            </p>
+          </div>
+        )}
+      </div>
 
       {verProdutosC ? <ProdutosCAReceber modo="brz" /> : <>
 
@@ -610,26 +630,6 @@ function AReceber({ link }: { link?: CargaDoLink | null }) {
       <ParaEmitirBoletos cliente={cliente} rotuloCliente={resumo?.rotulo ?? cliente} versao={versaoParaEmitir}
                          onEmitir={(data, placa) => setMontando({ data, placa })}
                          onCalculo={(data, placa) => setCalculando({ data, placa })} />
-
-      <section aria-labelledby="receber-subir" className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-        <div>
-          <h2 id="receber-subir" className="text-base font-semibold text-gray-900">Subir boletos emitidos para {resumo?.rotulo ?? cliente}</h2>
-          <p className="text-sm text-gray-600 max-w-[68ch]">
-            Valor, vencimento, número, caminhão e data da carga saem do boleto; a data
-            que vale é a do boleto, não a do nome do arquivo (nos da CD o ano do nome costuma vir errado).
-            {cliente === 'CD' && ' O boleto das produtosD vai no e-mail da Cedro Frutas da mesma data de carga.'}
-          </p>
-        </div>
-        <div className="flex flex-col sm:flex-row sm:items-start gap-3">
-          <AreaSoltar compacta className="flex-1 min-w-0" aceita={['.pdf']} onArquivos={subir} icone={FileUp}
-                      titulo={`Arraste os boletos de ${resumo?.rotulo ?? cliente} aqui`} textoBotao="Escolher PDFs"
-                      carregando={subindo} textoCarregando="Lendo os boletos..." />
-          <div className="flex flex-col gap-2 sm:mt-1">
-            <Botao variante="secundario" icone={ClipboardCheck} onClick={() => setMontando({ data: hoje, placa: null })}>Montar boleto</Botao>
-            <Botao variante="secundario" icone={Plus} onClick={() => setEditando('novo')}>Lançar à mão</Botao>
-          </div>
-        </div>
-      </section>
 
       <Avisos avisos={avisos} onFechar={() => setAvisos([])} />
 

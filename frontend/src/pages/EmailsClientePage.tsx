@@ -25,7 +25,7 @@ import ComparaBoletos from '../components/ComparaBoletos'
 
 // Toda terça vai um e-mail para a Cedro Frutas (CD) e outro para o Dunas, com
 // um .zip do romaneio e dos boletos; a cada carga da Girassol, o boleto do frete
-// em PDF direto, com assunto e texto do relatório de frete (.txt). A tela junta
+// em PDF direto, com assunto e texto do cálculo do frete Perfil (.txt). A tela junta
 // as peças que o sistema já guarda, mostra o que falta e só manda depois de confirmar.
 //
 // Organização (BOL-07): data no topo, os boletos emitidos podem ser arrastados
@@ -110,7 +110,7 @@ export default function EmailsClientePage() {
     return t === 'falta' || t === 'pronto' ? 0 : resolvido(e) ? 2 : 1
   }
   const [subindo, setSubindo] = useState(false)
-  // O que o relatório de frete subido avisou: fica até fechar (D-07)
+  // O que o cálculo do frete Perfil subido avisou: fica até fechar (D-07)
   const [avisosRelatorio, setAvisosRelatorio] = useState<string[]>([])
   // Boletos emitidos (CD, Girassol) arrastados aqui
   const [subindoBoletos, setSubindoBoletos] = useState(false)
@@ -180,7 +180,7 @@ export default function EmailsClientePage() {
     catch (err) { toast.error(await erroEmail(err, 'Não consegui montar o .zip.')) }
   }
 
-  // Relatório de frete que não foi gerado pelo sistema: guarda e remonta a prévia na data dele
+  // Cálculo do frete Perfil (.txt) que não foi gerado pelo sistema: guarda e remonta a prévia na data dele
   const subirRelatorio = async (arquivo: File | undefined) => {
     if (!arquivo) return
     setSubindo(true)
@@ -189,7 +189,7 @@ export default function EmailsClientePage() {
       toast.success(`Relatório ${r.nome} guardado.`)
       setAvisosRelatorio(r.avisos)
       await carregar(r.data)
-    } catch (err) { toast.error(await erroEmail(err, 'Não consegui guardar o relatório de frete.')) }
+    } catch (err) { toast.error(await erroEmail(err, 'Não consegui guardar o cálculo do frete Perfil.')) }
     finally { setSubindo(false) }
   }
 
@@ -235,7 +235,7 @@ export default function EmailsClientePage() {
   const botaoRelatorio = (
     <Botao variante="secundario" tamanho="sm" icone={Upload} carregando={subindo} textoCarregando="Guardando..."
            onClick={() => entradaRelatorio.current?.click()}>
-      Subir relatório de frete (.txt)
+      Subir cálculo do frete Perfil (.txt)
     </Botao>
   )
 
@@ -307,7 +307,7 @@ export default function EmailsClientePage() {
         </Aviso>
       )}
       {avisosRelatorio.length > 0 && (
-        <Aviso tipo="atencao" titulo="Relatório de frete guardado. Confira" itens={avisosRelatorio} onFechar={() => setAvisosRelatorio([])} />
+        <Aviso tipo="atencao" titulo="Cálculo do frete Perfil guardado. Confira" itens={avisosRelatorio} onFechar={() => setAvisosRelatorio([])} />
       )}
 
       {/* Data da carga: tudo abaixo é desta data */}
@@ -480,7 +480,7 @@ export default function EmailsClientePage() {
                 </Campo>
               </div>
 
-              {/* Anexos (e, na Girassol, o relatório de frete de onde sai o assunto) */}
+              {/* Anexos (e, na Girassol, o cálculo do frete Perfil de onde sai o assunto) */}
               <div className="space-y-3 min-w-0">
                 {e.ehFrete && <FreteResumo email={e} botao={botaoRelatorio} />}
                 <fieldset>
@@ -719,13 +719,13 @@ function ListaReconhecidos({ itens, onFechar, onIrPara, dataAtual }: {
   )
 }
 
-// O que o relatório de frete da carga diz (de onde saem assunto e texto do e-mail
-// da Girassol). Sem relatório, avisa e oferece subir o .txt (UI-04).
+// O que o cálculo do frete Perfil da carga diz (de onde saem assunto e texto do e-mail
+// da Girassol). Sem o cálculo, avisa e oferece subir o .txt (UI-04).
 function FreteResumo({ email: e, botao }: { email: PreviaEmail; botao: React.ReactNode }) {
   const f = e.frete
   if (!f) {
     return (
-      <Aviso tipo="erro" acao={botao}>Sem o relatório de frete desta carga: o assunto sai sem as caixas.</Aviso>
+      <Aviso tipo="erro" acao={botao}>Sem o cálculo do frete Perfil desta carga: o assunto sai sem as caixas.</Aviso>
     )
   }
   const cx = (n: number | null) => (n == null ? 'não lido' : n.toLocaleString('pt-BR'))
@@ -735,9 +735,9 @@ function FreteResumo({ email: e, botao }: { email: PreviaEmail; botao: React.Rea
         <FileText size={16} className="text-tinta-600 shrink-0" aria-hidden />
         <p className="text-sm font-medium text-gray-900 break-all flex-1">{f.relatorioNome}</p>
         {f.relatorioId != null && (
-          <BotaoIcone icone={Download} rotulo="Baixar o relatório"
+          <BotaoIcone icone={Download} rotulo="Baixar o cálculo do frete Perfil"
                       onClick={() => emailsClienteApi.baixarRelatorio(f.relatorioId!, f.relatorioNome ?? 'relatorio.txt')
-                        .catch(async err => toast.error(await erroEmail(err, 'Não consegui baixar o relatório.')))} />
+                        .catch(async err => toast.error(await erroEmail(err, 'Não consegui baixar o cálculo do frete Perfil.')))} />
         )}
       </div>
       <dl className="grid grid-cols-3 gap-2 text-sm tabular-nums pr-2">

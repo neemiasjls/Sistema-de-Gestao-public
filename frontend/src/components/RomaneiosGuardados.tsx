@@ -4,6 +4,7 @@ import { Carregando, ErroCarga } from './ui/Estados'
 import { useConfirmar } from './ui/Confirmar'
 import Botao from './ui/Botao'
 import { Modal } from './ModalBase'
+import { Link } from 'react-router-dom'
 import { AlertTriangle, Download, Eye, FileText, FileUp, Loader2, Pencil, Search, Trash2, Truck } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { formatBRL } from '../services/api'
@@ -13,6 +14,8 @@ import {
 } from '../services/romaneiosClienteApi'
 import ClienteBadge from './ClienteBadge'
 import EditarRomaneio from './EditarRomaneio'
+import CalculoFretePerfil from './CalculoFretePerfil'
+import { calculoPerfilDoNome, linkBoletosPerfil } from '../utils/calculoPerfil'
 
 // Todos os romaneios de cliente que o sistema guardou, por cliente. "Ver" lê a
 // planilha no servidor e monta o romaneio aqui, sem precisar do Excel; o
@@ -46,6 +49,8 @@ export default function RomaneiosGuardados() {
   const [baixando, setBaixando] = useState<number | null>(null)
   const [importando, setImportando] = useState(false)
   const [editando, setEditando] = useState<RomaneioGuardado | null>(null)
+  // Cálculo do frete Perfil (.txt): só ver; a queda do volume se lança em Boletos (BOL-17)
+  const [verCalculoPerfil, setVerCalculoPerfil] = useState<{ data: string; placa: string } | null>(null)
   // Romaneios recusados na importação ficam na tela até ele fechar (D-07)
   const [recusados, setRecusados] = useState<string[]>([])
   const confirmar = useConfirmar()
@@ -212,7 +217,7 @@ export default function RomaneiosGuardados() {
               <div key={r.id} className="px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
                 <div className="w-20 shrink-0">
                   {r.tipo === 'frete' ? (
-                    <span className="text-xs font-medium text-gray-500">Frete</span>
+                    <span className="text-xs font-medium text-gray-500">Frete Perfil</span>
                   ) : r.numero != null ? (
                     <span className="block leading-tight">
                       <span className="block text-[11px] text-gray-400">romaneio</span>
@@ -243,10 +248,39 @@ export default function RomaneiosGuardados() {
                         {r.versoes} versões
                       </span>
                     )}
-                    <span className="truncate max-w-[260px]" title={r.nome}>{r.nome}</span>
+                    <span className="truncate max-w-[260px]" title={r.nome}>
+                      {r.tipo === 'frete' ? 'Cálculo do frete Perfil' : r.nome}
+                    </span>
                   </p>
+                  {r.tipo === 'frete' && (() => {
+                    const c = calculoPerfilDoNome(r.nome)
+                    return c ? (
+                      <p className="text-sm text-gray-600">
+                        Para lançar a queda do volume:{' '}
+                        <Link to={linkBoletosPerfil(c)} className="font-medium text-tinta-700 hover:underline">
+                          Boletos → A receber → Perfil
+                        </Link>
+                      </p>
+                    ) : (
+                      <p className="text-sm text-amber-800">Sem data e placa no nome ({r.nome}).</p>
+                    )
+                  })()}
                 </div>
 
+                {r.tipo === 'frete' ? (
+                <div className="flex items-center gap-1.5">
+                  {(() => {
+                    const c = calculoPerfilDoNome(r.nome)
+                    return c && (
+                      <Botao variante="secundario" tamanho="sm" icone={Eye} onClick={() => setVerCalculoPerfil(c)}>Ver</Botao>
+                    )
+                  })()}
+                  <button onClick={() => excluir(r)} title="Excluir" aria-label={`Excluir ${r.nome}`}
+                          className="p-2 text-gray-400 hover:text-red-600 rounded-lg hover:bg-red-50">
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+                ) : (
                 <div className="flex items-center gap-1.5">
                   <button onClick={() => ver(r)} disabled={abrindo === r.id}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-tinta-600 text-white text-sm font-medium rounded-lg hover:bg-tinta-700 disabled:opacity-50">
@@ -265,6 +299,7 @@ export default function RomaneiosGuardados() {
                     <Trash2 size={15} />
                   </button>
                 </div>
+                )}
               </div>
             ))}
           </div>
@@ -274,6 +309,11 @@ export default function RomaneiosGuardados() {
       {editando && (
         <EditarRomaneio id={editando.id} nome={editando.nome} onClose={() => setEditando(null)}
                         onSalvo={() => { if (aberto?.id === editando.id) setAberto(null); carregar() }} />
+      )}
+
+      {verCalculoPerfil && (
+        <CalculoFretePerfil data={verCalculoPerfil.data} placa={verCalculoPerfil.placa} somenteLeitura
+                            onClose={() => setVerCalculoPerfil(null)} />
       )}
 
       {aberto && (
@@ -303,7 +343,7 @@ function VisaoRomaneio({ resumo, baixando, onBaixar, onClose }: {
   resumo: ResumoRomaneio; baixando: boolean; onBaixar: () => void; onClose: () => void
 }) {
   const titulo = resumo.tipo === 'frete'
-    ? `Relatório de frete · ${dataBR(resumo.data)}`
+    ? `Cálculo do frete Perfil · ${dataBR(resumo.data)}`
     : `${resumo.numero != null ? `Romaneio ${resumo.numero}` : 'Romaneio'} · ${resumo.apelido}`
 
   return (
@@ -317,8 +357,8 @@ function VisaoRomaneio({ resumo, baixando, onBaixar, onClose }: {
       descricao={<>{resumo.nome}{resumo.calculoId ? ` · carga ${resumo.placaCarga ?? ''}` : ' · sem carga'}</>}
       acoes={
         <Botao variante="secundario" tamanho="sm" icone={Download} onClick={onBaixar} carregando={baixando}
-               aria-label={`Baixar ${resumo.tipo === 'frete' ? '.txt' : '.xlsx'}`}>
-          <span className="hidden sm:inline">Baixar {resumo.tipo === 'frete' ? '.txt' : '.xlsx'}</span>
+               aria-label="Baixar .xlsx">
+          <span className="hidden sm:inline">Baixar .xlsx</span>
         </Botao>
       }
     >

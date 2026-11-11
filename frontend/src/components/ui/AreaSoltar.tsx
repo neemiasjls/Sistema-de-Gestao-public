@@ -42,6 +42,8 @@ type Props = {
   textoCarregando?: ReactNode
   desabilitado?: boolean
   compacta?: boolean
+  /** Do tamanho de um botão comum (mostra só `textoBotao`), para ficar num canto; continua aceitando arrastar */
+  discreta?: boolean
   textoBotao?: string
   /** Texto dos tipos aceitos para o leitor de tela e a linha de baixo (padrão: montado de `aceita`) */
   descricaoTipos?: string
@@ -58,7 +60,7 @@ const temArquivos = (e: { dataTransfer: DataTransfer | null }) =>
 
 export default function AreaSoltar({
   aceita, onArquivos, titulo, dica, icone: Icone = FileUp, multiplos = true, carregando = false,
-  textoCarregando, desabilitado = false, compacta = false, textoBotao = 'Escolher arquivos', descricaoTipos, className = '',
+  textoCarregando, desabilitado = false, compacta = false, discreta = false, textoBotao = 'Escolher arquivos', descricaoTipos, className = '',
 }: Props) {
   const id = useId()
   const entrada = useRef<HTMLInputElement>(null)
@@ -111,6 +113,57 @@ export default function AreaSoltar({
   }
 
   const descricao = [idTipos, recusados.length ? idRecusa : ''].filter(Boolean).join(' ')
+
+  const entradaArquivo = (
+    <input
+      ref={entrada}
+      type="file"
+      accept={aceita.join(',')}
+      multiple={multiplos}
+      hidden
+      tabIndex={-1}
+      onChange={e => { receber(e.target.files); e.target.value = '' }}
+    />
+  )
+  const textoRecusa = recusados.length > 0 && <>
+    Ficou de fora (não é {tipos}{!multiplos ? ' ou passou de um' : ''}): <span className="break-all">{recusados.join(', ')}</span>
+  </>
+
+  // Discreta: um botão comum que também recebe arquivo arrastado. O tracejado
+  // só aparece enquanto se arrasta por cima, para dizer "pode soltar aqui".
+  if (discreta) return (
+    <div className={className}>
+      <button
+        type="button"
+        onClick={() => entrada.current?.click()}
+        onDragEnter={aoEntrar}
+        onDragOver={e => { if (temArquivos(e)) { e.preventDefault(); e.dataTransfer.dropEffect = travada ? 'none' : 'copy' } }}
+        onDragLeave={aoSair}
+        onDrop={aoSoltar}
+        disabled={travada}
+        aria-busy={carregando || undefined}
+        aria-describedby={descricao}
+        title={typeof titulo === 'string' ? titulo : undefined}
+        className={`inline-flex items-center justify-center gap-2 w-full rounded-lg px-4 min-h-11 sm:min-h-10 text-sm font-semibold
+          select-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 border
+          ${arrastando
+            ? 'border-dashed border-tinta-500 bg-tinta-50 text-tinta-800'
+            : 'border-gray-300 bg-white text-gray-800 hover:bg-gray-50 hover:border-gray-400'}`}
+      >
+        {carregando
+          ? <LoaderCircle size={18} className="animate-spin shrink-0" aria-hidden />
+          : <Icone size={18} strokeWidth={2} className="shrink-0" aria-hidden />}
+        {carregando ? (textoCarregando ?? 'Lendo os arquivos...') : arrastando ? 'Solte para enviar' : textoBotao}
+      </button>
+      {entradaArquivo}
+      <p id={idTipos} className="sr-only">
+        {multiplos ? `Aceita ${tipos}, vários de uma vez; dá para arrastar os arquivos até aqui` : `Aceita um arquivo ${tipos}; dá para arrastar até aqui`}
+      </p>
+      <p id={idRecusa} role="status" aria-live="polite" className={`text-sm font-medium text-amber-800 ${recusados.length ? 'mt-1' : 'sr-only'}`}>
+        {textoRecusa}
+      </p>
+    </div>
+  )
 
   return (
     <div className={className}>
@@ -171,23 +224,13 @@ export default function AreaSoltar({
         )}
       </button>
 
-      <input
-        ref={entrada}
-        type="file"
-        accept={aceita.join(',')}
-        multiple={multiplos}
-        hidden
-        tabIndex={-1}
-        onChange={e => { receber(e.target.files); e.target.value = '' }}
-      />
+      {entradaArquivo}
 
       <p id={idTipos} className={`text-xs text-gray-500 mt-1.5 ${compacta ? '' : 'text-center'}`}>
         {multiplos ? `Aceita ${tipos}, vários de uma vez` : `Aceita um arquivo ${tipos}`}
       </p>
       <p id={idRecusa} role="status" aria-live="polite" className={`text-sm font-medium text-amber-800 ${recusados.length ? 'mt-1' : 'sr-only'}`}>
-        {recusados.length > 0 && <>
-          Ficou de fora (não é {tipos}{!multiplos ? ' ou passou de um' : ''}): <span className="break-all">{recusados.join(', ')}</span>
-        </>}
+        {textoRecusa}
       </p>
     </div>
   )
