@@ -145,7 +145,19 @@ export default function ViagemCaminhaoPage() {
       await carregar()
       return r.id
     } catch (e) {
-      toast.error(await erroDaApi(e, 'Não consegui salvar a viagem.'))
+      const msg = await erroDaApi(e, 'Não consegui salvar a viagem.')
+      // Viagem desta placa e saída já existe (importada do acerto ou lançada antes): oferece abrir aquela
+      const existente = (e as { response?: { data?: { viagemId?: number } } })?.response?.data?.viagemId
+      if (existente) {
+        toast.error(t => (
+          <span>
+            {msg}{' '}
+            <Link to={`/viagens-caminhoes/${existente}`} className="font-semibold underline" onClick={() => { toast.dismiss(t.id); setMexido(false) }}>
+              Abrir a viagem
+            </Link>
+          </span>
+        ), { duration: 10000 })
+      } else toast.error(msg)
       return null
     } finally { setSalvando(false) }
   }

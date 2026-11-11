@@ -46,6 +46,7 @@ public class ViagensCaminhaoController(ViagensCaminhaoService svc, AuthService a
             var v = await svc.SalvarAsync(id, e, "escritorio", AuthController.UsuarioId(User));
             return Ok(new { id = v.Id });
         }
+        catch (ErroViagemExistente ex) { return BadRequest(new { erro = ex.Message, viagemId = ex.ViagemId }); }
         catch (ErroViagem ex) { return BadRequest(new { erro = ex.Message }); }
     }
 

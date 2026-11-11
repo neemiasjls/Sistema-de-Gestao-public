@@ -32,6 +32,12 @@ public record RetornoEntrada(
 
 public class ErroViagem(string mensagem) : Exception(mensagem);
 
+/// <summary>Viagem nova que já existe (mesma placa e saída): a tela oferece abrir a existente.</summary>
+public class ErroViagemExistente(string mensagem, int viagemId) : ErroViagem(mensagem)
+{
+    public int ViagemId { get; } = viagemId;
+}
+
 /// <summary>
 /// Viagens dos caminhões: guardar, calcular (ViagemCaminhaoCalculo), casar com o
 /// controle de carregamento e com os retornos, importar as planilhas antigas.
@@ -199,6 +205,16 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
     public async Task<ViagemCaminhao> SalvarAsync(int? id, ViagemEntrada e, string origem, int? usuarioId, MotoristaFrota? motoristaFixo = null)
     {
         var doMotorista = origem == "motorista";
+        // Ordem inversa (plano importacoes-mesclar, Parte 3): viagem nova da mesma placa e mesma saída de uma
+        // que já existe (importada do acerto ou lançada antes) nunca vira segunda viagem.
+        if (id == null && await ViagemMesmaSaidaAsync(e) is { } existente)
+        {
+            if (!doMotorista)
+                throw new ErroViagemExistente(
+                    $"Já existe viagem desta placa com saída em {existente.DataSaida:dd/MM} (situação {NomeSituacao(existente.Status)}): abra aquela.",
+                    existente.Id);
+            return await JuntarEnvioDoMotoristaAsync(existente, e, origem, usuarioId, motoristaFixo);
+        }
         ViagemCaminhao v;
         if (id is { } vid)
         {
@@ -377,6 +393,57 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
 
         db.ViagemCaminhaoCargas.RemoveRange(antigas);
         v.Cargas = novas;
+    }
+
+    /// <summary>
+    /// A viagem que já existe com a mesma placa e a mesma saída (graus chave/data da Regra de junção;
+    /// nunca "provável"). Vale também a importada do acerto (com chave): é a ordem inversa.
+    /// </summary>
+    private async Task<ViagemCaminhao?> ViagemMesmaSaidaAsync(ViagemEntrada e)
+    {
+        var placa = NormalizarPlaca(e.Placa);
+        if (placa.Length == 0 || e.DataSaida == null) return null;
+        return await db.ViagensCaminhao.Where(x => x.Placa == placa && x.DataSaida == e.DataSaida)
+            .OrderBy(x => x.Id).FirstOrDefaultAsync();
+    }
+
+    private static string NomeSituacao(string? s) => s switch { "conferida" => "conferida", "fechada" => "fechada", _ => "lançada" };
+
+    /// <summary>
+    /// Envio do motorista de uma viagem que já existe (suposição S2 do plano): lançada = o envio a corrige
+    /// (mesmo caminho do PUT); conferida/fechada = só entram as cargas anotadas que ainda não existem e a
+    /// observação; o resto não muda.
+    /// </summary>
+    private async Task<ViagemCaminhao> JuntarEnvioDoMotoristaAsync(ViagemCaminhao existente, ViagemEntrada e, string origem, int? usuarioId, MotoristaFrota? motoristaFixo)
+    {
+        if (existente.Status == "lancada")
+        {
+            var corrigida = await SalvarAsync(existente.Id, e, origem, usuarioId, motoristaFixo);
+            if (corrigida.EnviadoEm == null) { corrigida.EnviadoEm = DateTime.UtcNow; await db.SaveChangesAsync(); }
+            return corrigida;
+        }
+
+        var v = await ComTudo().FirstAsync(x => x.Id == existente.Id);
+        var ordem = v.Cargas.Count == 0 ? 0 : v.Cargas.Max(c => c.Ordem) + 1;
+        foreach (var c in e.Cargas ?? [])
+        {
+            var tipo = c.Tipo == "RETORNO" ? "RETORNO" : "VOLUMES";
+            var nova = new ViagemCaminhaoCarga
+            {
+                Ordem = ordem, Tipo = tipo, Transportadora = Limpo(c.Transportadora), Data = c.Data,
+                Origem = Limpo(c.Origem), Destino = Limpo(c.Destino), Valor = c.Valor,
+            };
+            if (v.Cargas.Any(a => a.Tipo == tipo && MesmaAnotacao(a, nova))) continue;
+            v.Cargas.Add(nova);
+            ordem++;
+        }
+        var obs = Limpo(e.Observacoes);
+        if (obs != null && !(v.Observacoes ?? "").Contains(obs))
+            v.Observacoes = v.Observacoes == null ? $"Motorista: {obs}" : $"{v.Observacoes}\nMotorista: {obs}";
+        v.EnviadoEm ??= DateTime.UtcNow;
+        await db.SaveChangesAsync();
+        await LigarAnotacoesAsync(v.Id);
+        return v;
     }
 
     private static bool MesmaAnotacao(ViagemCaminhaoCarga a, ViagemCaminhaoCarga b) =>
@@ -1216,7 +1283,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         var motoristas = await db.MotoristasFrota.AsNoTracking().ToListAsync();
         var tabela = await db.PrecosFreteCliente.AsNoTracking().ToListAsync();
         var avisos = new List<string>(lido.Avisos);
-        var criadas = 0; var puladas = 0; var iguais = 0; var substituidas = 0;
+        var criadas = 0; var puladas = 0; var iguais = 0; var substituidas = 0; var completadas = 0;
         var conferencia = new List<object>(); var viagens = new List<object>();
         var trocar = abasSubstituir?.Select(NormalizarAba).ToHashSet();
         var placaArquivo = NormalizarPlaca(lido.Placa);
@@ -1247,11 +1314,16 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
             {
                 jaAchadas.Add(existente.Id);
                 var retsSistema = await db.RetornosFrete.AsNoTracking().Where(r => r.ViagemId == existente.Id).ToListAsync();
+                // UI-22: o que a aba não traz fica como está no sistema (não entra na comparação nem na troca)
+                ManterOQueAPlanilhaNaoTraz(novo, existente);
+                var trocarRetornos = a.Retornos.Count > 0;
                 var difs = CompararComAcerto(existente, retsSistema, novo, a);
+                if (!trocarRetornos) difs.RemoveAll(d => d.Campo == "Retornos");
                 object Situacao(string s) => new
                 {
                     aba = a.Aba, situacao = s, grau, viagemId = existente.Id, origem = existente.Origem, status = existente.Status,
-                    saida = a.Saida, diferencas = difs.Select(d => new { campo = d.Campo, sistema = d.Sistema, arquivo = d.Arquivo }).ToList(),
+                    saida = a.Saida,
+                    diferencas = difs.Select(d => new { campo = d.Campo, sistema = d.Sistema, arquivo = d.Arquivo, completou = FaltavaNoSistema(d) }).ToList(),
                 };
                 if (grau == ViagemCasamento.Provavel)
                 {
@@ -1260,22 +1332,36 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
                     difs.Insert(0, new("Data de saída", existente.DataSaida?.ToString("dd/MM/yyyy") ?? "(vazio)", a.Saida?.ToString("dd/MM/yyyy") ?? "(vazio)"));
                     if (trocar?.Contains(NormalizarAba(a.Aba)) != true) { puladas++; viagens.Add(Situacao("CONFIRMAR")); continue; }
                     await LiberarChaveAsync(chave, existente.Id, a.Aba, avisos);
-                    await SubstituirPeloAcertoAsync(existente, novo, a, lido, avisos);
+                    await SubstituirPeloAcertoAsync(existente, novo, a, lido, avisos, trocarRetornos);
                     await LigarCarregamentoSemTrocarAsync(existente, a.Aba, avisos);
                     substituidas++; viagens.Add(Situacao("SUBSTITUIDA"));
                     continue;
                 }
-                if (difs.Count == 0) { iguais++; puladas++; viagens.Add(Situacao("IGUAL")); continue; }
-                if (!(trocar?.Contains(NormalizarAba(a.Aba)) ?? substituir))
+                if (difs.Count == 0)
                 {
-                    if (existente.Status == "fechada" && existente.Origem != "importacao")
-                        difs.Insert(0, new("Situação", "Fechada no sistema", "Substituir troca uma viagem já fechada"));
-                    puladas++; viagens.Add(Situacao("CONFIRMAR")); continue;
+                    // Casou pela data: grava a chave da aba (não muda valor; a próxima importação casa pela chave)
+                    if (existente.ChaveImportacao != chave)
+                    {
+                        await LiberarChaveAsync(chave, existente.Id, a.Aba, avisos);
+                        existente.ChaveImportacao = chave;
+                        await db.SaveChangesAsync();
+                    }
+                    iguais++; puladas++; viagens.Add(Situacao("IGUAL")); continue;
                 }
+                // UI-22 (Admin, 10/11/2026): casou pela chave ou pela data = preenche sozinho o que falta e
+                // substitui sozinho o valor diferente, sem pedir confirmação; o resultado avisa cada troca.
+                // PERGUNTA EM ABERTO ao Admin: viagem conferida/fechada no sistema também é substituída
+                // (só com aviso). Se ele quiser proteger a fechada, é aqui que ela passa a pedir confirmação.
+                var trocas = difs.Where(d => !FaltavaNoSistema(d)).ToList();
+                foreach (var d in trocas)
+                    avisos.Add($"{a.Aba}: já tinha {d.Campo} no sistema, substituído: {d.Sistema} → {d.Arquivo}.");
+                if (trocas.Count > 0 && existente.Status is "fechada" or "conferida")
+                    avisos.Add($"{a.Aba}: a viagem {existente.Id} estava {NomeSituacao(existente.Status)} no sistema e foi atualizada pela planilha.");
                 await LiberarChaveAsync(chave, existente.Id, a.Aba, avisos);
-                await SubstituirPeloAcertoAsync(existente, novo, a, lido, avisos);
+                await SubstituirPeloAcertoAsync(existente, novo, a, lido, avisos, trocarRetornos);
                 await LigarCarregamentoSemTrocarAsync(existente, a.Aba, avisos);
-                substituidas++; viagens.Add(Situacao("SUBSTITUIDA"));
+                if (trocas.Count == 0) { completadas++; viagens.Add(Situacao("COMPLETADA")); }
+                else { substituidas++; viagens.Add(Situacao("SUBSTITUIDA")); }
                 continue;
             }
 
@@ -1316,7 +1402,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
                 comissao = c.Comissao, comissaoPlanilha = a.Conferencia.GetValueOrDefault("ComissaoPlanilha"), sobra = c.Sobra,
             });
         }
-        return new { arquivo = nome, placa = lido.Placa, mes = lido.Mes, ano = lido.Ano, criadas, puladas, iguais, substituidas, avisos, conferencia, viagens };
+        return new { arquivo = nome, placa = lido.Placa, mes = lido.Mes, ano = lido.Ano, criadas, puladas, iguais, substituidas, completadas, avisos, conferencia, viagens };
     }
 
     private static string NormalizarAba(string aba) => aba.ToUpperInvariant().Replace(" ", "");
@@ -1344,6 +1430,46 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         Abastecimentos = a.Abastecimentos.Select((x, i) => new ViagemCaminhaoAbastecimento { Ordem = i, Valor = x.Valor, Forma = x.Forma, Local = x.Observacao }).ToList(),
         Despesas = a.Despesas.Select((d, i) => new ViagemCaminhaoDespesa { Ordem = i, Tipo = d.Tipo, Descricao = d.Descricao, Valor = d.Valor, Observacao = d.Observacao }).ToList(),
     };
+
+    /// <summary>
+    /// UI-22 (Admin, 10/11/2026): campo vazio na planilha mantém o do sistema. Põe em <paramref name="novo"/>
+    /// (a aba montada) o valor do sistema onde a aba não traz nada; assim a comparação e a troca só
+    /// mexem no que a planilha de fato tem. Zero em levou/diárias/% conta como vazio (célula em branco).
+    /// </summary>
+    private static void ManterOQueAPlanilhaNaoTraz(ViagemCaminhao novo, ViagemCaminhao s)
+    {
+        if (novo.MotoristaId == null && string.IsNullOrWhiteSpace(novo.MotoristaNome)) { novo.MotoristaId = s.MotoristaId; novo.MotoristaNome = s.MotoristaNome; }
+        if (string.IsNullOrWhiteSpace(novo.PlacaCarreta)) novo.PlacaCarreta = s.PlacaCarreta;
+        if (string.IsNullOrWhiteSpace(novo.Destino)) novo.Destino = s.Destino;
+        novo.DataChegada ??= s.DataChegada;
+        novo.KmSaida ??= s.KmSaida;
+        novo.KmChegada ??= s.KmChegada;
+        novo.Litros ??= s.Litros;
+        if (novo.Levou == 0) novo.Levou = s.Levou;
+        if (novo.DiariasQuantidade == 0) { novo.DiariasQuantidade = s.DiariasQuantidade; novo.ValorDiaria = s.ValorDiaria; }
+        if (novo.PorcentagemComissao == 0) novo.PorcentagemComissao = s.PorcentagemComissao;
+        if (novo.Volumes.Count == 0)
+            novo.Volumes = s.Volumes.Select(o => new ViagemCaminhaoVolumes
+            {
+                Ordem = o.Ordem, Cliente = o.Cliente, CaixasVolumes = o.CaixasVolumes, CaixasProdutoE = o.CaixasProdutoE, CaixasProdutoD = o.CaixasProdutoD,
+                ProdutosB = o.ProdutosB, ProdutosBAmarelas = o.ProdutosBAmarelas, ProdutosBBrancas = o.ProdutosBBrancas, ProdutosC = o.ProdutosC,
+                ValorCaixa = o.ValorCaixa, ValorProdutoE = o.ValorProdutoE, ValorProdutoD = o.ValorProdutoD, ValorProdutoB = o.ValorProdutoB, ValorProdutoC = o.ValorProdutoC,
+            }).ToList();
+        if (novo.Abastecimentos.Count == 0)
+            novo.Abastecimentos = s.Abastecimentos.Select(x => new ViagemCaminhaoAbastecimento
+            {
+                Ordem = x.Ordem, Data = x.Data, Km = x.Km, Litros = x.Litros, Valor = x.Valor, Local = x.Local, Observacao = x.Observacao, Forma = x.Forma,
+            }).ToList();
+        if (novo.Despesas.Count == 0)
+            novo.Despesas = s.Despesas.Select(d => new ViagemCaminhaoDespesa
+            {
+                Ordem = d.Ordem, Tipo = d.Tipo, Descricao = d.Descricao, Valor = d.Valor, Observacao = d.Observacao,
+            }).ToList();
+    }
+
+    /// <summary>A diferença é "falta no sistema" (o sistema não tinha nada) e não um valor trocado.</summary>
+    private static bool FaltavaNoSistema(DiferencaAcerto d) =>
+        d.Sistema is "(vazio)" or "(não tem)" or "(nenhum)" || d.Sistema.StartsWith("R$ 0,00");
 
     /// <summary>
     /// Viagem do sistema que é a da aba, pela regra única de casamento (<see cref="ViagemCasamento"/>):
@@ -1483,7 +1609,8 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
     /// retornos. Ficam as anotações do motorista (cargas), o carregamento ligado, a situação e a
     /// origem. Retorno ligado a uma anotação do motorista continua na viagem mesmo sem par na aba.
     /// </summary>
-    private async Task SubstituirPeloAcertoAsync(ViagemCaminhao v, ViagemCaminhao novo, ViagemLida a, AcertoLido lido, List<string> avisos)
+    private async Task SubstituirPeloAcertoAsync(ViagemCaminhao v, ViagemCaminhao novo, ViagemLida a, AcertoLido lido, List<string> avisos,
+        bool trocarRetornos = true)
     {
         if (novo.MotoristaId != null || v.MotoristaId == null) { v.MotoristaId = novo.MotoristaId; v.MotoristaNome = novo.MotoristaNome; }
         v.Placa = novo.Placa; v.PlacaCarreta = novo.PlacaCarreta; v.Destino = novo.Destino;
@@ -1498,6 +1625,8 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         db.RemoveRange(v.Volumes); v.Volumes.Clear(); v.Volumes.AddRange(novo.Volumes);
         db.RemoveRange(v.Abastecimentos); v.Abastecimentos.Clear(); v.Abastecimentos.AddRange(novo.Abastecimentos);
         db.RemoveRange(v.Despesas); v.Despesas.Clear(); v.Despesas.AddRange(novo.Despesas);
+        // Aba sem retorno nenhum (UI-22): os retornos da viagem ficam como estão
+        if (!trocarRetornos) { await db.SaveChangesAsync(); return; }
 
         // Retornos: os da importação anterior "fora do controle" saem (voltam se a aba ainda os tiver);
         // os da folha antiga do motorista não conferidos saem, como no excluir; o resto se solta e

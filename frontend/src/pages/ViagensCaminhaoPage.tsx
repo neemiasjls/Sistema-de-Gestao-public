@@ -138,18 +138,22 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
       {importar && (
         <AreaSoltar aceita={['.xlsx', '.xls']} onArquivos={importarAcerto} carregando={importando} textoCarregando="Lendo as abas..."
                     titulo="Arraste a planilha do acerto do caminhão" icone={FileSpreadsheet}
-                    dica="9-V -SETEMBRO-2026.xlsx. Importe antes os retornos do mês, para casar. Viagem que já está aqui mostra as diferenças antes de trocar." />
+                    dica="9-V -SETEMBRO-2026.xlsx. Importe antes os retornos do mês, para casar. Viagem que já está aqui é completada e atualizada pela planilha, com aviso de cada troca." />
       )}
       {resultado && (
         <ListaResultado titulo="Acertos importados" onFechar={() => setResultado(null)} itens={resultado.map((r, i) => {
           const dif = (r.conferencia ?? []).filter(c => !c.confere)
           return {
             chave: `${r.arquivo}-${i}`, nome: `${r.arquivo}${r.placa ? ` · ${r.placa}` : ''}`, erro: r.erro, problema: dif.length > 0,
-            avisos: [...(r.avisos ?? []), ...dif.map(c => `${c.aba}: ${c.diferencas.join('; ')}`)],
+            avisos: [
+              ...(r.viagens ?? []).flatMap(v => v.diferencas.filter(d => d.completou && v.situacao !== 'CONFIRMAR')
+                .map(d => `${v.aba}: faltava ${d.campo} no sistema, entrou ${d.arquivo}.`)),
+              ...(r.avisos ?? []), ...dif.map(c => `${c.aba}: ${c.diferencas.join('; ')}`)],
             linha: <>{r.mes && r.ano ? mesExtenso(r.mes, r.ano) : ''} · {r.criadas} viagens novas
               {(r.iguais ?? 0) > 0 && <> · {r.iguais} já estavam iguais</>}
+              {(r.completadas ?? 0) > 0 && <> · {r.completadas} completadas</>}
               {(r.substituidas ?? 0) > 0 && <> · {r.substituidas} substituídas</>}
-              {esperando(r) > 0 && <> · {esperando(r)} com diferença, sem trocar</>}
+              {esperando(r) > 0 && <> · {esperando(r)} parecidas com outra viagem, esperando confirmar</>}
               {' · '}{(r.conferencia ?? []).length - dif.length} de {(r.conferencia ?? []).length} abas conferem com a planilha</>,
           }
         })} />

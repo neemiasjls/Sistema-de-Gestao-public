@@ -166,14 +166,15 @@ export type ResultadoReler = {
   volumes: number; produtoE: number; produtoD: number; amarelas: number; brancas: number; produtosC: number; avisos: string[]
 }
 
-/** Situação de cada aba na importação (VIA-23): CONFIRMAR espera Cancelar ou Substituir. */
+/** Situação de cada aba na importação (UI-22): COMPLETADA e SUBSTITUIDA gravam sozinhas; só a provável (CONFIRMAR) espera. */
 export type ViagemDoAcerto = {
-  aba: string; situacao: 'NOVA' | 'IGUAL' | 'CONFIRMAR' | 'SUBSTITUIDA'; viagemId: number; origem: string; status: StatusViagem; saida: string | null
-  diferencas: { campo: string; sistema: string; arquivo: string }[]
+  aba: string; situacao: 'NOVA' | 'IGUAL' | 'CONFIRMAR' | 'SUBSTITUIDA' | 'COMPLETADA'; grau?: string | null
+  viagemId: number; origem: string; status: StatusViagem; saida: string | null
+  diferencas: { campo: string; sistema: string; arquivo: string; completou?: boolean }[]
 }
 export type ResultadoAcerto = {
   arquivo: string; erro?: string; placa?: string; mes?: number; ano?: number; criadas?: number; puladas?: number
-  iguais?: number; substituidas?: number; viagens?: ViagemDoAcerto[]
+  iguais?: number; substituidas?: number; completadas?: number; viagens?: ViagemDoAcerto[]
   avisos?: string[]; conferencia?: { aba: string; viagemId: number; confere: boolean; diferencas: string[]; comissao: number; comissaoPlanilha: number | null; sobra: number }[]
 }
 export type ResultadoCarregamento = {
