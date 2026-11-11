@@ -759,7 +759,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
             if (donos.Dono(placa) != DonosDasPlacas.Bento)
             {
                 var dono = donos.SocioDe(placa) is { } s ? DonosDasPlacas.Nome(s) : "sem dono no cadastro";
-                l.Avisos.Add($"Placa {placa} ({dono}) ficou de fora: só entram os caminhões do Bento.");
+                l.Avisos.Add($"Placa {placa} ({dono}) não é placa do Bento: não foi importada.");
                 resultado.Add(new { aba = l.Aba, guardado = false, avisos = l.Avisos });
                 continue;
             }
