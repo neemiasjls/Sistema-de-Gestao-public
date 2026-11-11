@@ -94,7 +94,7 @@ export const secoesMenu: SecaoMenu[] = [
   {
     titulo: 'Cadastros e arquivos',
     itens: [
-      { to: '/precos',    label: 'Preços',         icon: Tags },
+      { to: '/precos',    label: 'Clientes',       icon: Tags },
       { to: '/tipos-volume', label: 'Tipos de volumes',  icon: Egg },
       { to: '/notas',     label: 'Notas fiscais',  icon: FolderArchive },
     ],

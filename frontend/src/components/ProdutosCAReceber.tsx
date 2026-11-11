@@ -123,7 +123,7 @@ export default function ProdutosCAReceber() {
 
       {resumo && resumo.semPreco > 0 && (
         <Aviso tipo="atencao">
-          {resumo.semPreco === 1 ? '1 venda está' : `${resumo.semPreco} vendas estão`} sem o preço da produtoC do cliente: cadastre em Preços → Venda.
+          {resumo.semPreco === 1 ? '1 venda está' : `${resumo.semPreco} vendas estão`} sem o preço da produtoC do cliente: cadastre em Clientes → Venda.
         </Aviso>
       )}
 
@@ -295,7 +295,7 @@ function ModalVendaProdutoC({ venda, onClose, onSalvou }: { venda: Venda | null;
       </Campo>
       {clienteId !== '' && (preco > 0
         ? <p className="text-sm text-gray-700 tabular-nums">{brl(preco)} por pacote · valor <b>{brl(valor)}</b>{venda && venda.preco > 0 && venda.clienteId === clienteId ? ' (fica o preço gravado na venda)' : ''}</p>
-        : <Aviso tipo="atencao">Este cliente não tem preço de produtoC em Preços → Venda: a venda fica sem valor.</Aviso>)}
+        : <Aviso tipo="atencao">Este cliente não tem preço de produtoC em Clientes → Venda: a venda fica sem valor.</Aviso>)}
     </Modal>
   )
 }

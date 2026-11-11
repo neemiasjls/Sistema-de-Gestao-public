@@ -120,7 +120,7 @@ export default function ClientesEstoqueModal({ aberto, onClose, tipos, onSalvou,
     .sort((a, b) => foco === 'produtoA' ? Number(b.precoProdutoAKg > 0) - Number(a.precoProdutoAKg > 0) : 0)
 
   return (
-    <Modal titulo="Clientes e preços" descricao="O que cada cliente paga. O custo vem da carga. Os preços de todos os clientes também estão no painel Preços." largura="lg"
+    <Modal titulo="Clientes e preços" descricao="O que cada cliente paga. O custo vem da carga. Os preços de todos os clientes também estão na tela Clientes." largura="lg"
            onClose={onClose} sujo={sujo} classeCorpo="px-4 pb-4 space-y-2">
         {/* A busca fica presa no topo enquanto a lista rola */}
         <div className="sticky top-0 z-10 -mx-4 px-4 py-3 bg-white border-b border-gray-100 flex gap-2">
