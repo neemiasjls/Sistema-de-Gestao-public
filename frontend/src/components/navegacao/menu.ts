@@ -122,7 +122,7 @@ export function casa(pathname: string, to: string, exact?: boolean) {
 
 // Telas com rodapé fixo próprio (o Salvar do Anotar produtoB): a barra de baixo
 // sairia por cima dele, então nelas ela não aparece e o menu volta para o topo.
-const SEM_BARRA = [/^\/estoque\/volumes\/anotar\/?$/, /^\/estoque\/volumes\/\d+\/editar\/?$/]
+const SEM_BARRA = [/^\/produtosA\/?$/, /^\/estoque\/volumes\/anotar\/?$/, /^\/estoque\/volumes\/\d+\/editar\/?$/]
 export const temRodapeProprio = (pathname: string) => SEM_BARRA.some(r => r.test(pathname))
 
 // Nome da tela atual e do grupo dela, para o título da barra de cima.
@@ -131,5 +131,6 @@ export function paginaAtual(pathname: string): { secao?: string; label: string }
     for (const item of secao.itens)
       if (casa(pathname, item.to, item.exact)) return { secao: secao.titulo, label: item.label }
   if (pathname.startsWith('/perfil')) return { label: 'Meu perfil' }
+  if (pathname.startsWith('/produtosA')) return { label: 'Portal das produtosA' }
   return { label: 'TRX Transportes' }
 }

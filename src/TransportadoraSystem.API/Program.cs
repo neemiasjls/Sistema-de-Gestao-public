@@ -1,4 +1,5 @@
 using System.Text;
+using Microsoft.AspNetCore.HttpOverrides;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
@@ -25,13 +26,36 @@ builder.Services.AddRateLimiter(opt =>
             QueueLimit  = 0,
         }));
 
+    // Portal das produtosA (anônimo), por IP. O barracão sai com um IP só pelo Wi-Fi: cada rota tem a
+    // sua cota, para quem confere o QR não travar quem cria a conta.
+    //   produtosA-codigo:  conferir o código do QR, 30 por minuto;
+    //   cadastro:        criar conta, 10 a cada 15 min;
+    //   esqueci-senha:   5 a cada 15 min.
+    static void PorIp(RateLimiterOptions opt, string nome, int limite, TimeSpan janela) =>
+        opt.AddPolicy(nome, ctx => RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "sem-ip",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = limite,
+                Window      = janela,
+                QueueLimit  = 0,
+            }));
+    PorIp(opt, "produtosA-codigo", 30, TimeSpan.FromMinutes(1));
+    PorIp(opt, "cadastro", 10, TimeSpan.FromMinutes(15));
+    PorIp(opt, "esqueci-senha", 5, TimeSpan.FromMinutes(15));
+
     opt.OnRejected = async (ctx, _) =>
     {
         ctx.HttpContext.Response.ContentType = "application/json";
-        await ctx.HttpContext.Response.WriteAsJsonAsync(new
+        var path = ctx.HttpContext.Request.Path.Value?.ToLowerInvariant() ?? "";
+        var erro = path switch
         {
-            erro = "Muitas tentativas de login. Aguarde um minuto e tente de novo."
-        });
+            "/api/auth/produtosA/codigo" => "Muitas tentativas. Aguarde um minuto e tente de novo.",
+            "/api/auth/produtosA/cadastro" => "Muitas contas criadas daqui. Aguarde 15 minutos e tente de novo.",
+            "/api/auth/produtosA/esqueci-senha" => "Muitos pedidos de senha nova. Aguarde 15 minutos e tente de novo.",
+            _ => "Muitas tentativas de login. Aguarde um minuto e tente de novo.",
+        };
+        await ctx.HttpContext.Response.WriteAsJsonAsync(new { erro });
     };
 });
 
@@ -43,6 +67,7 @@ builder.Services.AddDbContext<AppDbContext>(opt =>
 
 // ── Serviços ───────────────────────────────────────────────────────
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddScoped<PortalProdutosAHistoricoService>();
 builder.Services.AddScoped<StradaService>();
 builder.Services.AddHttpClient<EmailService>();
 // Sicoob: o certificado A1 vai na conexão (mTLS), por isso o handler próprio
@@ -77,6 +102,7 @@ builder.Services.AddScoped<FechamentoMensalService>();
 builder.Services.AddScoped<EstoqueVendasService>();
 builder.Services.AddScoped<PrecosClienteService>();
 builder.Services.AddScoped<EmbaladosService>();
+builder.Services.AddScoped<ProdutosASaidaService>();
 builder.Services.AddScoped<BarracaoService>();
 builder.Services.AddScoped<TransportadoraSystem.API.Controllers.CobrancasAbastecimentoGuarda>();
 
@@ -283,6 +309,14 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+// IP real de quem chama: a Render fica na frente e põe o IP no X-Forwarded-For. Só o último
+// valor (o que o proxy da Render acrescentou) vale; o que o próprio cliente mandar antes é ignorado.
+// Sem isso o limite de tentativas contaria todo mundo junto, pelo IP do proxy.
+var cabecalhos = new ForwardedHeadersOptions { ForwardedHeaders = ForwardedHeaders.XForwardedFor, ForwardLimit = 1 };
+cabecalhos.KnownNetworks.Clear();
+cabecalhos.KnownProxies.Clear();
+app.UseForwardedHeaders(cabecalhos);
+
 app.UseCors();
 app.UseRateLimiter();
 app.UseAuthentication();
@@ -295,7 +329,7 @@ app.Use(async (ctx, next) =>
 {
     var provisoria = ctx.User.FindFirst(AuthService.ClaimTrocarSenha)?.Value == "true";
     var path = ctx.Request.Path.Value?.ToLowerInvariant() ?? "";
-    if (provisoria && path.StartsWith("/api/") && path != "/api/auth/me" && path != "/api/auth/trocar-senha")
+    if (provisoria && path.StartsWith("/api/", StringComparison.Ordinal) && path != "/api/auth/me" && path != "/api/auth/trocar-senha")
     {
         ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
         await ctx.Response.WriteAsJsonAsync(new { erro = "Crie a sua senha antes de continuar.", trocarSenha = true });
@@ -304,17 +338,57 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
-// Perfil motorista: só o painel dele (a folha da viagem) e o "quem sou eu". O resto
-// da API responde 403 — a tela também esconde, mas quem garante é aqui.
+// Perfis restritos: cada um só chama a sua lista; o resto da API responde 403 — a tela também
+// esconde, mas quem garante é aqui. Fechado por padrão: perfil que não está na lista (inventado,
+// digitado errado) só chega ao "quem sou eu". Escritório ("") não passa por aqui.
+//   motorista: o painel dele (a folha da viagem);
+//   produtosA:   o portal das produtosA (EST-09) e a troca da própria senha.
+var acessoPorPerfil = new Dictionary<string, (string[] Exatas, string[] Prefixos, string Erro)>
+{
+    [AuthService.PerfilMotorista] = (["/api/auth/me"], ["/api/motorista-painel/"], "Acesso só ao painel do motorista."),
+    [AuthService.PerfilProdutosA]   = (["/api/auth/me", "/api/auth/trocar-senha"], ["/api/produtosA-portal/"], "Acesso só ao portal das produtosA."),
+};
 app.Use(async (ctx, next) =>
 {
-    var motorista = ctx.User.FindFirst(AuthService.ClaimPerfil)?.Value == AuthService.PerfilMotorista;
+    var perfil = ctx.User.FindFirst(AuthService.ClaimPerfil)?.Value ?? "";
     var path = ctx.Request.Path.Value?.ToLowerInvariant() ?? "";
-    if (motorista && path.StartsWith("/api/") && path != "/api/auth/me" && !path.StartsWith("/api/motorista-painel/"))
+    if (perfil.Length == 0 || !path.StartsWith("/api/", StringComparison.Ordinal)) { await next(); return; }
+
+    if (!acessoPorPerfil.TryGetValue(perfil, out var acesso))
+    {
+        if (path != "/api/auth/me")
+        {
+            ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await ctx.Response.WriteAsJsonAsync(new { erro = "Acesso não liberado para este perfil." });
+            return;
+        }
+        await next();
+        return;
+    }
+
+    if (!acesso.Exatas.Contains(path, StringComparer.Ordinal) && !acesso.Prefixos.Any(p => path.StartsWith(p, StringComparison.Ordinal)))
     {
         ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
-        await ctx.Response.WriteAsJsonAsync(new { erro = "Acesso só ao painel do motorista.", motorista = true });
+        if (perfil == AuthService.PerfilMotorista)
+            await ctx.Response.WriteAsJsonAsync(new { erro = acesso.Erro, motorista = true });
+        else
+            await ctx.Response.WriteAsJsonAsync(new { erro = acesso.Erro, produtosA = true });
         return;
+    }
+
+    // Portal das produtosA: o token vale 30 dias, então a cada pedido confere no banco se a conta
+    // segue ativa e do perfil produtosA. Desativar corta na hora.
+    if (perfil == AuthService.PerfilProdutosA)
+    {
+        var id = TransportadoraSystem.API.Controllers.AuthController.UsuarioId(ctx.User) ?? 0;
+        var db = ctx.RequestServices.GetRequiredService<AppDbContext>();
+        var ativa = id > 0 && await db.Usuarios.AnyAsync(u => u.Id == id && u.Ativo && u.Perfil == AuthService.PerfilProdutosA);
+        if (!ativa)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await ctx.Response.WriteAsJsonAsync(new { erro = "Sua conta foi desativada ou a sessão terminou. Entre de novo.", sessaoEncerrada = true });
+            return;
+        }
     }
     await next();
 });
@@ -351,7 +425,7 @@ app.MapGet("/health/tabelas", async (AppDbContext db) =>
         "FechamentosMensais", "FechamentoDespesas", "FechamentoCreditos", "FechamentoVales", "Consorcios",
         "DespesasDivididasLinhas", "DespesasDivididasSocios", "DespesasDivididasPlacas", "PlacasFrota", "MotoristasCnhPdf",
         "AgrotradeViagens", "StradaFaturas", "StradaContratos", "StradaArquivos",
-        "ConfigEmissaoBoleto",
+        "ConfigEmissaoBoleto", "PortalProdutosAHistorico", "PortalProdutosAConfig",
     ];
 
     try

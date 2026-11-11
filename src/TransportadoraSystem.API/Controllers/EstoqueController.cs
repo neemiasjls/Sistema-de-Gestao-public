@@ -19,7 +19,7 @@ namespace TransportadoraSystem.API.Controllers;
 [ApiController]
 [Route("api/estoque")]
 public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios, EstoqueVendasService vendas,
-    EmbaladosService embalados) : ControllerBase
+    EmbaladosService embalados, ProdutosASaidaService saidas, PortalProdutosAHistoricoService historico) : ControllerBase
 {
     // ── Clientes e preços ─────────────────────────────────────────────────
 
@@ -74,6 +74,11 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
 
         if (!string.IsNullOrWhiteSpace(dto.Nome)) cliente.Nome = dto.Nome.Trim().ToUpperInvariant();
         cliente.Cidade = dto.Cidade;
+        // Cliente que estava sem preço por kg (ex.: cadastrado pelo portal, EST-09): o preço novo vale
+        // para as saídas dele que ficaram a R$ 0. As que já tinham preço continuam congeladas.
+        if (cliente.PrecoProdutoAKg == 0 && dto.PrecoProdutoAKg > 0 && !EmbaladosService.EhEmbalado(cliente.Nome))
+            await db.VendasProdutoA.Where(v => v.ClienteId == id && v.PrecoKg == 0)
+                .ExecuteUpdateAsync(s => s.SetProperty(v => v.PrecoKg, dto.PrecoProdutoAKg).SetProperty(v => v.AtualizadoEm, DateTime.UtcNow));
         cliente.PrecoProdutoAKg = dto.PrecoProdutoAKg;
         if (dto.FreteProdutoB.HasValue) cliente.FreteProdutoB = dto.FreteProdutoB.Value;
         if (dto.FreteProdutoC.HasValue) cliente.FreteProdutoC = dto.FreteProdutoC.Value;
@@ -179,6 +184,13 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
             .Select(g => new { ClienteId = g.Key, Ultimo = g.Max(v => v.Numero) })
             .ToDictionaryAsync(x => x.ClienteId, x => x.Ultimo ?? 0);
 
+        // Anotadas no celular (EST-09): quem anotou e as marcas do histórico
+        var anotadas = carga.Vendas.Where(v => v.AnotadaPorUsuarioId != null).ToList();
+        var idsQuem = anotadas.Select(v => v.AnotadaPorUsuarioId!.Value).Distinct().ToList();
+        var nomes = idsQuem.Count == 0 ? new Dictionary<int, string>()
+            : await db.Usuarios.Where(u => idsQuem.Contains(u.Id)).ToDictionaryAsync(u => u.Id, u => u.Nome);
+        var (semLote, depoisDoRomaneio) = await VendasMarcadasAsync(anotadas.Select(v => v.Id).ToList());
+
         var vendas = carga.Vendas
             .OrderByDescending(v => v.Data).ThenByDescending(v => v.Id)
             .Select(v =>
@@ -205,6 +217,11 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
                     comissao = valor - custo,
                     produtosA = v.ProdutosA.OrderBy(b => b.Id)
                                        .Select(b => new { b.Id, b.PesoGramas }),
+                    anotadaPor = v.AnotadaPorUsuarioId == null ? null
+                        : nomes.TryGetValue(v.AnotadaPorUsuarioId.Value, out var nome) ? nome : "conta apagada",
+                    v.AnotadaEm,
+                    semLoteEmAberto = semLote.Contains(v.Id),
+                    alteradaDepoisDoRomaneio = depoisDoRomaneio.Contains(v.Id),
                 };
             });
 
@@ -316,31 +333,8 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
         if (pesos.Count == 0)
             return BadRequest(new { erro = "Informe o peso de pelo menos uma produtoA." });
 
-        var venda = new VendaProdutoA
-        {
-            CargaId = carga.Id,
-            ClienteId = cliente.Id,
-            Data = dto.Data,
-            Espessura = dto.Espessura,
-            // ProdutoA do embalado sai pelo custo (VOLUME-20)
-            PrecoKg = EmbaladosService.EhEmbalado(cliente.Nome) ? carga.CustoKg : cliente.PrecoProdutoAKg,
-            CustoKg = carga.CustoKg,
-            Observacao = dto.Observacao,
-            ProdutosA = pesos.Select(p => new ProdutoAVendida { PesoGramas = p }).ToList(),
-        };
-        db.VendasProdutoA.Add(venda);
-        await db.SaveChangesAsync();
-        if (EmbaladosService.EhEmbalado(cliente.Nome)) await embalados.SincronizarProdutosAEmbaladoAsync();
-
-        // Saiu a última produtoA: a carga acaba e a próxima venda vai para a nova.
-        int vendidas = await db.ProdutosAVendidas.CountAsync(b => b.Venda!.CargaId == carga.Id);
-        bool acabou = vendidas >= carga.Quantidade;
-        if (acabou && !carga.Encerrada)
-        {
-            carga.Encerrada = true;
-            carga.AtualizadoEm = DateTime.UtcNow;
-            await db.SaveChangesAsync();
-        }
+        // Preço do cliente (embalado pelo custo, VOLUME-20), encerra a carga na última produtoA
+        var (venda, acabou) = await saidas.CriarAsync(carga, cliente, dto.Data, dto.Espessura, dto.Observacao, pesos);
 
         return Created($"/api/estoque/produtosA/{carga.Id}", new { venda.Id, cargaEncerrada = acabou });
     }
@@ -350,10 +344,91 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
     {
         var venda = await db.VendasProdutoA.FindAsync(id);
         if (venda == null) return NotFound();
-        db.VendasProdutoA.Remove(venda);
-        await db.SaveChangesAsync();
-        await embalados.SincronizarProdutosAEmbaladoAsync();
+
+        if (venda.AnotadaPorUsuarioId == null)
+        {
+            await saidas.ExcluirAsync(venda);
+            return NoContent();
+        }
+
+        // Anotada no celular (EST-09): o histórico do dono guarda o retrato de antes, na mesma transação
+        await db.Entry(venda).Collection(v => v.ProdutosA).LoadAsync();
+        await db.Entry(venda).Reference(v => v.Cliente).LoadAsync();
+        var quemAnotou = await db.Usuarios.Where(u => u.Id == venda.AnotadaPorUsuarioId)
+            .Select(u => u.Nome).FirstOrDefaultAsync();
+        var eu = AuthController.UsuarioId(User);
+        var meuNome = eu == null ? "" : await db.Usuarios.Where(u => u.Id == eu).Select(u => u.Nome).FirstOrDefaultAsync() ?? "";
+        var pesosAntes = venda.ProdutosA.OrderBy(b => b.Id).Select(b => b.PesoGramas).ToList();
+
+        await using var tx = await db.Database.BeginTransactionAsync();
+        historico.Adicionar(eu, meuNome, PortalProdutosAHistoricoService.AnotacaoExcluidaNoSistema,
+            $"Excluiu no sistema a anotação de {quemAnotou ?? "?"}: {venda.Cliente?.Nome}, {venda.Data:dd/MM/yyyy}, {pesosAntes.Count} produtoA(s)",
+            venda.Id,
+            antes: new { data = venda.Data, cliente = venda.Cliente?.Nome, pesos = pesosAntes, anotadaPor = quemAnotou, numero = venda.Numero },
+            ip: HttpContext.Connection.RemoteIpAddress?.ToString());
+        await saidas.ExcluirAsync(venda);
+        await tx.CommitAsync();
         return NoContent();
+    }
+
+    /// <summary>
+    /// Avisos do topo da tela de ProdutosA: clientes sem preço por kg com saída a R$ 0 (o preço se acerta
+    /// no cadastro do cliente e passa para essas saídas) e anotações do celular que caíram sem lote em aberto.
+    /// </summary>
+    [HttpGet("produtosA/avisos")]
+    public async Task<IActionResult> AvisosProdutosA()
+    {
+        var semPreco = (await db.VendasProdutoA
+                .Where(v => v.PrecoKg == 0 && v.Cliente!.PrecoProdutoAKg == 0)
+                .GroupBy(v => new { v.ClienteId, v.Cliente!.Nome })
+                .Select(g => new { id = g.Key.ClienteId, nome = g.Key.Nome, saidas = g.Count() })
+                .ToListAsync())
+            .Where(c => !EmbaladosService.EhEmbalado(c.nome))
+            .OrderBy(c => c.nome)
+            .ToList();
+
+        // Sem lote em aberto: nenhuma carga aberta e a mais recente recebeu anotação do celular assim
+        int? cargaSemLote = null;
+        if (!await db.CargasProdutoA.AnyAsync(c => !c.Encerrada))
+        {
+            var ultima = await db.CargasProdutoA.OrderByDescending(c => c.Data).ThenByDescending(c => c.Id)
+                .Select(c => (int?)c.Id).FirstOrDefaultAsync();
+            if (ultima != null)
+            {
+                var ids = await db.VendasProdutoA.Where(v => v.CargaId == ultima && v.AnotadaPorUsuarioId != null)
+                    .Select(v => v.Id).ToListAsync();
+                var marcadas = await VendasMarcadasAsync(ids);
+                if (marcadas.SemLote.Count > 0) cargaSemLote = ultima;
+            }
+        }
+
+        return Ok(new { clientesSemPreco = semPreco, cargaSemLoteEmAberto = cargaSemLote });
+    }
+
+    /// <summary>
+    /// Marcas tiradas do histórico do portal (sem coluna nova): anotação criada sem lote em aberto e
+    /// anotação alterada no celular depois de exportado o romaneio.
+    /// </summary>
+    private async Task<(HashSet<int> SemLote, HashSet<int> DepoisDoRomaneio)> VendasMarcadasAsync(List<int> vendaIds)
+    {
+        var semLote = new HashSet<int>();
+        var depois = new HashSet<int>();
+        if (vendaIds.Count == 0) return (semLote, depois);
+
+        var linhas = await db.PortalProdutosAHistorico
+            .Where(h => h.VendaProdutoAId != null && vendaIds.Contains(h.VendaProdutoAId.Value)
+                     && (h.Acao == PortalProdutosAHistoricoService.AnotacaoCriada || h.Acao == PortalProdutosAHistoricoService.AnotacaoEditada)
+                     && h.Depois != null)
+            .Select(h => new { h.VendaProdutoAId, h.Acao, h.Depois })
+            .ToListAsync();
+        foreach (var l in linhas)
+        {
+            if (l.Acao == PortalProdutosAHistoricoService.AnotacaoCriada && l.Depois!.Contains("\"semLoteEmAberto\":true"))
+                semLote.Add(l.VendaProdutoAId!.Value);
+            if (l.Acao == PortalProdutosAHistoricoService.AnotacaoEditada && l.Depois!.Contains("\"depoisDoRomaneio\":true"))
+                depois.Add(l.VendaProdutoAId!.Value);
+        }
+        return (semLote, depois);
     }
 
     // ── ProdutosB ────────────────────────────────────────────────────────

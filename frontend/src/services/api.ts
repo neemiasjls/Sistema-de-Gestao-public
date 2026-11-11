@@ -42,12 +42,20 @@ api.interceptors.response.use(
   err => {
     fimRequisicao((err.config as ConfigComId | undefined)?._idEspera, !!err.response)
     const url: string = err.config?.url ?? ''
+    // Portal das produtosA (EST-09): quem está nele volta para a entrada do portal, não para o login do sistema
+    const noPortal = window.location.pathname.startsWith('/produtosA')
     if (err.response?.status === 403 && err.response?.data?.trocarSenha) {
-      window.location.href = '/'
-    } else if (err.response?.status === 401 && !url.includes('/api/auth/login')) {
+      window.location.href = noPortal ? '/produtosA' : '/'
+    } else if (err.response?.status === 401 && !url.includes('/api/auth/login') && !url.includes('/api/auth/produtosA/')) {
       localStorage.removeItem(TOKEN_KEY)
       delete axios.defaults.headers.common['Authorization']
-      window.location.href = '/login'
+      // Conta do portal desativada (ou token de 30 dias vencido): a entrada do portal explica
+      if (err.response?.data?.sessaoEncerrada) {
+        try { sessionStorage.setItem('trx_produtosA_sessao_encerrada', '1') } catch { /* sem armazenamento */ }
+        window.location.href = '/produtosA'
+      } else {
+        window.location.href = noPortal ? '/produtosA' : '/login'
+      }
     }
     return Promise.reject(err)
   }
@@ -467,7 +475,7 @@ export interface UsuarioResumo {
   ativo: boolean
   dono: boolean
   trocarSenha: boolean
-  /** '' = escritório; 'motorista' = só o painel do motorista */
+  /** '' = escritório; 'motorista' = só o painel do motorista; 'produtosA' = só o portal das produtosA */
   perfil?: string
 }
 
@@ -497,6 +505,87 @@ export const usuariosApi = {
   novaSenha: (id: number) => api.post<SenhaProvisoria>(`/api/usuario/${id}/nova-senha`, {}),
   desativar: (id: number) => api.delete(`/api/usuario/${id}`),
   reativar: (id: number) => api.put(`/api/usuario/${id}/reativar`, {}),
+}
+
+// ── Portal das produtosA: lado do dono (EST-09) ─────────────────────────
+// Desativar, reativar e nova senha das contas usam o usuariosApi.
+export interface ContaPortalProdutosA {
+  id: number
+  nome: string
+  email: string
+  ativo: boolean
+  trocarSenha: boolean
+  criadoEm: string
+  anotacoes: number
+  ultimaAnotacao: string | null
+}
+
+export interface CodigoPortalProdutosA {
+  codigo: string | null
+  trocadoEm: string | null
+}
+
+export interface HistoricoPortalItem {
+  id: number
+  quando: string
+  usuarioId: number | null
+  usuarioNome: string
+  acao: string
+  vendaProdutoAId: number | null
+  resumo: string
+  /** JSON em texto */
+  antes: string | null
+  depois: string | null
+}
+
+export interface HistoricoPortalPagina {
+  itens: HistoricoPortalItem[]
+  total: number
+  pagina: number
+  porPagina: number
+  pessoas: { id: number; nome: string }[]
+}
+
+export const portalProdutosADonoApi = {
+  contas: () => api.get<ContaPortalProdutosA[]>('/api/estoque/produtosA-portal/contas'),
+  codigo: () => api.get<CodigoPortalProdutosA>('/api/estoque/produtosA-portal/codigo'),
+  trocarCodigo: () => api.post<CodigoPortalProdutosA>('/api/estoque/produtosA-portal/codigo/trocar', {}),
+  historico: (filtro: { de?: string; ate?: string; usuarioId?: number; acao?: string; pagina?: number }) =>
+    api.get<HistoricoPortalPagina>('/api/estoque/produtosA-portal/historico', { params: filtro }),
+}
+
+// ── Portal das produtosA: lado de quem anota (EST-09) ───────────────────
+// Nunca traz carga, custo, preço nem valor. Pesos em gramas (EST-04).
+export interface ClientePortal { id: number; nome: string }
+
+export interface AnotacaoPortal {
+  id: number
+  data: string            // yyyy-mm-dd
+  clienteId: number
+  cliente: string
+  pesos: number[]
+  quantidade: number
+  totalKg: number
+  anotadaEm: string | null
+  podeAlterar: boolean
+}
+
+export interface AnotacaoPortalEnvio { data: string; clienteId: number; pesos: number[] }
+
+export const portalProdutosAApi = {
+  // Entrada pública (anônima)
+  codigoValido: (c: string) => api.get<{ valido: boolean }>('/api/auth/produtosA/codigo', { params: { c } }),
+  cadastrar: (dados: { codigo: string; nome: string; email: string; senha: string }) =>
+    api.post<{ token: string; usuario: UsuarioResumo }>('/api/auth/produtosA/cadastro', dados),
+  esqueciSenha: (email: string) => api.post<{ mensagem: string }>('/api/auth/produtosA/esqueci-senha', { email }),
+  // Portal (logado)
+  clientes: () => api.get<ClientePortal[]>('/api/produtosA-portal/clientes'),
+  criarCliente: (dados: { nome: string; cidade: string | null }) =>
+    api.post<ClientePortal & { jaExistia: boolean }>('/api/produtosA-portal/clientes', dados),
+  anotacoes: () => api.get<AnotacaoPortal[]>('/api/produtosA-portal/anotacoes'),
+  anotar: (dados: AnotacaoPortalEnvio) => api.post<AnotacaoPortal>('/api/produtosA-portal/anotacoes', dados),
+  alterar: (id: number, dados: AnotacaoPortalEnvio) => api.put<AnotacaoPortal>(`/api/produtosA-portal/anotacoes/${id}`, dados),
+  excluir: (id: number) => api.delete(`/api/produtosA-portal/anotacoes/${id}`),
 }
 
 // ── Tipos de volumes ───────────────────────────────────────────────────────

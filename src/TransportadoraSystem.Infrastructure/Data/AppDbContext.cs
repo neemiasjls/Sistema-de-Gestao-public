@@ -121,6 +121,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<StradaFatura> StradaFaturas => Set<StradaFatura>();
     public DbSet<StradaContrato> StradaContratos => Set<StradaContrato>();
     public DbSet<StradaArquivo> StradaArquivos => Set<StradaArquivo>();
+    // Portal das produtosA no celular (EST-09); tabelas criadas no Ddl.cs
+    public DbSet<PortalProdutosAHistorico> PortalProdutosAHistorico => Set<PortalProdutosAHistorico>();
+    public DbSet<PortalProdutosAConfig> PortalProdutosAConfig => Set<PortalProdutosAConfig>();
 
     // Data fixa para seed — nunca usar DateTime.UtcNow em seed data (gera migrations não-determinísticas)
     private static readonly DateTime _seedDate = new(2025, 5, 5, 0, 0, 0, DateTimeKind.Utc);

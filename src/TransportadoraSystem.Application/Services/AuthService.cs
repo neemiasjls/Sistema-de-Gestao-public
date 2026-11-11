@@ -43,12 +43,13 @@ public class SenhaProvisoriaResult
     public string? SenhaProvisoria { get; set; }
 }
 
-public class AuthService(AppDbContext db, IConfiguration config, EmailService email)
+public class AuthService(AppDbContext db, IConfiguration config, EmailService email, PortalProdutosAHistoricoService historico)
 {
     public const string ClaimDono        = "dono";
     public const string ClaimTrocarSenha = "trocar_senha";
     public const string ClaimPerfil      = "perfil";
     public const string PerfilMotorista  = "motorista";
+    public const string PerfilProdutosA    = "produtosA";   // portal das produtosA, cadastro pelo QR (EST-09)
 
     private readonly PasswordHasher<Usuario> _hasher = new();
 
@@ -102,7 +103,8 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
 
         var token = new JwtSecurityToken(
             claims:             claims,
-            expires:            DateTime.UtcNow.AddHours(8),
+            // Portal das produtosA no celular: 30 dias (a API confere a cada pedido se a conta segue ativa)
+            expires:            usuario.Perfil == PerfilProdutosA ? DateTime.UtcNow.AddDays(30) : DateTime.UtcNow.AddHours(8),
             signingCredentials: creds);
 
         return new JwtSecurityTokenHandler().WriteToken(token);
@@ -203,10 +205,11 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
     }
 
     // ── Usuários (só o dono chega aqui) ────────────────────────────
-    // Os motoristas têm o próprio cadastro (Viagens dos caminhões): não entram aqui.
+    // Os motoristas têm o próprio cadastro (Viagens dos caminhões) e as contas do portal das
+    // produtosA têm seção própria: não entram aqui.
     public async Task<List<UsuarioDto>> ListarAsync() =>
         await db.Usuarios
-            .Where(u => u.Perfil != PerfilMotorista)
+            .Where(u => u.Perfil != PerfilMotorista && u.Perfil != PerfilProdutosA)
             .OrderByDescending(u => u.Dono).ThenBy(u => u.Nome)
             .Select(u => new UsuarioDto
             {
@@ -294,6 +297,86 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
     // ── Seed do usuário de acesso ──────────────────────────────────
     // Usuário e senha vêm da config (Seed:AdminUser / Seed:AdminPassword) —
     // nunca ficam escritos no código, que vai pro GitHub.
+    // ── Portal das produtosA: cadastro pelo QR e senha esquecida (EST-09, USU-05) ──
+    // Exceção ao USU-01: a própria pessoa cria a conta, com o código do QR do barracão.
+    // Sem liberação: o login já funciona. Perfil e dono são fixos aqui, nunca vêm do corpo.
+
+    public record CadastroProdutosAResult(int Status, string? Erro, LoginResult? Login);
+
+    public const string ErroQrInvalido = "QR inválido. Peça o QR novo ao Admin.";
+
+    /// <summary>Confere o código do QR com o gravado, em tempo constante. Sem config ou vazio: inválido.</summary>
+    public async Task<bool> CodigoProdutosAValidoAsync(string? codigo)
+    {
+        if (string.IsNullOrWhiteSpace(codigo)) return false;
+        var gravado = await db.PortalProdutosAConfig.OrderBy(c => c.Id).Select(c => c.Codigo).FirstOrDefaultAsync();
+        if (string.IsNullOrWhiteSpace(gravado)) return false;
+        return CryptographicOperations.FixedTimeEquals(
+            Encoding.UTF8.GetBytes(codigo.Trim()), Encoding.UTF8.GetBytes(gravado.Trim()));
+    }
+
+    public async Task<CadastroProdutosAResult> CadastrarProdutosAAsync(string? codigo, string? nome, string? emailInformado,
+        string? senha, string? ip)
+    {
+        if (!await CodigoProdutosAValidoAsync(codigo)) return new(403, ErroQrInvalido, null);
+
+        nome = (nome ?? "").Trim();
+        var emailNorm = (emailInformado ?? "").Trim().ToLower();
+        senha ??= "";
+
+        if (nome.Length < 2 || nome.Length > 80) return new(400, "Informe o seu nome (de 2 a 80 letras).", null);
+        if (emailNorm.Length > 254 || !EmailValido(emailNorm)) return new(400, "Esse e-mail não parece válido.", null);
+        if (ValidarSenhaNova(senha) is { } erroSenha) return new(400, erroSenha, null);
+        if (await db.Usuarios.AnyAsync(u => u.Email.ToLower() == emailNorm))
+            return new(400, "Não deu para criar a conta com este e-mail. Fale com o Admin.", null);
+
+        var usuario = new Usuario
+        {
+            Nome = nome, Email = emailNorm, Ativo = true, Dono = false, TrocarSenha = false, Perfil = PerfilProdutosA,
+        };
+        usuario.SenhaHash = _hasher.HashPassword(usuario, senha);
+        db.Usuarios.Add(usuario);
+        await db.SaveChangesAsync();
+
+        await historico.RegistrarAsync(usuario.Id, usuario.Nome, PortalProdutosAHistoricoService.UsuarioCadastrado,
+            $"Cadastro pelo QR: {usuario.Nome} ({usuario.Email})",
+            depois: new { usuario.Nome, usuario.Email }, ip: ip);
+
+        return new(201, null, new LoginResult { Token = GerarToken(usuario), Usuario = ToDto(usuario) });
+    }
+
+    /// <summary>
+    /// "Esqueci a senha" do portal: só conta ativa de perfil produtosA. Sorteia a provisória e manda
+    /// pelo mesmo e-mail do GerarNovaSenhaAsync. Quem chama responde sempre a mesma coisa, achando
+    /// ou não a conta (não revela quem está cadastrado).
+    /// </summary>
+    public async Task EsqueciSenhaProdutosAAsync(string? emailInformado, string? ip)
+    {
+        var emailNorm = (emailInformado ?? "").Trim().ToLower();
+        if (emailNorm.Length == 0 || emailNorm.Length > 254) return;
+
+        var usuario = await db.Usuarios.FirstOrDefaultAsync(u =>
+            u.Email.ToLower() == emailNorm && u.Ativo && u.Perfil == PerfilProdutosA);
+        if (usuario == null || !EmailValido(usuario.Email)) return;
+
+        // Manda antes de gravar: se o e-mail falhar, a senha atual continua valendo (a pessoa não fica
+        // trancada do lado de fora). A falha fica no log (o EmailService registra) e no histórico.
+        var senha = GerarSenhaForte();
+        var falha = await email.EnviarSenhaProvisoriaAsync(usuario.Nome, usuario.Email, senha, primeiroAcesso: false);
+        if (falha == null)
+        {
+            usuario.SenhaHash    = _hasher.HashPassword(usuario, senha);
+            usuario.TrocarSenha  = true;
+            usuario.AtualizadoEm = DateTime.UtcNow;
+        }
+        historico.Adicionar(usuario.Id, usuario.Nome, PortalProdutosAHistoricoService.SenhaEsquecida,
+            falha == null
+                ? $"Senha esquecida: provisória mandada para {usuario.Email}"
+                : $"Senha esquecida: o e-mail para {usuario.Email} não saiu ({falha}); a senha não mudou",
+            ip: ip);
+        await db.SaveChangesAsync();
+    }
+
     public async Task SeedAdminAsync()
     {
         var login = config["Seed:AdminUser"];
@@ -304,7 +387,7 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         // usuário antigo como dono, com a senha da configuração.
         if (!string.IsNullOrWhiteSpace(login) && !string.IsNullOrWhiteSpace(senha))
         {
-            var existe = await db.Usuarios.AnyAsync(u => u.Perfil != PerfilMotorista);
+            var existe = await db.Usuarios.AnyAsync(u => u.Perfil != PerfilMotorista && u.Perfil != PerfilProdutosA);
             if (!existe)
             {
                 var novo = new Usuario { Nome = login, Email = login.ToLower(), Ativo = true, Dono = true };
@@ -320,7 +403,7 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
 
         var dono = (login == null ? null
                        : await db.Usuarios.FirstOrDefaultAsync(u => u.Email.ToLower() == login.ToLower()))
-                   ?? await db.Usuarios.Where(u => u.Ativo && u.Perfil != PerfilMotorista).OrderBy(u => u.Id).FirstOrDefaultAsync();
+                   ?? await db.Usuarios.Where(u => u.Ativo && u.Perfil != PerfilMotorista && u.Perfil != PerfilProdutosA).OrderBy(u => u.Id).FirstOrDefaultAsync();
         if (dono == null) return;
 
         dono.Dono = true;

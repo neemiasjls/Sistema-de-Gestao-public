@@ -14,7 +14,8 @@ public class Usuario : BaseEntity
     // consegue trocar a senha — o resto da API responde 403.
     public bool   TrocarSenha { get; set; }
 
-    // "" = escritório (acesso normal); "motorista" = só o painel do motorista.
+    // "" = escritório (acesso normal); "motorista" = só o painel do motorista;
+    // "produtosA" = só o portal das produtosA (cadastro pelo QR, EST-09/USU-05).
     // O login do motorista fica no campo Email, sem @ (joseferraz).
     public string Perfil      { get; set; } = "";
 }

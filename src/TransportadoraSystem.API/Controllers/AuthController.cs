@@ -79,6 +79,47 @@ public class AuthController(AuthService auth, ILogger<AuthController> logger) : 
         return Ok(new { token = r.Token, usuario = r.Usuario });
     }
 
+    // ── Portal das produtosA: cadastro pelo QR e senha esquecida (anônimos) ──
+
+    // GET /api/auth/produtosA/codigo?c= — a tela do QR sabe se o código ainda vale
+    [HttpGet("produtosA/codigo")]
+    [AllowAnonymous]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("produtosA-codigo")]
+    public async Task<IActionResult> CodigoProdutosA([FromQuery] string? c) =>
+        Ok(new { valido = await auth.CodigoProdutosAValidoAsync(c) });
+
+    // POST /api/auth/produtosA/cadastro — cria a conta do portal e já devolve o login
+    [HttpPost("produtosA/cadastro")]
+    [AllowAnonymous]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("cadastro")]
+    public async Task<IActionResult> CadastroProdutosA([FromBody] CadastroProdutosADto dto)
+    {
+        try
+        {
+            var r = await auth.CadastrarProdutosAAsync(dto.Codigo, dto.Nome, dto.Email, dto.Senha, Ip());
+            if (r.Erro != null) return StatusCode(r.Status, new { erro = r.Erro });
+            return StatusCode(StatusCodes.Status201Created, new { token = r.Login!.Token, usuario = r.Login.Usuario });
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Erro no cadastro do portal das produtosA");
+            return StatusCode(500, new { erro = "Não deu para criar a conta agora. Tente de novo." });
+        }
+    }
+
+    // POST /api/auth/produtosA/esqueci-senha — resposta sempre igual (não revela quem tem conta)
+    [HttpPost("produtosA/esqueci-senha")]
+    [AllowAnonymous]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("esqueci-senha")]
+    public async Task<IActionResult> EsqueciSenhaProdutosA([FromBody] EsqueciSenhaDto dto)
+    {
+        try { await auth.EsqueciSenhaProdutosAAsync(dto.Email, Ip()); }
+        catch (Exception ex) { logger.LogError(ex, "Erro no esqueci a senha do portal das produtosA"); }
+        return Ok(new { mensagem = "Se o e-mail estiver cadastrado, a senha nova chega nele." });
+    }
+
+    private string? Ip() => HttpContext.Connection.RemoteIpAddress?.ToString();
+
     // ASP.NET mapeia "sub" para NameIdentifier
     public static int? UsuarioId(ClaimsPrincipal user)
     {
@@ -91,3 +132,5 @@ public class AuthController(AuthService auth, ILogger<AuthController> logger) : 
 public record LoginDto(string? Email, string? Usuario, string Senha);
 public record TrocarSenhaDto(string SenhaAtual, string NovaSenha);
 public record PerfilDto(string? Nome, string? Email, string SenhaAtual);
+public record CadastroProdutosADto(string? Codigo, string? Nome, string? Email, string? Senha);
+public record EsqueciSenhaDto(string? Email);

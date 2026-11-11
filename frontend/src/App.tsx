@@ -37,6 +37,7 @@ const AbastecimentoPage = tela(() => import('./pages/AbastecimentoPage'))
 const AcertoAlfaPage = tela(() => import('./pages/AcertoAlfaPage'))
 const NotasFiscaisPage = tela(() => import('./pages/NotasFiscaisPage'))
 const EstoqueProdutosAPage = tela(() => import('./pages/EstoqueProdutosAPage'))
+const HistoricoPortalProdutosAPage = tela(() => import('./pages/HistoricoPortalProdutosAPage'))
 const EstoqueProdutosBPage = tela(() => import('./pages/EstoqueProdutosBPage'))
 const PrecosPage = tela(() => import('./pages/PrecosPage'))
 const VolumesEmbaladosPage = tela(() => import('./pages/VolumesEmbaladosPage'))
@@ -58,6 +59,8 @@ const ViagensCaminhaoPage = tela(() => import('./pages/ViagensCaminhaoPage'))
 const ViagemCaminhaoPage = tela(() => import('./pages/ViagemCaminhaoPage'))
 const RetornosPage = tela(() => import('./pages/RetornosPage'))
 const MotoristaPainelPage = tela(() => import('./pages/MotoristaPainelPage'))
+const PortalProdutosAPage = tela(() => import('./pages/PortalProdutosAPage'))
+const PortalEntradaPage = tela(() => import('./pages/PortalEntradaPage'))
 const BuscaGeral = tela(() => import('./components/navegacao/BuscaGeral'))
 import ProtecaoTela from './components/ui/ProtecaoTela'
 import ServidorAcordando from './components/ui/ServidorAcordando'
@@ -194,6 +197,9 @@ function Layout() {
             <Route path="/tipos-volume" element={<TiposVolumePage />} />
             <Route path="/emails-clientes" element={<EmailsClientePage />} />
             <Route path="/estoque/produtosA" element={<EstoqueProdutosAPage />} />
+            <Route path="/estoque/produtosA/historico-portal" element={<HistoricoPortalProdutosAPage />} />
+            {/* Portal das produtosA (EST-09): o escritório anota com o login dele, dentro do sistema (USU-05) */}
+            <Route path="/produtosA" element={<PortalProdutosAPage dentroDoSistema />} />
             <Route path="/estoque/produtosB" element={<EstoqueProdutosBPage key="produtosB" />} />
             <Route path="/estoque/produtosC" element={<EstoqueProdutosBPage key="produtosC" produto="PRODUTOC" />} />
             <Route path="/precos" element={<PrecosPage />} />
@@ -263,11 +269,41 @@ function PrivateRoutes() {
     </ProvedorConfirmar>
   )
 
+  // Portal das produtosA: só o portal, sem menu, em qualquer endereço (a API também barra o resto)
+  if (usuario?.perfil === 'produtosA') return <PortalSozinho />
+
   return (
     <ProvedorConfirmar>
       <Layout />
     </ProvedorConfirmar>
   )
+}
+
+function PortalSozinho() {
+  return (
+    <ProvedorConfirmar>
+      <ProtecaoTela>
+        <Suspense fallback={<div className="h-tela bg-gray-50 p-4"><Carregando linhas={4} rotulo="Abrindo as produtosA" /></div>}>
+          <PortalProdutosAPage />
+        </Suspense>
+      </ProtecaoTela>
+    </ProvedorConfirmar>
+  )
+}
+
+// /produtosA (o QR do barracão): sem login, a entrada pública do portal (entrar, criar conta,
+// esqueci a senha); logado, segue o caminho de sempre (perfil produtosA: o portal; escritório:
+// o portal dentro do sistema; motorista: a folha dele).
+function ProdutosARoute() {
+  const { token, loading } = useAuth()
+  if (!loading && !token) return (
+    <ProtecaoTela>
+      <Suspense fallback={<div className="h-tela bg-menu" />}>
+        <PortalEntradaPage />
+      </Suspense>
+    </ProtecaoTela>
+  )
+  return <PrivateRoutes />
 }
 
 export default function App() {
@@ -276,6 +312,7 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<PublicRoute />} />
+          <Route path="/produtosA" element={<ProdutosARoute />} />
           <Route path="/*" element={<PrivateRoutes />} />
         </Routes>
       </BrowserRouter>

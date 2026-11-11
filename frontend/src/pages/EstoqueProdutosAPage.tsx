@@ -1,7 +1,9 @@
-import { Disc3, FileUp, PackageCheck, Plus, Users, X } from 'lucide-react'
+import { Disc3, FileUp, History, PackageCheck, Plus, Users, X } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
 import { Carregando, ErroCarga, Vazio } from '../components/ui/Estados'
 import { useConfirmar } from '../components/ui/Confirmar'
-import Botao from '../components/ui/Botao'
+import Botao, { classesBotao } from '../components/ui/Botao'
 import Aviso from '../components/ui/Aviso'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
 import { useCallback, useEffect, useState } from 'react'
@@ -30,7 +32,21 @@ type Venda = {
   qtdeProdutosA: number; pesoKg: number; valor: number; custo: number; comissao: number
   numero?: number | null; proximoNumero?: number | null
   produtosA: { id: number; pesoGramas: number }[]
+  // Portal das produtosA (EST-09): nulo = lançada no sistema
+  anotadaPor?: string | null; anotadaEm?: string | null
+  semLoteEmAberto?: boolean; alteradaDepoisDoRomaneio?: boolean
 }
+
+type Avisos = {
+  clientesSemPreco: { id: number; nome: string; saidas: number }[]
+  cargaSemLoteEmAberto: number | null
+}
+
+// "10/11 14:32" no horário de Brasília
+const diaHora = (iso: string) =>
+  new Date(iso).toLocaleString('pt-BR', {
+    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo',
+  }).replace(',', '')
 
 export default function EstoqueProdutosAPage() {
   const [cargas, setCargas] = useState<Carga[]>([])
@@ -44,6 +60,7 @@ export default function EstoqueProdutosAPage() {
   // Detalhe da carga escolhida: carregando, erro (com tentar de novo) ou pronto
   const [detalhe, setDetalhe] = useState<'carregando' | 'erro' | 'ok'>('carregando')
   const confirmar = useConfirmar()
+  const { usuario } = useAuth()
 
   const [modalCarga, setModalCarga] = useState(false)
   const [modalVenda, setModalVenda] = useState(false)
@@ -51,6 +68,15 @@ export default function EstoqueProdutosAPage() {
   const [modalImportar, setModalImportar] = useState(false)
   const [romaneio, setRomaneio] = useState<Venda | null>(null)
   const [aberta, setAberta] = useState<number | null>(null)
+  const [avisos, setAvisos] = useState<Avisos | null>(null)
+
+  // Avisos do topo: clientes sem preço por kg e anotação do celular sem lote em aberto
+  const carregarAvisos = useCallback(() => {
+    api.get('/api/estoque/produtosA/avisos').then(r => {
+      const d = comoObjeto<Avisos>(r.data, ['clientesSemPreco'], 'avisos das produtosA')
+      setAvisos({ clientesSemPreco: d.clientesSemPreco, cargaSemLoteEmAberto: d.cargaSemLoteEmAberto ?? null })
+    }).catch(() => setAvisos(null))
+  }, [])
 
   const carregarClientes = useCallback(() => {
     api.get('/api/estoque/clientes').then(r => setClientes(comoLista<ClienteEstoque>(r.data, 'clientes'))).catch(() => {})
@@ -89,13 +115,15 @@ export default function EstoqueProdutosAPage() {
   useEffect(() => {
     carregarCargas()
     carregarClientes()
+    carregarAvisos()
     api.get('/api/estoque/tipos').then(r => setTipos(comoLista<TipoProdutoB>(r.data, 'tipos'))).catch(() => {})
-  }, [carregarCargas, carregarClientes])
+  }, [carregarCargas, carregarClientes, carregarAvisos])
 
   useEffect(() => { if (cargaId) { setAberta(null); carregarDetalhe(cargaId) } }, [cargaId, carregarDetalhe])
 
   const recarregar = () => {
     carregarCargas()
+    carregarAvisos()
     if (cargaId) carregarDetalhe(cargaId, true)
   }
 
@@ -137,11 +165,31 @@ export default function EstoqueProdutosAPage() {
       <CabecalhoTela
         descricao="Cada carga tem seu custo por kg. O que o cliente paga vem do cadastro dele; a diferença é a comissão."
         acoes={<>
+          {usuario?.dono && (
+            <Link to="/estoque/produtosA/historico-portal" className={classesBotao('secundario')}>
+              <History className="w-4 h-4" aria-hidden="true" /> Histórico do portal
+            </Link>
+          )}
           <Botao variante="secundario" icone={Users} onClick={() => setModalClientes(true)}>Clientes</Botao>
           <Botao variante="secundario" icone={FileUp} onClick={() => setModalImportar(true)}>Importar planilha</Botao>
           <Botao variante="primario" icone={Plus} onClick={() => setModalCarga(true)}>Nova carga</Botao>
         </>}
       />
+
+      {avisos && avisos.cargaSemLoteEmAberto != null && (
+        <Aviso tipo="atencao" titulo="Sem lote em aberto"
+               acao={<Botao variante="secundario" tamanho="sm" icone={Plus} onClick={() => setModalCarga(true)}>Nova carga</Botao>}>
+          As anotações do celular estão entrando no último lote, que já fechou. Cadastre o lote novo.
+        </Aviso>
+      )}
+
+      {avisos && avisos.clientesSemPreco.length > 0 && (
+        <Aviso tipo="atencao" titulo="Clientes sem preço por kg"
+               itens={avisos.clientesSemPreco.map(c => <>{c.nome} · {plural(c.saidas, 'saída', 'saídas')} a R$ 0</>)}
+               acao={<Botao variante="secundario" tamanho="sm" icone={Users} onClick={() => setModalClientes(true)}>Cadastrar o preço</Botao>}>
+          O preço gravado no cliente passa para essas saídas.
+        </Aviso>
+      )}
 
       {carregando ? (
         <Carregando forma="cartoes" linhas={4} rotulo="Carregando as cargas" />
@@ -189,6 +237,15 @@ export default function EstoqueProdutosAPage() {
                         resumo={<>
                           {plural(v.qtdeProdutosA, 'produtoA', 'produtosA')} · {num(v.pesoKg)} kg
                           <span className="block sm:inline font-medium text-gray-800"><span className="hidden sm:inline font-normal text-gray-500" aria-hidden> · </span>{brlKg(v.precoKg)}</span>
+                          {v.anotadaPor != null && (
+                            <span className="block text-xs text-gray-600">
+                              Anotada por {v.anotadaPor} no celular{v.anotadaEm ? ` · ${diaHora(v.anotadaEm)}` : ''}
+                            </span>
+                          )}
+                          {v.semLoteEmAberto && <span className="block text-xs font-medium text-amber-800">Sem lote em aberto</span>}
+                          {v.alteradaDepoisDoRomaneio && (
+                            <span className="block text-xs font-medium text-amber-800">Alterada no celular depois do romaneio</span>
+                          )}
                         </>}
                       >
                         <Fatos itens={[
@@ -265,7 +322,7 @@ export default function EstoqueProdutosAPage() {
         foco="produtoA"
         onClose={() => setModalClientes(false)}
         tipos={tipos}
-        onSalvou={carregarClientes}
+        onSalvou={() => { carregarClientes(); recarregar() }}
       />
     </div>
   )

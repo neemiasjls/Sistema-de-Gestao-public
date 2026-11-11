@@ -89,6 +89,10 @@ public class VendaProdutoA : BaseEntity
     public decimal CustoKg { get; set; }   // da carga, congelado na venda
     public string? Observacao { get; set; }
 
+    // Portal das produtosA (EST-09): quem anotou no celular e quando. Nulo = lançada no sistema.
+    public int? AnotadaPorUsuarioId { get; set; }
+    public DateTime? AnotadaEm { get; set; }
+
     public ICollection<ProdutoAVendida> ProdutosA { get; set; } = [];
 }
 
