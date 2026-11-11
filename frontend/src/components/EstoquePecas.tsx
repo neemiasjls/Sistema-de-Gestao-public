@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ChevronDown, Download, Trash2 } from 'lucide-react'
+import { ChevronDown, Download, Pencil, Trash2 } from 'lucide-react'
 import Botao from './ui/Botao'
 import Campo from './ui/Campo'
 import { Modal } from './ModalBase'
@@ -169,8 +169,8 @@ export function CartaoSaida({ id, cliente, data, resumo, valor, nota, comissao, 
         <div className="text-right shrink-0">
           <p className="font-semibold text-gray-900 tabular-nums">{brl(valor)}</p>
           {nota && <p className="text-xs text-gray-500 tabular-nums max-w-[8.5rem] sm:max-w-none">{nota}</p>}
-          <p className="text-sm text-emerald-700 tabular-nums">
-            <span className="sr-only">Comissão </span>+{brl(comissao)}
+          <p className={`text-sm tabular-nums ${comissao < 0 ? 'text-red-700' : 'text-emerald-700'}`}>
+            <span className="sr-only">Comissão </span>{comissao < 0 ? `−${brl(-comissao)}` : `+${brl(comissao)}`}
           </p>
         </div>
         <ChevronDown size={18} aria-hidden
@@ -200,15 +200,20 @@ export function Fatos({ itens }: { itens: [string, ReactNode][] }) {
 }
 
 /** Baixar o romaneio e apagar a saída. No celular um embaixo do outro. */
-export function AcoesSaida({ numero, onExportar, onApagar }: {
-  numero?: number | null; onExportar: () => void; onApagar: () => void
+export function AcoesSaida({ numero, onExportar, onEditar, onApagar }: {
+  numero?: number | null; onExportar: () => void; onEditar?: () => void; onApagar: () => void
 }) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-1">
       <Botao variante="secundario" icone={Download} onClick={onExportar} className="w-full sm:w-auto">
         {numero ? `Baixar romaneio ${numero}` : 'Baixar romaneio'}
       </Botao>
-      <Botao variante="perigoLeve" icone={Trash2} onClick={onApagar} className="w-full sm:w-auto sm:ml-auto">
+      {onEditar && (
+        <Botao variante="secundario" icone={Pencil} onClick={onEditar} className="w-full sm:w-auto sm:ml-auto">
+          Editar esta saída
+        </Botao>
+      )}
+      <Botao variante="perigoLeve" icone={Trash2} onClick={onApagar} className={`w-full sm:w-auto ${onEditar ? "" : "sm:ml-auto"}`}>
         Apagar esta saída
       </Botao>
     </div>

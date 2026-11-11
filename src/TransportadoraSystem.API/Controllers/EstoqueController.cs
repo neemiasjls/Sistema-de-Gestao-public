@@ -339,6 +339,53 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
         return Created($"/api/estoque/produtosA/{carga.Id}", new { venda.Id, cargaEncerrada = acabou });
     }
 
+    /// <summary>
+    /// Edita a saída pelo escritório: data, cliente, espessura, observação e pesos. A carga é a
+    /// mesma (o CargaId do corpo é ignorado). Trocou o cliente: preço do novo (embalado pelo custo).
+    /// Venda anotada no celular (EST-09): grava antes/depois no histórico do dono.
+    /// </summary>
+    [HttpPut("produtosA/vendas/{id}")]
+    public async Task<IActionResult> AlterarVendaProdutoA(int id, [FromBody] VendaProdutoADto dto)
+    {
+        var venda = await db.VendasProdutoA.Include(v => v.ProdutosA).Include(v => v.Cliente).Include(v => v.Carga)
+            .FirstOrDefaultAsync(v => v.Id == id);
+        if (venda == null) return NotFound();
+
+        var cliente = venda.ClienteId == dto.ClienteId ? venda.Cliente
+            : await db.EstoqueClientes.FindAsync(dto.ClienteId);
+        if (cliente == null) return BadRequest(new { erro = "Cliente não encontrado." });
+
+        var pesos = (dto.Pesos ?? []).Where(p => p > 0).ToList();
+        if (pesos.Count == 0)
+            return BadRequest(new { erro = "Informe o peso de pelo menos uma produtoA." });
+
+        var pesosAntes = venda.ProdutosA.OrderBy(b => b.Id).Select(b => b.PesoGramas).ToList();
+        var antes = new { data = venda.Data, cliente = venda.Cliente?.Nome, pesos = pesosAntes };
+        bool mudouAnotacao = dto.Data != venda.Data || cliente.Id != venda.ClienteId || !pesosAntes.SequenceEqual(pesos);
+
+        await using var tx = await db.Database.BeginTransactionAsync();
+        venda.Espessura = dto.Espessura;
+        venda.Observacao = string.IsNullOrWhiteSpace(dto.Observacao) ? null : dto.Observacao.Trim();
+        // Preço (só se trocou o cliente), carga reabre/encerra pela contagem, embalado sincronizado
+        await saidas.AlterarAsync(venda, dto.Data, cliente, pesos);
+
+        if (venda.AnotadaPorUsuarioId != null && mudouAnotacao)
+        {
+            var quemAnotou = await db.Usuarios.Where(u => u.Id == venda.AnotadaPorUsuarioId)
+                .Select(u => u.Nome).FirstOrDefaultAsync();
+            var eu = AuthController.UsuarioId(User);
+            var meuNome = eu == null ? "" : await db.Usuarios.Where(u => u.Id == eu).Select(u => u.Nome).FirstOrDefaultAsync() ?? "";
+            historico.Adicionar(eu, meuNome, PortalProdutosAHistoricoService.AnotacaoEditadaNoSistema,
+                $"Alterou no sistema a anotação de {quemAnotou ?? "?"}: {antes.cliente}, {antes.data:dd/MM/yyyy}",
+                venda.Id, antes,
+                depois: new { data = dto.Data, cliente = cliente.Nome, pesos },
+                ip: HttpContext.Connection.RemoteIpAddress?.ToString());
+            await db.SaveChangesAsync();
+        }
+        await tx.CommitAsync();
+        return Ok(new { venda.Id, cargaEncerrada = venda.Carga?.Encerrada ?? false });
+    }
+
     [HttpDelete("produtosA/vendas/{id}")]
     public async Task<IActionResult> ExcluirVendaProdutoA(int id)
     {

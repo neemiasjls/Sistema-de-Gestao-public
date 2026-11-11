@@ -64,6 +64,7 @@ export default function EstoqueProdutosAPage() {
 
   const [modalCarga, setModalCarga] = useState(false)
   const [modalVenda, setModalVenda] = useState(false)
+  const [editando, setEditando] = useState<Venda | null>(null)
   const [modalClientes, setModalClientes] = useState(false)
   const [modalImportar, setModalImportar] = useState(false)
   const [romaneio, setRomaneio] = useState<Venda | null>(null)
@@ -276,7 +277,8 @@ export default function EstoqueProdutosAPage() {
                           <p className="text-sm text-gray-700"><span className="text-gray-500">Observação: </span>{v.observacao}</p>
                         )}
 
-                        <AcoesSaida numero={v.numero} onExportar={() => setRomaneio(v)} onApagar={() => excluirVenda(v)} />
+                        <AcoesSaida numero={v.numero} onExportar={() => setRomaneio(v)}
+                                    onEditar={() => { setEditando(v); setModalVenda(true) }} onApagar={() => excluirVenda(v)} />
                       </CartaoSaida>
                     ))}
                   </ul>
@@ -297,10 +299,12 @@ export default function EstoqueProdutosAPage() {
       {modalVenda && carga && (
         <ModalVenda
           carga={carga}
-          clientes={clientes.filter(c => c.ativo)}
-          onClose={() => setModalVenda(false)}
-          onSalvou={() => { setModalVenda(false); recarregar() }}
-          onCadastrarCliente={() => { setModalVenda(false); setModalClientes(true) }}
+          editando={editando}
+          // Editando: o cliente atual entra mesmo se estiver inativo, para não sumir da lista
+          clientes={clientes.filter(c => c.ativo || c.id === editando?.clienteId)}
+          onClose={() => { setModalVenda(false); setEditando(null) }}
+          onSalvou={() => { setModalVenda(false); setEditando(null); recarregar() }}
+          onCadastrarCliente={() => { setModalVenda(false); setEditando(null); setModalClientes(true) }}
         />
       )}
 
@@ -408,20 +412,25 @@ function ModalCarga({ onClose, onSalvou }: { onClose: () => void; onSalvou: (id:
   )
 }
 
-// ── Nova saída ────────────────────────────────────────────────────────────
+// ── Nova saída / editar saída ─────────────────────────────────────────────
 
-function ModalVenda({ carga, clientes, onClose, onSalvou, onCadastrarCliente }: {
+/** Peso digitado em gramas, como vem da balança: só os dígitos contam ("12.740" e "12740" = 12740 g). */
+const lerGramas = (v: string) => Number((v ?? '').replace(/\D/g, '')) || 0
+
+function ModalVenda({ carga, editando, clientes, onClose, onSalvou, onCadastrarCliente }: {
   carga: Carga
+  /** Saída já lançada: o mesmo formulário vem preenchido e grava por cima */
+  editando?: Venda | null
   clientes: ClienteEstoque[]
   onClose: () => void
   onSalvou: () => void
   onCadastrarCliente: () => void
 }) {
-  const [clienteId, setClienteId] = useState<number | ''>('')
-  const [data, setData] = useState(hoje())
-  const [espessura, setEspessura] = useState('')
-  const [observacao, setObservacao] = useState('')
-  const [pesos, setPesos] = useState<number[]>([])
+  const [clienteId, setClienteId] = useState<number | ''>(editando?.clienteId ?? '')
+  const [data, setData] = useState(editando?.data.slice(0, 10) ?? hoje())
+  const [espessura, setEspessura] = useState(editando?.espessura ? String(editando.espessura) : '')
+  const [observacao, setObservacao] = useState(editando?.observacao ?? '')
+  const [pesos, setPesos] = useState<number[]>(editando?.produtosA.map(b => b.pesoGramas) ?? [])
   const [digitando, setDigitando] = useState('')
   const [salvando, setSalvando] = useState(false)
 
@@ -431,10 +440,14 @@ function ModalVenda({ carga, clientes, onClose, onSalvou, onCadastrarCliente }: 
   const valor = pesoKg * precoKg
   const custo = pesoKg * carga.custoKg
   const comissao = valor - custo
-  const sujo = !!(clienteId || pesos.length || digitando || espessura || observacao)
+  const sujo = editando
+    ? !!(digitando || clienteId !== editando.clienteId || data !== editando.data.slice(0, 10)
+      || espessura !== (editando.espessura ? String(editando.espessura) : '') || observacao !== (editando.observacao ?? '')
+      || pesos.join() !== editando.produtosA.map(b => b.pesoGramas).join())
+    : !!(clienteId || pesos.length || digitando || espessura || observacao)
 
   const adicionar = () => {
-    const g = Math.round(lerNum(digitando))
+    const g = lerGramas(digitando)
     if (g <= 0) return
     setPesos(p => [...p, g])
     setDigitando('')
@@ -445,13 +458,16 @@ function ModalVenda({ carga, clientes, onClose, onSalvou, onCadastrarCliente }: 
     if (pesos.length === 0) { toast.error('Adicione ao menos uma produtoA.'); return }
     setSalvando(true)
     try {
-      const resp = await api.post<{ cargaEncerrada?: boolean }>('/api/estoque/produtosA/vendas', {
+      const corpo = {
         cargaId: carga.id, clienteId, data,
         espessura: espessura ? Math.round(lerNum(espessura)) : null,
         pesos, observacao: observacao || null,
-      })
-      toast.success(`${plural(pesos.length, 'produtoA lançada', 'produtosA lançadas')}.`)
-      if (resp.data?.cargaEncerrada)
+      }
+      const resp = editando
+        ? await api.put<{ cargaEncerrada?: boolean }>(`/api/estoque/produtosA/vendas/${editando.id}`, corpo)
+        : await api.post<{ cargaEncerrada?: boolean }>('/api/estoque/produtosA/vendas', corpo)
+      toast.success(editando ? 'Saída alterada.' : `${plural(pesos.length, 'produtoA lançada', 'produtosA lançadas')}.`)
+      if (resp.data?.cargaEncerrada && !(editando && carga.encerrada))
         toast('Acabaram as produtosA desta carga e ela foi encerrada. Cadastre a próxima carga para seguir lançando.', { icon: <PackageCheck size={18} className="text-tinta-600 shrink-0" aria-hidden />, duration: 9000 })
       onSalvou()
     } catch {
@@ -462,8 +478,8 @@ function ModalVenda({ carga, clientes, onClose, onSalvou, onCadastrarCliente }: 
   }
 
   return (
-    <Modal titulo="Nova saída de produtosA" onClose={onClose} sujo={sujo}
-           rodape={<BotoesModal salvando={salvando} onSalvar={salvar} onClose={onClose} rotulo="Lançar saída" />}>
+    <Modal titulo={editando ? 'Editar saída de produtosA' : 'Nova saída de produtosA'} onClose={onClose} sujo={sujo}
+           rodape={<BotoesModal salvando={salvando} onSalvar={salvar} onClose={onClose} rotulo={editando ? 'Salvar alterações' : 'Lançar saída'} />}>
       <Campo rotulo="Cliente">
         <select value={clienteId} onChange={e => setClienteId(e.target.value ? Number(e.target.value) : '')} className={classeCampo}>
           <option value="">Escolha...</option>
@@ -536,10 +552,10 @@ function ModalVenda({ carga, clientes, onClose, onSalvou, onCadastrarCliente }: 
           [`Preço (${brlKg(precoKg)})`, brl(valor)],
           [`Custo da carga (${brlKg(carga.custoKg)})`, brl(custo)],
         ]}>
-          {pesos.length > carga.estoque && (
+          {pesos.length - (editando?.produtosA.length ?? 0) > carga.estoque && (
             <p className="mt-3 text-sm text-amber-800">
               A carga tem <b className="tabular-nums">{plural(carga.estoque, 'produtoA', 'produtosA')}</b> em estoque e você está
-              lançando <b className="tabular-nums">{pesos.length}</b>. Dá para salvar, mas o estoque fica negativo.
+              lançando <b className="tabular-nums">{pesos.length - (editando?.produtosA.length ?? 0)}</b>{editando ? " a mais" : ""}. Dá para salvar, mas o estoque fica negativo.
             </p>
           )}
         </ContaSaida>

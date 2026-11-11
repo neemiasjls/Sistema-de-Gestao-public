@@ -13,13 +13,14 @@ import { comoObjeto } from '../utils/resposta'
 import { dataBr, num } from '../utils/formato'
 
 // Histórico do portal das produtosA (EST-09): só o dono vê. Tudo o que foi feito pelo celular
-// (e a exclusão pelo sistema de uma anotação do celular), com o antes → depois.
+// (e a exclusão ou alteração pelo sistema de uma anotação do celular), com o antes → depois.
 
 const ACOES: Record<string, string> = {
   anotacao_criada:              'Anotou',
   anotacao_editada:             'Alterou',
   anotacao_excluida:            'Excluiu',
   anotacao_excluida_no_sistema: 'Excluída no sistema',
+  anotacao_editada_no_sistema:  'Alterada no sistema',
   usuario_cadastrado:           'Cadastro pelo QR',
   senha_esquecida:              'Esqueceu a senha',
   cliente_cadastrado:           'Cliente novo',
@@ -122,7 +123,7 @@ function Detalhe({ item }: { item: HistoricoPortalItem }) {
   if (antes?.numero != null && antes.numero !== '') marcas.push(`Já estava no romaneio ${antes.numero}`)
 
   let corpo: React.ReactNode = null
-  if (item.acao === 'anotacao_editada' && antes && depois) {
+  if ((item.acao === 'anotacao_editada' || item.acao === 'anotacao_editada_no_sistema') && antes && depois) {
     const pa = antes.pesos ?? [], pd = depois.pesos ?? []
     const { retirados, incluidos } = diferencaPesos(pa, pd)
     const mantidos = diferencaPesos(retirados, pa).incluidos   // pa sem os retirados

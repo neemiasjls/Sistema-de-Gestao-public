@@ -7,7 +7,7 @@ namespace TransportadoraSystem.Application.Services;
 /// <summary>
 /// Grava o histórico do portal das produtosA (EST-09), que só o dono vê. Ações:
 /// usuario_cadastrado, senha_esquecida, cliente_cadastrado, anotacao_criada, anotacao_editada,
-/// anotacao_excluida, anotacao_excluida_no_sistema, codigo_trocado.
+/// anotacao_excluida, anotacao_excluida_no_sistema, anotacao_editada_no_sistema, codigo_trocado.
 /// "Antes" e "Depois" vão como JSON em texto.
 /// </summary>
 public class PortalProdutosAHistoricoService(AppDbContext db)
@@ -19,6 +19,7 @@ public class PortalProdutosAHistoricoService(AppDbContext db)
     public const string AnotacaoEditada            = "anotacao_editada";
     public const string AnotacaoExcluida           = "anotacao_excluida";
     public const string AnotacaoExcluidaNoSistema  = "anotacao_excluida_no_sistema";
+    public const string AnotacaoEditadaNoSistema   = "anotacao_editada_no_sistema";
     public const string CodigoTrocado              = "codigo_trocado";
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
