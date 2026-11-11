@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import toast from 'react-hot-toast'
-import { ArrowLeft, Cylinder, LogOut, Pencil, Plus, Search, Trash2, TriangleAlert, X } from 'lucide-react'
+import { ArrowLeft, CalendarDays, Check, ChevronRight, Cylinder, LogOut, Pencil, Plus, Search, Trash2, TriangleAlert, UserPlus, X } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { portalProdutosAApi, type AnotacaoPortal, type ClientePortal } from '../services/api'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
@@ -181,12 +181,15 @@ function MinhasAnotacoes({ onNova, onAlterar }: { onNova: () => void; onAlterar:
               {lista.map(a => {
                 const total = a.pesos.reduce((s, p) => s + p, 0)
                 return (
-                  <li key={a.id} className="bg-white border border-gray-200 rounded-xl p-3">
-                    <div className="flex items-baseline justify-between gap-3">
-                      <p className="font-semibold text-gray-900 truncate">{a.cliente || 'Cliente não informado'}</p>
-                      <p className="text-sm text-gray-600 shrink-0">{dataCurta(a.data)}</p>
+                  <li key={a.id} className="bg-white border border-gray-200 rounded-2xl p-3.5 shadow-sm">
+                    <div className="flex items-center gap-3">
+                      <Iniciais nome={a.cliente || '?'} />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-gray-900 truncate">{a.cliente || 'Cliente não informado'}</p>
+                        <p className="text-sm text-gray-600">{dataCurta(a.data)} · {plural(a.quantidade)}</p>
+                      </div>
+                      <p className="font-display text-xl font-semibold text-gray-900 tabular-nums shrink-0">{kg(total)} <span className="text-sm font-normal text-gray-600">kg</span></p>
                     </div>
-                    <p className="text-sm text-gray-700 mt-0.5 tabular-nums">{plural(a.quantidade)} · {kg(total)} kg</p>
                     {a.podeAlterar && (
                       <div className="flex gap-2 mt-3">
                         <Botao icone={Pencil} onClick={() => onAlterar(a)} className="flex-1">Alterar</Botao>
@@ -317,32 +320,34 @@ function Anotar({ inicial, chave, dentroDoSistema, onFechar }: {
   return (
     <div className="pb-28">
       <div className="flex items-center justify-between gap-3 mb-4">
-        <h2 className="font-display text-xl font-semibold text-gray-900">{r.editandoId ? 'Alterar anotação' : 'Nova anotação'}</h2>
-        <Botao variante="fantasma" icone={X} onClick={cancelar} className="-mr-2">Cancelar</Botao>
+        <div className="min-w-0">
+          <h2 className="font-display text-2xl font-semibold text-gray-900 leading-tight">{r.editandoId ? 'Alterar anotação' : 'Nova anotação'}</h2>
+          <p className="text-sm text-gray-600">Retirada de produtosA no barracão</p>
+        </div>
+        <Botao variante="fantasma" icone={X} onClick={cancelar} className="-mr-2 shrink-0">Cancelar</Botao>
       </div>
 
-      <div className="space-y-6">
+      <div className="space-y-3">
         {/* 1. Data */}
-        <section aria-labelledby="anotar-data">
-          <div className="flex items-baseline justify-between gap-3 mb-2">
-            <label id="anotar-data" htmlFor="anotar-data-campo" className="text-sm font-semibold text-gray-800">Data da retirada</label>
-            <span className="text-sm font-medium text-tinta-700">{dataCurta(r.data)}</span>
+        <Etapa n={1} id="anotar-data" titulo="Data da retirada" feito
+               resumo={<span className="inline-flex items-center gap-1.5 rounded-full bg-tinta-50 px-2.5 py-0.5 text-sm font-medium text-tinta-700">{dataCurta(r.data)}</span>}>
+          <div className="relative">
+            <CalendarDays size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" aria-hidden />
+            <input id="anotar-data-campo" type="date" value={r.data} min={limite} max={hoje} aria-labelledby="anotar-data"
+                   onChange={e => mudar({ data: e.target.value && e.target.value >= limite && e.target.value <= hoje ? e.target.value : hoje })}
+                   className={`${CAMPO} pl-10`} />
           </div>
-          <input id="anotar-data-campo" type="date" value={r.data} min={limite} max={hoje}
-                 onChange={e => mudar({ data: e.target.value && e.target.value >= limite && e.target.value <= hoje ? e.target.value : hoje })}
-                 className="appearance-none w-full min-h-12 rounded-lg border border-gray-300 bg-white px-3 text-base text-gray-900 focus:outline-none focus:ring-2 focus:ring-tinta-500" />
-          <p className="text-xs text-gray-600 mt-1">Toque para escolher outro dia (até {DIAS_PARA_TRAS} dias atrás).</p>
-        </section>
+          <p className="text-xs text-gray-600 mt-1.5">Toque para escolher outro dia (até {DIAS_PARA_TRAS} dias atrás).</p>
+        </Etapa>
 
         {/* 2. Cliente */}
         <EscolhaCliente clienteId={r.clienteId} clienteNome={r.clienteNome} onEscolher={escolherCliente}
                         onTrocar={() => mudar({ clienteId: null, clienteNome: '' })} />
 
         {/* 3. Pesos */}
-        <section aria-labelledby="anotar-pesos">
-          <h3 id="anotar-pesos" className="text-sm font-semibold text-gray-800 mb-2">
-            {corrigindo === null ? 'Peso de cada produtoA, em gramas' : `Corrigindo a produtoA ${corrigindo + 1}`}
-          </h3>
+        <Etapa n={3} id="anotar-pesos" feito={r.pesos.length > 0}
+               titulo={corrigindo === null ? 'Peso de cada produtoA' : `Corrigindo a produtoA ${corrigindo + 1}`}
+               resumo={<span className="text-sm text-gray-600">em gramas</span>}>
           <div className="flex gap-2">
             <input
               ref={pesosRef}
@@ -353,13 +358,13 @@ function Anotar({ inicial, chave, dentroDoSistema, onFechar }: {
               value={r.digitando}
               onChange={e => digitar(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); confirmarPeso() } }}
-              className={`flex-1 min-w-0 min-h-14 rounded-lg border bg-white px-3 text-2xl font-semibold tabular-nums text-gray-900 focus:outline-none focus:ring-2 focus:ring-tinta-500
+              className={`flex-1 min-w-0 min-h-14 rounded-xl border bg-white px-3 text-2xl font-semibold tabular-nums text-gray-900 placeholder:text-gray-400 placeholder:font-normal focus:outline-none focus:ring-2 focus:ring-tinta-500
                           ${erroPeso || aConfirmar !== null ? 'border-amber-500' : 'border-gray-300'}`}
             />
             {/* pointerdown sem efeito padrão: o toque não tira o foco do campo e o teclado numérico fica aberto */}
             <button type="button" onPointerDown={e => e.preventDefault()} onMouseDown={e => e.preventDefault()}
                     onClick={adicionarPeloBotao} disabled={!r.digitando}
-                    className={`shrink-0 min-h-14 min-w-28 px-3 rounded-lg text-base font-semibold text-white inline-flex items-center justify-center gap-1.5
+                    className={`shrink-0 min-h-14 min-w-28 px-3 rounded-xl shadow-sm active:scale-[.97] transition-transform text-base font-semibold text-white inline-flex items-center justify-center gap-1.5
                                 disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-tinta-500
                                 ${aConfirmar !== null ? 'bg-amber-600 hover:bg-amber-700' : 'bg-tinta-700 hover:bg-tinta-800'}`}>
               {aConfirmar !== null ? 'Incluir assim mesmo' : corrigindo !== null ? 'Trocar' : <><Plus size={20} aria-hidden /> Adicionar</>}
@@ -379,7 +384,13 @@ function Anotar({ inicial, chave, dentroDoSistema, onFechar }: {
           </p>
 
           {r.pesos.length > 0 && (
-            <p className="mt-3 text-base font-semibold text-gray-900 tabular-nums">{plural(r.pesos.length)} · {kg(total)} kg</p>
+            <div className="mt-3 flex items-end justify-between gap-3 rounded-xl bg-tinta-50 px-3 py-2.5">
+              <div>
+                <p className="text-xs font-medium text-tinta-700">Total anotado</p>
+                <p className="font-display text-2xl font-semibold text-gray-900 tabular-nums leading-tight">{kg(total)} kg</p>
+              </div>
+              <p className="text-sm font-medium text-gray-700 tabular-nums pb-0.5">{plural(r.pesos.length)}</p>
+            </div>
           )}
           {r.pesos.length > 0 && (
             <ol className="mt-2 divide-y divide-gray-200 border border-gray-200 rounded-xl bg-white overflow-hidden">
@@ -387,23 +398,26 @@ function Anotar({ inicial, chave, dentroDoSistema, onFechar }: {
                 <li key={i} className={`flex items-center ${corrigindo === i ? 'bg-tinta-50' : novaId === i ? 'animate-entrada' : ''}`}>
                   <button type="button" onClick={() => corrigir(i)}
                           aria-label={`Corrigir a produtoA ${i + 1}, ${gramas(p)} gramas`}
-                          className="flex-1 min-w-0 flex items-center gap-3 px-3 min-h-12 text-left hover:bg-gray-50">
-                    <span className="w-7 text-sm text-gray-600 tabular-nums text-right shrink-0">{i + 1}</span>
-                    <span className="min-w-0">
-                      <span className="block text-base font-semibold text-gray-900 tabular-nums">{gramas(p)} g · {kg(p)} kg</span>
+                          className="flex-1 min-w-0 flex items-center gap-3 px-3 min-h-14 text-left hover:bg-gray-50">
+                    <span className="grid place-items-center size-8 shrink-0 rounded-full bg-gray-100 text-sm font-semibold text-gray-700 tabular-nums">{i + 1}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-base font-semibold text-gray-900 tabular-nums">{gramas(p)} g
+                        <span className="ml-1.5 text-sm font-normal text-gray-600">{kg(p)} kg</span>
+                      </span>
                       {foraDoComum(p) && (
                         <span className="flex items-center gap-1 text-xs text-amber-800">
                           <TriangleAlert size={14} aria-hidden /> Fora de 8.000 a 16.000 g
                         </span>
                       )}
                     </span>
+                    <Pencil size={15} className="text-gray-400 shrink-0" aria-hidden />
                   </button>
                   <BotaoIcone icone={X} rotulo={`Tirar a produtoA ${i + 1}`} onClick={() => tirar(i)} className="mr-1" />
                 </li>
               ))}
             </ol>
           )}
-        </section>
+        </Etapa>
 
         {erroSalvar && (
           <Aviso tipo="erro" acao={erroSalvar.rede ? <Botao tamanho="sm" onClick={salvar}>Tentar de novo</Botao> : undefined}>
@@ -454,19 +468,21 @@ function EscolhaCliente({ clienteId, clienteNome, onEscolher, onTrocar }: {
   }, [clientes, busca])
   const [tocou, setTocou] = useState(false)
 
+  const trocar = () => { setBusca(''); onTrocar() }
+
   if (clienteId) return (
-    <section aria-labelledby="anotar-cliente">
-      <h3 id="anotar-cliente" className="text-sm font-semibold text-gray-800 mb-2">Cliente</h3>
-      <div className="flex items-center gap-3 bg-white border border-gray-300 rounded-lg pl-3 pr-1 min-h-12">
-        <span className="flex-1 min-w-0 font-semibold text-gray-900 truncate">{clienteNome || 'Cliente sem nome'}</span>
-        <Botao variante="fantasma" tamanho="sm" onClick={() => { setBusca(''); onTrocar() }}>Trocar</Botao>
+    <Etapa n={2} id="anotar-cliente" titulo="Cliente" feito>
+      <div className="flex items-center gap-3 rounded-xl border border-tinta-200 bg-tinta-50 pl-2.5 pr-1 min-h-14">
+        <Iniciais nome={clienteNome} destaque />
+        <span className="flex-1 min-w-0 text-base font-semibold text-gray-900 truncate">{clienteNome || 'Cliente sem nome'}</span>
+        <Botao variante="fantasma" tamanho="sm" onClick={trocar}>Trocar</Botao>
       </div>
-    </section>
+    </Etapa>
   )
 
+  const termo = busca.trim()
   return (
-    <section aria-labelledby="anotar-cliente">
-      <h3 id="anotar-cliente" className="text-sm font-semibold text-gray-800 mb-2">Cliente</h3>
+    <Etapa n={2} id="anotar-cliente" titulo="Cliente">
       {novoAberto
         ? <ClienteNovo nomeInicial={busca} onCriado={c => { setNovoAberto(false); setClientes(l => l && !l.some(x => x.id === c.id) ? [c, ...l] : l); onEscolher(c) }}
                        onCancelar={() => setNovoAberto(false)} />
@@ -475,35 +491,55 @@ function EscolhaCliente({ clienteId, clienteNome, onEscolher, onTrocar }: {
             <div className="relative">
               <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" aria-hidden />
               <input type="search" value={busca} onChange={e => setBusca(e.target.value)} onFocus={() => setTocou(true)}
-                     placeholder="Toque e digite o nome do cliente"
-                     aria-label="Buscar cliente" autoComplete="off"
-                     className="w-full min-h-12 rounded-lg border border-gray-300 bg-white pl-10 pr-3 text-base text-gray-900 focus:outline-none focus:ring-2 focus:ring-tinta-500" />
+                     placeholder="Toque e digite o nome"
+                     aria-label="Buscar cliente" aria-controls="anotar-cliente-lista" autoComplete="off"
+                     className={`${CAMPO} pl-10`} />
             </div>
-            <div className="mt-2">
+            <div id="anotar-cliente-lista" aria-live="polite" className="mt-2">
               {erro ? <ErroCarga mensagem="Não consegui carregar os clientes." onTentar={carregar} />
-                : !busca.trim() ? (tocou ? <p className="text-sm text-gray-600 py-1">Digite o nome para ver os clientes.</p> : null)
+                : !termo ? (tocou && (
+                  <p className="flex items-center gap-2 text-sm text-gray-600 px-1 py-1.5">
+                    <Search size={15} className="text-gray-400 shrink-0" aria-hidden /> Digite uma letra do nome para ver os clientes.
+                  </p>
+                ))
                 : clientes === null ? <Carregando linhas={3} rotulo="Carregando os clientes" />
-                : filtrados.length === 0 ? (
-                  <p className="text-sm text-gray-600 py-2">Nenhum cliente com esse nome.</p>
-                ) : (
-                  <ul className="grid grid-cols-1 gap-2">
-                    {filtrados.map(c => (
-                      <li key={c.id}>
-                        <button type="button" onClick={() => onEscolher(c)}
-                                className="w-full min-h-12 px-3 rounded-lg border border-gray-200 bg-white text-left text-base font-medium text-gray-900 hover:border-tinta-500 hover:bg-tinta-50">
-                          {c.nome}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                : (
+                  <div className="rounded-xl border border-gray-200 bg-white overflow-hidden animate-entrada">
+                    <p className="px-3 pt-2.5 pb-1.5 text-xs font-medium text-gray-600">
+                      {filtrados.length === 0 ? 'Nenhum cliente com esse nome'
+                        : filtrados.length === 1 ? '1 cliente encontrado' : `${filtrados.length} clientes encontrados`}
+                    </p>
+                    {filtrados.length > 0 && (
+                      <ul className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
+                        {filtrados.map(c => (
+                          <li key={c.id}>
+                            <button type="button" onClick={() => onEscolher(c)}
+                                    className="w-full min-h-14 flex items-center gap-3 px-3 text-left hover:bg-tinta-50 active:bg-tinta-100 focus:outline-none focus-visible:bg-tinta-50">
+                              <Iniciais nome={c.nome} />
+                              <span className="flex-1 min-w-0 text-base text-gray-900 truncate"><Destacado texto={c.nome} termo={termo} /></span>
+                              <ChevronRight size={18} className="text-gray-400 shrink-0" aria-hidden />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <button type="button" onClick={() => setNovoAberto(true)}
+                            className="w-full min-h-12 flex items-center gap-3 px-3 border-t border-gray-100 text-left text-sm font-medium text-tinta-700 hover:bg-tinta-50">
+                      <span className="grid place-items-center size-9 shrink-0 rounded-full border border-dashed border-tinta-300"><UserPlus size={17} aria-hidden /></span>
+                      <span className="min-w-0 truncate">Cadastrar “{termo}” como cliente novo</span>
+                    </button>
+                  </div>
                 )}
             </div>
-            <Botao variante="secundario" bloco icone={Plus} onClick={() => setNovoAberto(true)} className="mt-3">
-              Cadastrar cliente novo
-            </Botao>
+            {!termo && (
+              <button type="button" onClick={() => setNovoAberto(true)}
+                      className="mt-2 inline-flex items-center gap-1.5 min-h-11 px-1 text-sm font-medium text-tinta-700 hover:text-tinta-900">
+                <UserPlus size={17} aria-hidden /> Cadastrar cliente novo
+              </button>
+            )}
           </>
         )}
-    </section>
+    </Etapa>
   )
 }
 
@@ -527,15 +563,20 @@ function ClienteNovo({ nomeInicial, onCriado, onCancelar }: {
     }
   }
 
-  const campo = 'w-full min-h-12 rounded-lg border border-gray-300 bg-white px-3 text-base text-gray-900 focus:outline-none focus:ring-2 focus:ring-tinta-500'
   return (
-    <div className="bg-white border border-gray-200 rounded-xl p-3 space-y-3">
-      <p className="text-sm font-semibold text-gray-900">Cliente novo</p>
+    <div className="rounded-xl border border-tinta-200 bg-tinta-50 p-3 space-y-3 animate-entrada">
+      <div className="flex items-center gap-2.5">
+        <span className="grid place-items-center size-9 shrink-0 rounded-full bg-tinta-700 text-white"><UserPlus size={17} aria-hidden /></span>
+        <div>
+          <p className="text-base font-semibold text-gray-900 leading-tight">Cliente novo</p>
+          <p className="text-xs text-gray-600">Só o nome. Ele já fica escolhido.</p>
+        </div>
+      </div>
       <div>
-        <label htmlFor="cliente-novo-nome" className="block text-sm font-medium text-gray-700 mb-1">Nome</label>
+        <label htmlFor="cliente-novo-nome" className="block text-sm font-medium text-gray-700 mb-1">Nome do cliente</label>
         <input id="cliente-novo-nome" type="text" value={nome} onChange={e => setNome(e.target.value)} autoCapitalize="characters"
                enterKeyHint="done" onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); criar() } }}
-               autoFocus className={campo} />
+               autoFocus className={CAMPO} />
       </div>
       {erro && <Aviso tipo="erro">{erro}</Aviso>}
       <div className="flex gap-2">
@@ -546,4 +587,47 @@ function ClienteNovo({ nomeInicial, onCriado, onCancelar }: {
       </div>
     </div>
   )
+}
+
+// ── Peças visuais ───────────────────────────────────────────────────────
+const CAMPO = 'appearance-none w-full min-h-12 rounded-xl border border-gray-300 bg-white px-3 text-base text-gray-900 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-tinta-500 focus:border-tinta-500'
+
+// Cartão de cada passo: número (vira um visto quando está preenchido), título e um resumo à direita
+function Etapa({ n, id, titulo, feito = false, resumo, children }: {
+  n: number; id: string; titulo: string; feito?: boolean; resumo?: ReactNode; children: ReactNode
+}) {
+  return (
+    <section aria-labelledby={id} className="rounded-2xl border border-gray-200 bg-white p-3.5 shadow-sm">
+      <div className="flex items-center gap-2.5 mb-3">
+        <span className={`grid place-items-center size-6 shrink-0 rounded-full text-xs font-bold transition-colors
+                          ${feito ? 'bg-tinta-700 text-white' : 'bg-gray-100 text-gray-700'}`} aria-hidden>
+          {feito ? <Check size={14} strokeWidth={3} /> : n}
+        </span>
+        <h3 id={id} className="flex-1 min-w-0 text-base font-semibold text-gray-900 truncate">{titulo}</h3>
+        {resumo}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+// Círculo com as iniciais do cliente (até duas letras)
+function Iniciais({ nome, destaque = false }: { nome: string; destaque?: boolean }) {
+  const letras = nome.trim().split(/\s+/).filter(p => p.length > 2).slice(0, 2).map(p => p[0]).join('')
+    || nome.trim().slice(0, 1) || '?'
+  return (
+    <span aria-hidden className={`grid place-items-center size-9 shrink-0 rounded-full text-sm font-semibold uppercase
+                                  ${destaque ? 'bg-tinta-700 text-white' : 'bg-tinta-100 text-tinta-800'}`}>
+      {letras}
+    </span>
+  )
+}
+
+// Nome com a parte buscada em negrito (ignora acento e maiúscula)
+function Destacado({ texto, termo }: { texto: string; termo: string }) {
+  // letra a letra, para o índice valer no texto original
+  const norm = (s: string) => Array.from(s, ch => ch.normalize('NFD')[0].toLowerCase()).join('')
+  const i = norm(texto).indexOf(norm(termo))
+  if (!termo || i < 0) return <>{texto}</>
+  return <>{texto.slice(0, i)}<strong className="font-semibold text-tinta-800">{texto.slice(i, i + termo.length)}</strong>{texto.slice(i + termo.length)}</>
 }
