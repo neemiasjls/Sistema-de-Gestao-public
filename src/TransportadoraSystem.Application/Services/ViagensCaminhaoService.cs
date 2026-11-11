@@ -1222,6 +1222,15 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         var placaArquivo = NormalizarPlaca(lido.Placa);
         var jaAchadas = new HashSet<int>();
 
+        // Antes: o que casa pela chave ou pela data fica reservado para a sua aba (a regra "provável"
+        // de outra aba não pode tomar a viagem que é exatamente de uma aba deste arquivo).
+        var reservadas = new Dictionary<string, int>();
+        foreach (var a in lido.Viagens)
+        {
+            var (v0, g0, _) = await AcharViagemDoAcertoAsync(ChaveAcerto(lido, a.Aba), placaArquivo, a.Saida, a.Chegada, null, reservadas.Values.ToHashSet());
+            if (v0 != null && g0 != ViagemCasamento.Provavel) reservadas[a.Aba] = v0.Id;
+        }
+
         foreach (var a in lido.Viagens)
         {
             var chave = ChaveAcerto(lido, a.Aba);
@@ -1230,7 +1239,10 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
             // Diária que não fecha em meia (R$ 50): fica a quantidade quebrada e um aviso
             if (a.Diarias % 50 != 0) avisos.Add($"{a.Aba}: diárias de R$ {a.Diarias:N2} não fecham em meia diária.");
 
-            var existente = await AcharViagemDoAcertoAsync(chave, placaArquivo, a.Saida, jaAchadas);
+            var fora = jaAchadas.Concat(reservadas.Where(x => x.Key != a.Aba).Select(x => x.Value)).ToHashSet();
+            var sinais = await SinaisDaAbaAsync(a, placaArquivo);
+            var (existente, grau, motivo) = await AcharViagemDoAcertoAsync(chave, placaArquivo, a.Saida, a.Chegada, sinais, fora);
+            if (motivo != null) avisos.Add($"{a.Aba}: {motivo}.");
             if (existente != null)
             {
                 jaAchadas.Add(existente.Id);
@@ -1238,9 +1250,21 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
                 var difs = CompararComAcerto(existente, retsSistema, novo, a);
                 object Situacao(string s) => new
                 {
-                    aba = a.Aba, situacao = s, viagemId = existente.Id, origem = existente.Origem, status = existente.Status,
+                    aba = a.Aba, situacao = s, grau, viagemId = existente.Id, origem = existente.Origem, status = existente.Status,
                     saida = a.Saida, diferencas = difs.Select(d => new { campo = d.Campo, sistema = d.Sistema, arquivo = d.Arquivo }).ToList(),
                 };
+                if (grau == ViagemCasamento.Provavel)
+                {
+                    // Provável nunca grava sozinho: só com a aba escolhida na confirmação
+                    difs.RemoveAll(d => d.Campo == "Saída");
+                    difs.Insert(0, new("Data de saída", existente.DataSaida?.ToString("dd/MM/yyyy") ?? "(vazio)", a.Saida?.ToString("dd/MM/yyyy") ?? "(vazio)"));
+                    if (trocar?.Contains(NormalizarAba(a.Aba)) != true) { puladas++; viagens.Add(Situacao("CONFIRMAR")); continue; }
+                    await LiberarChaveAsync(chave, existente.Id, a.Aba, avisos);
+                    await SubstituirPeloAcertoAsync(existente, novo, a, lido, avisos);
+                    await LigarCarregamentoSemTrocarAsync(existente, a.Aba, avisos);
+                    substituidas++; viagens.Add(Situacao("SUBSTITUIDA"));
+                    continue;
+                }
                 if (difs.Count == 0) { iguais++; puladas++; viagens.Add(Situacao("IGUAL")); continue; }
                 if (!(trocar?.Contains(NormalizarAba(a.Aba)) ?? substituir))
                 {
@@ -1248,18 +1272,23 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
                         difs.Insert(0, new("Situação", "Fechada no sistema", "Substituir troca uma viagem já fechada"));
                     puladas++; viagens.Add(Situacao("CONFIRMAR")); continue;
                 }
+                await LiberarChaveAsync(chave, existente.Id, a.Aba, avisos);
                 await SubstituirPeloAcertoAsync(existente, novo, a, lido, avisos);
+                await LigarCarregamentoSemTrocarAsync(existente, a.Aba, avisos);
                 substituidas++; viagens.Add(Situacao("SUBSTITUIDA"));
                 continue;
             }
 
             // Começo da cadeia: sem viagem anterior do caminhão no sistema, vale a sobra da planilha
             if (!await TemAnteriorAsync(lido, a.Saida, null)) novo.SobraAnteriorInformada = a.SobraAnterior;
+            await LiberarChaveAsync(chave, 0, a.Aba, avisos);
             db.ViagensCaminhao.Add(novo);
             await db.SaveChangesAsync();
             await LigarRetornosDoAcertoAsync(novo, a, lido, avisos);
+            await LigarCarregamentoSemTrocarAsync(novo, a.Aba, avisos);
             criadas++;
-            viagens.Add(new { aba = a.Aba, situacao = "NOVA", viagemId = novo.Id, origem = novo.Origem, status = novo.Status, saida = a.Saida, diferencas = new List<object>() });
+            jaAchadas.Add(novo.Id);
+            viagens.Add(new { aba = a.Aba, situacao = "NOVA", grau = (string?)null, viagemId = novo.Id, origem = novo.Origem, status = novo.Status, saida = a.Saida, diferencas = new List<object>() });
         }
 
         // Confere: o que o sistema calcula contra os totais guardados na planilha
@@ -1317,16 +1346,92 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
     };
 
     /// <summary>
-    /// Viagem do sistema que é a da aba: mesma chave de importação; senão (sem chave) a mesma placa
-    /// e a mesma data de saída (lançada no painel ou no escritório). Cada uma casa com uma aba só.
+    /// Viagem do sistema que é a da aba, pela regra única de casamento (<see cref="ViagemCasamento"/>):
+    /// candidatas = a da chave e as da placa com saída a até 7 dias da saída da aba.
     /// </summary>
-    private async Task<ViagemCaminhao?> AcharViagemDoAcertoAsync(string chave, string placa, DateOnly? saida, HashSet<int> jaAchadas)
+    private async Task<(ViagemCaminhao? Viagem, string? Grau, string? Motivo)> AcharViagemDoAcertoAsync(string chave, string placa,
+        DateOnly? saida, DateOnly? chegada, SinaisViagem? sinais, IReadOnlySet<int> jaAchadas)
     {
-        var pelaChave = await ComTudo().FirstOrDefaultAsync(v => v.ChaveImportacao == chave);
-        if (pelaChave != null) return pelaChave;
-        if (saida == null) return null;
-        var mesmoDia = await ComTudo().Where(v => v.ChaveImportacao == null && v.DataSaida == saida).ToListAsync();
-        return mesmoDia.Where(v => !jaAchadas.Contains(v.Id) && NormalizarPlaca(v.Placa) == placa).OrderBy(v => v.Id).FirstOrDefault();
+        var cands = await CandidatasDeCasamentoAsync(placa, saida, chave);
+        return ViagemCasamento.Achar(placa, saida, chegada, chave, sinais, cands, jaAchadas);
+    }
+
+    /// <summary>
+    /// A chave (placa|mês|aba) é única no banco. Quando outra viagem a tem mas não é a desta aba
+    /// (a aba mudou de número na planilha: saída longe), ela perde a chave, com aviso, e a chave
+    /// passa para a viagem que é de fato a da aba.
+    /// </summary>
+    private async Task LiberarChaveAsync(string chave, int dono, string aba, List<string> avisos)
+    {
+        var outras = await db.ViagensCaminhao.Where(v => v.ChaveImportacao == chave && v.Id != dono).ToListAsync();
+        if (outras.Count == 0) return;
+        foreach (var o in outras)
+        {
+            o.ChaveImportacao = null;
+            avisos.Add($"{aba}: a viagem {o.Id} (saída {o.DataSaida:dd/MM}) tinha a chave desta aba e a perdeu; confira se ela é de outra aba.");
+        }
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>Viagens da placa com saída a até 7 dias (mais a da chave, se houver).</summary>
+    private async Task<List<ViagemCaminhao>> CandidatasDeCasamentoAsync(string placa, DateOnly? saida, string? chave)
+    {
+        var lista = new List<ViagemCaminhao>();
+        if (saida != null)
+        {
+            var ini = saida.Value.AddDays(-7); var fim = saida.Value.AddDays(7);
+            lista = (await ComTudo().Where(v => v.DataSaida >= ini && v.DataSaida <= fim).ToListAsync())
+                .Where(v => NormalizarPlaca(v.Placa) == placa).ToList();
+        }
+        if (chave != null && lista.All(v => v.ChaveImportacao != chave)
+            && await ComTudo().FirstOrDefaultAsync(v => v.ChaveImportacao == chave) is { } pc)
+            lista.Add(pc);
+        return lista;
+    }
+
+    /// <summary>Sinais da aba para a regra "provável": abastecimentos, caixas e viagens com controle do período.</summary>
+    private async Task<SinaisViagem> SinaisDaAbaAsync(ViagemLida a, string placa)
+    {
+        var ligadas = new HashSet<int>();
+        if (a.Saida is { } s)
+        {
+            var ini = s.AddDays(-1); var fim = a.Chegada ?? s.AddDays(1);
+            ligadas = (await db.CarregamentosVolumes.AsNoTracking().Where(c => c.ViagemId != null && c.Data >= ini && c.Data <= fim)
+                .Select(c => new { c.Placa, c.ViagemId }).ToListAsync())
+                .Where(c => NormalizarPlaca(c.Placa) == placa).Select(c => c.ViagemId!.Value).ToHashSet();
+        }
+        return new SinaisViagem(a.Abastecimentos.Select(x => x.Valor).ToList(), a.Volumes.Sum(o => o.Volumes + o.ProdutoE + o.ProdutoD), ligadas);
+    }
+
+    /// <summary>
+    /// VIA-09/VIA-24: a viagem que veio do acerto (nova ou substituída) e ainda não tem controle de
+    /// carregamento ganha o controle solto da mesma placa (só placas do Bento) com data de saída − 1
+    /// até a chegada (sem chegada: saída + 1). Vale o do dia da saída ou de uma anotação de carga VOLUMES;
+    /// sem nenhum desses, o único da janela. Só LIGA (ViagemId): os volumes da planilha não mudam.
+    /// Mais de um possível: não liga e avisa.
+    /// </summary>
+    private async Task LigarCarregamentoSemTrocarAsync(ViagemCaminhao v, string aba, List<string> avisos)
+    {
+        if (v.DataSaida is not { } saida) return;
+        if (await db.CarregamentosVolumes.AnyAsync(c => c.ViagemId == v.Id)) return;
+        var donos = await DonosDasPlacas.CarregarAsync(db);
+        if (donos.Dono(v.Placa) != DonosDasPlacas.Bento) return;
+        var placa = NormalizarPlaca(v.Placa);
+        var ini = saida.AddDays(-1); var fim = v.DataChegada ?? saida.AddDays(1);
+        var janela = (await db.CarregamentosVolumes.Where(c => c.ViagemId == null && c.Data >= ini && c.Data <= fim).ToListAsync())
+            .Where(c => NormalizarPlaca(c.Placa) == placa).ToList();
+        if (janela.Count == 0) return;
+        var diasVolumes = v.Cargas.Where(c => c.Tipo == "VOLUMES" && c.Data != null).Select(c => c.Data!.Value).Append(saida).ToHashSet();
+        var exatos = janela.Where(c => diasVolumes.Contains(c.Data)).ToList();
+        var escolhido = exatos.Count == 1 ? exatos[0] : exatos.Count == 0 && janela.Count == 1 ? janela[0] : null;
+        if (escolhido == null)
+        {
+            var possiveis = exatos.Count > 1 ? exatos : janela;
+            avisos.Add($"{possiveis.Count} controles possíveis para a {aba} ({string.Join(", ", possiveis.OrderBy(c => c.Data).Select(c => c.Data.ToString("dd/MM")))}): escolha na viagem.");
+            return;
+        }
+        escolhido.ViagemId = v.Id;
+        await db.SaveChangesAsync();
     }
 
     private async Task<bool> TemAnteriorAsync(AcertoLido lido, DateOnly? saida, int? fora) =>
