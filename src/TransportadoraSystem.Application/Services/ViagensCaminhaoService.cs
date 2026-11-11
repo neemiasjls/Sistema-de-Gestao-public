@@ -755,13 +755,13 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
                 l.Avisos.Add($"Placa \"{l.Placa.Trim()}\" do controle corrigida para {placa} (a da frota mais parecida).");
             else if (!conhecidas.Contains(placa))
                 l.Avisos.Add($"Placa {placa} não é da frota e não parece com nenhuma: confira.");
-            // Só os caminhões do Bento entram nos carregamentos (VIA-24); dono pelo cadastro de veículos
-            if (donos.Dono(placa) != DonosDasPlacas.Bento)
+            // VIA-24: todo controle entra (produtosB, produtosC e volumes embalados), mas só os caminhões do
+            // Bento aparecem na aba Carregamentos e se ligam às viagens do acerto; dono pelo cadastro de veículos
+            var doBento = donos.Dono(placa) == DonosDasPlacas.Bento;
+            if (!doBento)
             {
                 var dono = donos.SocioDe(placa) is { } s ? DonosDasPlacas.Nome(s) : "sem dono no cadastro";
-                l.Avisos.Add($"Placa {placa} ({dono}) não é placa do Bento: não foi importada.");
-                resultado.Add(new { aba = l.Aba, guardado = false, avisos = l.Avisos });
-                continue;
+                l.Avisos.Add($"Placa {placa} ({dono}) não é placa do Bento: entra só para produtosB e volumes embalados, fora da aba Carregamentos.");
             }
             // Mesma placa e dia: substitui (importar de novo não duplica)
             var c = await db.CarregamentosVolumes.FirstOrDefaultAsync(x => x.Placa == placa && x.Data == l.Data);
@@ -773,10 +773,10 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
             c.ItensJson = ItensParaJson(l.Itens);
             await db.SaveChangesAsync();
 
-            var (viagemId, aplicado) = await DepoisDeGravarAsync(c, l.Avisos);
+            var (viagemId, aplicado) = await DepoisDeGravarAsync(c, l.Avisos, doBento);
             resultado.Add(new
             {
-                aba = l.Aba, guardado = true, id = c.Id, placa, data = c.Data, clientes = l.Itens.Count, viagemId, aplicado,
+                aba = l.Aba, guardado = true, id = c.Id, placa, doBento, data = c.Data, clientes = l.Itens.Count, viagemId, aplicado,
                 volumes = l.Itens.Sum(i => i.Volumes), produtoE = l.Itens.Sum(i => i.ProdutoE), produtoD = l.Itens.Sum(i => i.ProdutoD),
                 amarelas = l.Itens.Sum(i => i.Amarelas), brancas = l.Itens.Sum(i => i.Brancas), produtosC = l.Itens.Sum(i => i.ProdutosC),
                 avisos = l.Avisos,
@@ -803,7 +803,8 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         c.ItensJson = ItensParaJson(itens);
         await db.SaveChangesAsync();
         var avisos = new List<string>();
-        var (viagemId, aplicado) = await DepoisDeGravarAsync(c, avisos);
+        var doBento = (await DonosDasPlacas.CarregarAsync(db)).Dono(c.Placa) == DonosDasPlacas.Bento;
+        var (viagemId, aplicado) = await DepoisDeGravarAsync(c, avisos, doBento);
         return new
         {
             id = c.Id, placa = c.Placa, data = c.Data, clientes = itens.Count, viagemId, aplicado,
@@ -825,11 +826,12 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
     /// ligada e ainda lançada é trocada; conferida ou fechada só avisa), saídas de
     /// produtosB e produtosC por cliente (EST-02, EST-07) e produtosC da BRZ (NFE-05).
     /// </summary>
-    private async Task<(int? ViagemId, bool Aplicado)> DepoisDeGravarAsync(CarregamentoVolumes c, List<string> avisos)
+    private async Task<(int? ViagemId, bool Aplicado)> DepoisDeGravarAsync(CarregamentoVolumes c, List<string> avisos, bool ligarViagem)
     {
         int? viagemId = c.ViagemId;
         var aplicado = false;
-        if (viagemId == null)
+        if (!ligarViagem) { }
+        else if (viagemId == null)
         {
             var v = await ViagemDoCarregamentoAsync(c);
             if (v != null && !await db.ViagemCaminhaoVolumes.AnyAsync(o => o.ViagemId == v.Id))
@@ -1086,6 +1088,7 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
     private async Task CasarCarregamentoAsync(ViagemCaminhao v)
     {
         if (v.DataSaida == null) return;
+        if ((await DonosDasPlacas.CarregarAsync(db)).Dono(v.Placa) != DonosDasPlacas.Bento) return; // VIA-24
         var cands = await db.CarregamentosVolumes
             .Where(c => c.ViagemId == null && c.Placa == v.Placa && c.Data >= v.DataSaida.Value.AddDays(-2)
                 && c.Data <= (v.DataChegada > v.DataSaida.Value.AddDays(1) ? v.DataChegada.Value : v.DataSaida.Value.AddDays(1)))
@@ -1158,7 +1161,9 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
     {
         var ini = new DateOnly(ano, mes, 1);
         var fim = ini.AddMonths(1);
-        var lista = await db.CarregamentosVolumes.AsNoTracking().Where(c => c.Data >= ini && c.Data < fim).OrderBy(c => c.Data).ThenBy(c => c.Placa).ToListAsync();
+        var donos = await DonosDasPlacas.CarregarAsync(db);
+        var lista = (await db.CarregamentosVolumes.AsNoTracking().Where(c => c.Data >= ini && c.Data < fim).OrderBy(c => c.Data).ThenBy(c => c.Placa).ToListAsync())
+            .Where(c => donos.Dono(c.Placa) == DonosDasPlacas.Bento); // VIA-24: a aba mostra só as placas do Bento
         return lista.Select(c =>
         {
             var itens = ItensDe(c);
