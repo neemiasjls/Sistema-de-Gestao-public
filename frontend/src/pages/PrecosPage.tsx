@@ -80,7 +80,7 @@ export default function PrecosPage() {
         : <TabelaVenda linhas={linhas} tipos={tipos} onEditar={setEdicao} />}
 
       {edicao && dados && (
-        <ModalPreco linha={edicao === 'novo' ? null : edicao} painel={dados} onClose={() => setEdicao(null)}
+        <ModalPreco linha={edicao === 'novo' ? null : edicao} painel={dados} vista={vista} onClose={() => setEdicao(null)}
                     onSalvou={() => { setEdicao(null); carregar() }} />
       )}
     </div>
@@ -130,7 +130,6 @@ function TabelaFrete({ linhas, onEditar }: { linhas: LinhaPreco[]; onEditar: (l:
                 <dt className="text-gray-600">ProdutoD</dt><dd className="text-right"><Valor v={l.produtoD} /></dd>
               </>}
               <dt className="text-gray-600">ProdutoB</dt><dd className="text-right"><Pacote l={l} v={l.produtoB} /></dd>
-              <dt className="text-gray-600">ProdutoC</dt><dd className="text-right"><Pacote l={l} v={l.produtoC} /></dd>
             </dl>
           </li>
         ))}
@@ -144,7 +143,6 @@ function TabelaFrete({ linhas, onEditar }: { linhas: LinhaPreco[]; onEditar: (l:
               <th className="px-3 py-2 font-medium text-right">ProdutoE</th>
               <th className="px-3 py-2 font-medium text-right">ProdutoD</th>
               <th className="px-3 py-2 font-medium text-right">ProdutoB</th>
-              <th className="px-3 py-2 font-medium text-right">ProdutoC</th>
               <th className="px-3 py-2"><span className="sr-only">Editar</span></th>
             </tr>
           </thead>
@@ -156,7 +154,6 @@ function TabelaFrete({ linhas, onEditar }: { linhas: LinhaPreco[]; onEditar: (l:
                 <td className="px-3 py-2 text-right"><Valor v={l.produtoE} /></td>
                 <td className="px-3 py-2 text-right"><Valor v={l.produtoD} /></td>
                 <td className="px-3 py-2 text-right whitespace-nowrap"><Pacote l={l} v={l.produtoB} /></td>
-                <td className="px-3 py-2 text-right whitespace-nowrap"><Pacote l={l} v={l.produtoC} /></td>
                 <td className="px-1 py-1 text-right"><BotaoIcone icone={Pencil} rotulo={`Editar ${l.cliente}`} onClick={() => onEditar(l)} /></td>
               </tr>
             ))}
@@ -243,7 +240,9 @@ function CampoPreco({ rotulo, valor, onChange, dica, placeholder = '0,00' }: {
 
 const CRIAR = 'criar'
 
-function ModalPreco({ linha, painel, onClose, onSalvou }: {
+function ModalPreco({ linha, painel, vista, onClose, onSalvou }: {
+  /** Aberta pela aba Frete: sem os campos de produtoC e produtoA (Admin, 11/11/2026) */
+  vista: Vista
   linha: LinhaPreco | null; painel: Painel; onClose: () => void; onSalvou: () => void
 }) {
   const novo = linha == null
@@ -371,17 +370,17 @@ function ModalPreco({ linha, painel, onClose, onSalvou }: {
             <legend className="font-display text-base font-semibold text-gray-900">Frete por pacote</legend>
             <div className="grid grid-cols-2 gap-3">
               <CampoPreco rotulo="ProdutoB (150)" valor={produtoB} onChange={setProdutoB} dica="0 = não paga" />
-              <CampoPreco rotulo="ProdutoC (100)" valor={produtoC} onChange={setProdutoC} dica="0 = não paga" />
+              {vista !== 'frete' && <CampoPreco rotulo="ProdutoC (100)" valor={produtoC} onChange={setProdutoC} dica="0 = não paga" />}
             </div>
           </fieldset>
           <fieldset className="space-y-2">
             <legend className="font-display text-base font-semibold text-gray-900">Venda</legend>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {painel.tipos.map(t => (
+              {painel.tipos.filter(t => vista !== 'frete' || t.codigo !== 'PRODUTOC').map(t => (
                 <CampoPreco key={t.id} rotulo={`${nomeTipo(t)}, por pacote`} valor={precos[t.id] ?? ''}
                             onChange={v => setPrecos({ ...precos, [t.id]: v })} placeholder="sem preço" />
               ))}
-              <CampoPreco rotulo="ProdutoA, por quilo" valor={produtoA} onChange={setProdutoA} placeholder="sem preço" dica="Até 4 casas: 20,4575" />
+              {vista !== 'frete' && <CampoPreco rotulo="ProdutoA, por quilo" valor={produtoA} onChange={setProdutoA} placeholder="sem preço" dica="Até 4 casas: 20,4575" />}
             </div>
           </fieldset>
         </>
