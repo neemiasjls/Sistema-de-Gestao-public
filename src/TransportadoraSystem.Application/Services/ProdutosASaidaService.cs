@@ -68,6 +68,8 @@ public class ProdutosASaidaService(AppDbContext db, EmbaladosService embalados)
             venda.Cliente = cliente;
             venda.PrecoKg = PrecoDaSaida(cliente, carga);
         }
+        // Saída que ficou a R$ 0 (cliente estava sem preço quando anotou): ao editar, pega o preço atual do cliente
+        else if (venda.PrecoKg == 0) venda.PrecoKg = PrecoDaSaida(cliente, carga);
         var atuais = venda.ProdutosA.OrderBy(b => b.Id).Select(b => b.PesoGramas).ToList();
         if (!atuais.SequenceEqual(pesos))
         {

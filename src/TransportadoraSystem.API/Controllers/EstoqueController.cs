@@ -76,7 +76,7 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
         cliente.Cidade = dto.Cidade;
         // Cliente que estava sem preço por kg (ex.: cadastrado pelo portal, EST-09): o preço novo vale
         // para as saídas dele que ficaram a R$ 0. As que já tinham preço continuam congeladas.
-        if (cliente.PrecoProdutoAKg == 0 && dto.PrecoProdutoAKg > 0 && !EmbaladosService.EhEmbalado(cliente.Nome))
+        if (dto.PrecoProdutoAKg > 0 && !EmbaladosService.EhEmbalado(cliente.Nome))
             await db.VendasProdutoA.Where(v => v.ClienteId == id && v.PrecoKg == 0)
                 .ExecuteUpdateAsync(s => s.SetProperty(v => v.PrecoKg, dto.PrecoProdutoAKg).SetProperty(v => v.AtualizadoEm, DateTime.UtcNow));
         cliente.PrecoProdutoAKg = dto.PrecoProdutoAKg;

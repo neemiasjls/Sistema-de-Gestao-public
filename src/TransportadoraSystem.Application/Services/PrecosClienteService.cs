@@ -145,7 +145,14 @@ public class PrecosClienteService(AppDbContext db)
             throw new ErroViagem("Valor negativo.");
         c.FreteProdutoB = e.FreteProdutoB;
         c.FreteProdutoC = e.FreteProdutoC ?? e.FreteProdutoB;
-        if (e.PrecoProdutoAKg is { } kg) c.PrecoProdutoAKg = kg;
+        if (e.PrecoProdutoAKg is { } kg)
+        {
+            c.PrecoProdutoAKg = kg;
+            // As saídas deste cliente que ficaram a R$ 0 passam a ter o preço (as com preço continuam congeladas)
+            if (kg > 0 && !EmbaladosService.EhEmbalado(c.Nome))
+                await db.VendasProdutoA.Where(v => v.ClienteId == c.Id && v.PrecoKg == 0)
+                    .ExecuteUpdateAsync(s => s.SetProperty(v => v.PrecoKg, kg).SetProperty(v => v.AtualizadoEm, DateTime.UtcNow));
+        }
         foreach (var item in e.Precos ?? [])
         {
             var atual = c.PrecosProdutoB.FirstOrDefault(p => p.TipoProdutoBId == item.TipoProdutoBId);
