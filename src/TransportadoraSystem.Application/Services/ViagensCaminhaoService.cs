@@ -1694,7 +1694,8 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         }
         catch (Exception ex) when (ex is ErroViagem or InvalidOperationException or DbUpdateException)
         {
-            return FechamentoMensalService.DespesasNaoImportadas(unico!.Id, unico.Nome, lido.Ano, lido.Mes, "Erro ao gravar as despesas do mês: " + ex.Message);
+            return FechamentoMensalService.DespesasNaoImportadas(unico!.Id, unico.Nome, lido.Ano, lido.Mes, ex is ErroViagem ? "Erro ao gravar as despesas do mês: " + ex.Message
+                    : "Não consegui gravar as despesas do mês no fechamento. Tente de novo ou lance pela tela do Fechamento.");
         }
     }
 
