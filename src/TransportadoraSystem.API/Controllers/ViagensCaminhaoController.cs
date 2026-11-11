@@ -57,6 +57,34 @@ public class ViagensCaminhaoController(ViagensCaminhaoService svc, AuthService a
         catch (ErroViagem ex) { return BadRequest(new { erro = ex.Message }); }
     }
 
+    // ── Viagens repetidas (docs/planos/importacoes-mesclar.md, Parte 4): prévia e juntar ──
+
+    [HttpGet("duplicadas")]
+    public async Task<IActionResult> Duplicadas() => Ok(await svc.DuplicadasAsync());
+
+    public record ParJuntar(int ManterId, int RemoverId);
+    public record JuntarDto(List<ParJuntar>? Pares, List<int>? ApagarVazias);
+
+    /// <summary>Cada par numa transação; um que falha não desfaz os outros. Devolve o que fez por item.</summary>
+    [HttpPost("juntar")]
+    public async Task<IActionResult> Juntar([FromBody] JuntarDto dto)
+    {
+        var itens = new List<object>();
+        foreach (var p in dto.Pares ?? [])
+        {
+            try { itens.Add(new { manterId = p.ManterId, removerId = p.RemoverId, ok = true, avisos = await svc.JuntarAsync(p.ManterId, p.RemoverId) }); }
+            catch (ErroViagem ex) { itens.Add(new { manterId = p.ManterId, removerId = p.RemoverId, ok = false, avisos = new List<string> { ex.Message } }); }
+            db.ChangeTracker.Clear();
+        }
+        foreach (var id in dto.ApagarVazias ?? [])
+        {
+            try { await svc.ApagarVaziaAsync(id); itens.Add(new { apagadaId = id, ok = true, avisos = new List<string> { $"Viagem vazia {id} apagada." } }); }
+            catch (ErroViagem ex) { itens.Add(new { apagadaId = id, ok = false, avisos = new List<string> { ex.Message } }); }
+            db.ChangeTracker.Clear();
+        }
+        return Ok(new { itens });
+    }
+
     public record StatusDto(string Status);
 
     [HttpPut("{id:int}/status")]

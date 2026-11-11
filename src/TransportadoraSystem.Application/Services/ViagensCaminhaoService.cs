@@ -1730,6 +1730,262 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         return d;
     }
 
+    // ───────────────────────── Viagens duplicadas (juntar) ─────────────────────────
+
+    private static int Nivel(string? status) => status switch { "fechada" => 2, "conferida" => 1, _ => 0 };
+    private static bool DaPlanilha(ViagemCaminhao v) => v.Origem == "importacao";
+    private static string? ArquivoDaChave(string? chave) => chave is { } c && c.LastIndexOf('|') is var i and > 0 ? c[..i] : null;
+    private static string? AbaDaChave(string? chave) => chave is { } c && c.LastIndexOf('|') is var i and > 0 ? c[(i + 1)..] : null;
+    private static int QuantoTem(ViagemCaminhao v) => v.Volumes.Count + v.Abastecimentos.Count + v.Despesas.Count + v.Cargas.Count
+        + (v.DataChegada != null ? 1 : 0) + (v.Levou != 0 ? 1 : 0);
+
+    /// <summary>
+    /// S4 (docs/planos/importacoes-mesclar.md): vazia = sem volumes, sem retorno ligado, sem abastecimento,
+    /// sem despesa e levou 0. Só sai pedida pelo id, com confirmação.
+    /// </summary>
+    private static bool Vazia(ViagemCaminhao v, IReadOnlySet<int> comRetorno) =>
+        v.Volumes.Count == 0 && v.Abastecimentos.Count == 0 && v.Despesas.Count == 0 && v.Levou == 0 && !comRetorno.Contains(v.Id);
+
+    /// <summary>
+    /// Qual das duas fica (S1): a que NÃO veio da planilha (mantém Id, anotações, controle e origem).
+    /// As duas da planilha ou nenhuma: fica a que tem mais dados (empate: a mais antiga).
+    /// Valores: os da planilha; nenhuma (ou as duas) da planilha: os da que fica.
+    /// </summary>
+    private static (ViagemCaminhao Fica, ViagemCaminhao Sai, bool ValoresDaQueSai) QualFica(ViagemCaminhao a, ViagemCaminhao b)
+    {
+        if (DaPlanilha(a) != DaPlanilha(b)) return DaPlanilha(a) ? (b, a, true) : (a, b, true);
+        var fica = QuantoTem(a) != QuantoTem(b) ? (QuantoTem(a) > QuantoTem(b) ? a : b) : (a.Id < b.Id ? a : b);
+        return (fica, fica == a ? b : a, false);
+    }
+
+    /// <summary>
+    /// Prévia (só leitura) das viagens repetidas já gravadas: pares por placa pela regra de junção
+    /// (grau "data" = mesma saída; "provavel" = saída a até 3 dias ou períodos que se cruzam, uma só
+    /// candidata e um sinal igual) e as viagens vazias (S4). Duas com chave do mesmo arquivo não formam
+    /// par; vazia não entra em par (aparece só como vazia).
+    /// </summary>
+    public async Task<object> DuplicadasAsync()
+    {
+        var todas = await ComTudo().AsNoTracking().ToListAsync();
+        var rets = await db.RetornosFrete.AsNoTracking().Where(r => r.ViagemId != null).ToListAsync();
+        var carregs = await db.CarregamentosVolumes.AsNoTracking().Where(c => c.ViagemId != null).ToListAsync();
+        var comRetorno = rets.Select(r => r.ViagemId!.Value).ToHashSet();
+        var vazias = todas.Where(v => Vazia(v, comRetorno)).ToList();
+        var idsVazias = vazias.Select(v => v.Id).ToHashSet();
+
+        var pares = new List<object>();
+        foreach (var g in todas.Where(v => v.DataSaida != null && !idsVazias.Contains(v.Id)).GroupBy(v => NormalizarPlaca(v.Placa)))
+        {
+            var lista = g.OrderBy(v => v.DataSaida).ThenBy(v => v.Id).ToList();
+            var usados = new HashSet<int>();
+            bool PodeSerPar(ViagemCaminhao x, ViagemCaminhao y) => x.Id != y.Id
+                && !(x.ChaveImportacao != null && y.ChaveImportacao != null && ArquivoDaChave(x.ChaveImportacao) == ArquivoDaChave(y.ChaveImportacao));
+            var achados = new List<(ViagemCaminhao A, ViagemCaminhao B, string Grau, string? Sinal)>();
+
+            // Grau "data": mesma saída
+            foreach (var x in lista)
+            {
+                if (usados.Contains(x.Id)) continue;
+                var y = lista.Where(o => !usados.Contains(o.Id) && o.DataSaida == x.DataSaida && PodeSerPar(x, o))
+                    .OrderBy(o => DaPlanilha(o) != DaPlanilha(x) ? 0 : 1).ThenBy(o => o.Id).FirstOrDefault();
+                if (y == null) continue;
+                usados.Add(x.Id); usados.Add(y.Id);
+                achados.Add((x, y, ViagemCasamento.Data, null));
+            }
+
+            // Grau "provavel": perto, uma só candidata dos dois lados e um sinal igual
+            bool Perto(ViagemCaminhao x, ViagemCaminhao y) =>
+                Math.Abs(x.DataSaida!.Value.DayNumber - y.DataSaida!.Value.DayNumber) <= ViagemCasamento.DiasPerto
+                || x.DataSaida!.Value <= (y.DataChegada ?? y.DataSaida!.Value) && (x.DataChegada ?? x.DataSaida!.Value) >= y.DataSaida!.Value;
+            List<ViagemCaminhao> Vizinhas(ViagemCaminhao x) => lista.Where(o => !usados.Contains(o.Id) && PodeSerPar(x, o) && Perto(x, o)).ToList();
+            SinaisViagem Sinais(ViagemCaminhao x)
+            {
+                var ini = x.DataSaida!.Value.AddDays(-1); var fim = x.DataChegada ?? x.DataSaida!.Value.AddDays(1);
+                var ligadas = carregs.Where(c => c.Data >= ini && c.Data <= fim && NormalizarPlaca(c.Placa) == g.Key).Select(c => c.ViagemId!.Value).ToHashSet();
+                return new(x.Abastecimentos.Select(a => a.Valor).ToList(), x.Volumes.Sum(o => o.CaixasVolumes + o.CaixasProdutoE + o.CaixasProdutoD), ligadas);
+            }
+            foreach (var x in lista)
+            {
+                if (usados.Contains(x.Id)) continue;
+                var viz = Vizinhas(x);
+                if (viz.Count != 1) continue;
+                var y = viz[0];
+                if (Vizinhas(y).Count != 1) continue;
+                var sinal = ViagemCasamento.SinalIgual(y, Sinais(x)) ?? ViagemCasamento.SinalIgual(x, Sinais(y));
+                if (sinal == null) continue;
+                usados.Add(x.Id); usados.Add(y.Id);
+                achados.Add((x, y, ViagemCasamento.Provavel, sinal));
+            }
+
+            foreach (var (a, b, grau, sinal) in achados)
+            {
+                var (fica, sai, valoresDaQueSai) = QualFica(a, b);
+                var retsFica = rets.Where(r => r.ViagemId == fica.Id).ToList();
+                var retsSai = rets.Where(r => r.ViagemId == sai.Id).ToList();
+                var cFica = carregs.Where(c => c.ViagemId == fica.Id).ToList();
+                var cSai = carregs.Where(c => c.ViagemId == sai.Id).ToList();
+                var difs = CompararViagens(fica, retsFica, sai, retsSai);
+                pares.Add(new
+                {
+                    placa = g.Key, grau, sinal,
+                    manterId = fica.Id, removerId = sai.Id,
+                    valoresDe = valoresDaQueSai ? sai.Id : fica.Id,
+                    motivo = valoresDaQueSai
+                        ? $"Fica a viagem {fica.Id} ({NomeOrigem(fica.Origem)}) com os valores da planilha (viagem {sai.Id})."
+                        : $"Nenhuma (ou as duas) da planilha: fica a viagem {fica.Id}, que tem mais dados, com os valores dela.",
+                    situacaoFinal = Nivel(sai.Status) > Nivel(fica.Status) ? sai.Status : fica.Status,
+                    fica = ResumoDuplicada(fica, retsFica, cFica),
+                    sai = ResumoDuplicada(sai, retsSai, cSai),
+                    diferencas = difs.Select(d => new { campo = d.Campo, fica = d.Sistema, sai = d.Arquivo }).ToList(),
+                    mudamDeViagem = new
+                    {
+                        retornos = retsSai.Select(r => new
+                        {
+                            r.Id, r.Data, r.Transportadora, freteTotal = r.FreteTotal,
+                            sai = r.ForaDoControle && retsFica.Any(f => Math.Abs(f.FreteTotal - r.FreteTotal) < 0.01m),
+                        }).ToList(),
+                        carregamento = cSai.Select(c => new { c.Id, c.Data, vaiPara = cFica.Count == 0 ? "fica" : "solto" }).ToList(),
+                        anotacoes = sai.Cargas.Where(c => !fica.Cargas.Any(f => MesmaAnotacao(f, c)))
+                            .Select(c => new { c.Id, c.Tipo, c.Data, c.Transportadora, c.Valor }).ToList(),
+                    },
+                });
+            }
+        }
+
+        return new
+        {
+            pares,
+            vazias = vazias.OrderBy(v => v.Placa).ThenBy(v => v.DataSaida).Select(v => new
+            {
+                v.Id, v.Placa, v.MotoristaNome, v.DataSaida, v.DataChegada, v.Origem, v.Status,
+                anotacoes = v.Cargas.Count, carregamento = carregs.Any(c => c.ViagemId == v.Id),
+            }).ToList(),
+        };
+    }
+
+    private static string NomeOrigem(string o) => o switch { "motorista" => "do motorista", "importacao" => "da planilha", _ => "do escritório" };
+
+    private static object ResumoDuplicada(ViagemCaminhao v, List<RetornoFrete> rets, List<CarregamentoVolumes> carregs) => new
+    {
+        v.Id, v.Placa, v.MotoristaNome, v.Origem, v.Status, v.DataSaida, v.DataChegada, v.Destino, v.ChaveImportacao,
+        aba = AbaDaChave(v.ChaveImportacao), v.Levou,
+        caixas = v.Volumes.Sum(o => o.CaixasVolumes + o.CaixasProdutoE + o.CaixasProdutoD),
+        abastecimentos = v.Abastecimentos.Sum(a => a.Valor), despesas = v.Despesas.Sum(d => d.Valor),
+        retornos = rets.Count, anotacoes = v.Cargas.Count, carregamentos = carregs.Select(c => c.Data).ToList(),
+    };
+
+    /// <summary>Diferenças campo a campo entre as duas viagens do par (formato de <see cref="DiferencaAcerto"/>).</summary>
+    private static List<DiferencaAcerto> CompararViagens(ViagemCaminhao fica, List<RetornoFrete> retsFica, ViagemCaminhao sai, List<RetornoFrete> retsSai)
+    {
+        var lida = new ViagemLida("", 0, sai.MotoristaNome, null, sai.PlacaCarreta, sai.Destino, sai.DataSaida, sai.DataChegada, sai.KmSaida, sai.KmChegada,
+            sai.Litros, 0, sai.Levou, sai.Devolveu, ValorDiarias(sai), sai.PorcentagemComissao, [], [], [],
+            retsSai.Select(r => new RetornoDaViagem(r.Transportadora, r.FreteTotal, r.PorcentagemIcms, r.Destino)).ToList(), []);
+        return CompararComAcerto(fica, retsFica, sai, lida);
+    }
+
+    /// <summary>
+    /// Junta duas viagens que são a mesma (docs/planos/importacoes-mesclar.md, Parte 4), numa transação.
+    /// A que fica recebe da que sai (quando a que sai é a da planilha) chave, mês/ano, destino, datas, km,
+    /// litros, levou, devolveu, diárias, %, sobra anterior informada, volumes, abastecimentos e despesas;
+    /// situação = a mais avançada. Retornos passam (o "fora do controle" repetido pelo mesmo valor sai);
+    /// controle de carregamento: herda se a que fica não tem, senão o da que sai fica solto; anotações
+    /// passam se não forem repetidas. Por fim remove a que sai (sem ExcluirAsync). Devolve os avisos.
+    /// </summary>
+    public async Task<List<string>> JuntarAsync(int manterId, int removerId)
+    {
+        if (manterId == removerId) throw new ErroViagem("Escolha duas viagens diferentes.");
+        var fica = await ComTudo().FirstOrDefaultAsync(v => v.Id == manterId) ?? throw new ErroViagem($"Viagem {manterId} não encontrada.");
+        var sai = await ComTudo().FirstOrDefaultAsync(v => v.Id == removerId) ?? throw new ErroViagem($"Viagem {removerId} não encontrada.");
+        if (NormalizarPlaca(fica.Placa) != NormalizarPlaca(sai.Placa)) throw new ErroViagem("As duas viagens são de placas diferentes.");
+        var avisos = new List<string>();
+        var (_, _, valoresDaQueSai) = QualFica(fica, sai);
+        var valoresDaPlanilha = valoresDaQueSai && DaPlanilha(sai);
+
+        await using var tx = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync() : null;
+
+        // 1. O que muda de viagem: retornos, controle de carregamento, anotações
+        var retsFica = await db.RetornosFrete.Where(r => r.ViagemId == fica.Id).ToListAsync();
+        foreach (var r in await db.RetornosFrete.Where(r => r.ViagemId == sai.Id).ToListAsync())
+        {
+            if (r.ForaDoControle && retsFica.Any(f => Math.Abs(f.FreteTotal - r.FreteTotal) < 0.01m))
+            {
+                db.RetornosFrete.Remove(r);
+                avisos.Add($"Retorno {r.Transportadora} R$ {r.FreteTotal:N2} (fora do controle) repetido na viagem {fica.Id}: saiu.");
+                continue;
+            }
+            r.ViagemId = fica.Id; retsFica.Add(r);
+        }
+        var cFica = await db.CarregamentosVolumes.AnyAsync(c => c.ViagemId == fica.Id);
+        foreach (var c in await db.CarregamentosVolumes.Where(c => c.ViagemId == sai.Id).ToListAsync())
+        {
+            if (!cFica) { c.ViagemId = fica.Id; cFica = true; continue; }
+            c.ViagemId = null;
+            avisos.Add($"As duas tinham controle de carregamento: o de {c.Data:dd/MM} (da viagem {sai.Id}) ficou solto.");
+        }
+        // Só a chave estrangeira muda (tirar da coleção apagaria o filho como órfão)
+        var cargasFica = fica.Cargas.ToList();
+        var ordem = cargasFica.Count;
+        foreach (var c in sai.Cargas.ToList())
+        {
+            if (cargasFica.FirstOrDefault(f => MesmaAnotacao(f, c)) is { } igual)
+            {
+                // Repetida: fica a da viagem que fica; a ligação com o retorno passa se ela não tinha
+                if (igual.RetornoId == null && c.RetornoId != null) { var rid = c.RetornoId; c.RetornoId = null; await db.SaveChangesAsync(); igual.RetornoId = rid; igual.Ligacao = c.Ligacao; }
+                continue;
+            }
+            c.ViagemId = fica.Id; c.Ordem = ordem++;
+        }
+        var chave = sai.ChaveImportacao;
+        sai.ChaveImportacao = null;   // a chave é única no banco: sai antes de passar para a que fica
+        await db.SaveChangesAsync();
+
+        // 2. Valores da planilha
+        if (valoresDaPlanilha)
+        {
+            if (sai.MotoristaId != null || fica.MotoristaId == null) { fica.MotoristaId = sai.MotoristaId; fica.MotoristaNome = sai.MotoristaNome; }
+            if (!string.IsNullOrWhiteSpace(sai.PlacaCarreta)) fica.PlacaCarreta = sai.PlacaCarreta;
+            fica.ChaveImportacao = chave; fica.MesReferencia = sai.MesReferencia; fica.AnoReferencia = sai.AnoReferencia;
+            fica.Destino = sai.Destino; fica.DataSaida = sai.DataSaida; fica.DataChegada = sai.DataChegada;
+            fica.KmSaida = sai.KmSaida; fica.KmChegada = sai.KmChegada; fica.Litros = sai.Litros;
+            fica.Levou = sai.Levou; fica.Devolveu = sai.Devolveu;
+            fica.DiariasQuantidade = sai.DiariasQuantidade; fica.ValorDiaria = sai.ValorDiaria; fica.PorcentagemComissao = sai.PorcentagemComissao;
+            fica.SobraAnteriorInformada = sai.SobraAnteriorInformada;
+            db.RemoveRange(fica.Volumes); db.RemoveRange(fica.Abastecimentos); db.RemoveRange(fica.Despesas);
+            await db.SaveChangesAsync();
+            foreach (var o in sai.Volumes.ToList()) o.ViagemId = fica.Id;
+            foreach (var a in sai.Abastecimentos.ToList()) a.ViagemId = fica.Id;
+            foreach (var d in sai.Despesas.ToList()) d.ViagemId = fica.Id;
+        }
+        else if (fica.ChaveImportacao == null) fica.ChaveImportacao = chave;
+        else if (chave != null) avisos.Add($"A viagem {sai.Id} tinha a chave {chave}; a {fica.Id} ficou com a dela.");
+
+        if (Nivel(sai.Status) > Nivel(fica.Status))
+        {
+            fica.Status = sai.Status;
+            fica.ConferidoEm ??= sai.ConferidoEm ?? DateTime.UtcNow;
+        }
+        var nota = DaPlanilha(sai) && AbaDaChave(chave) is { } aba
+            ? $"Juntada com a viagem da planilha ({aba}) em {DateTime.Now:dd/MM/yyyy}."
+            : $"Juntada com a viagem {sai.Id} em {DateTime.Now:dd/MM/yyyy}.";
+        fica.Observacoes = string.Join(" ", new[] { fica.Observacoes, nota }.Where(x => !string.IsNullOrWhiteSpace(x)));
+        fica.AtualizadoEm = DateTime.UtcNow;
+        await db.SaveChangesAsync();
+        db.ViagensCaminhao.Remove(sai);
+        await db.SaveChangesAsync();
+        if (tx != null) await tx.CommitAsync();
+        avisos.Insert(0, $"Viagem {sai.Id} juntada na {fica.Id}" + (valoresDaPlanilha ? " com os valores da planilha." : "."));
+        return avisos;
+    }
+
+    /// <summary>Apaga a viagem vazia (S4) pedida pelo id, pelo ExcluirAsync. Recusa a que tem dados.</summary>
+    public async Task ApagarVaziaAsync(int id)
+    {
+        var v = await ComTudo().AsNoTracking().FirstOrDefaultAsync(x => x.Id == id) ?? throw new ErroViagem($"Viagem {id} não encontrada.");
+        var comRetorno = await db.RetornosFrete.AnyAsync(r => r.ViagemId == id) ? new HashSet<int> { id } : [];
+        if (!Vazia(v, comRetorno)) throw new ErroViagem($"A viagem {id} não está vazia (tem volumes, retorno, abastecimento, despesa ou dinheiro levado).");
+        await ExcluirAsync(id);
+    }
+
     // ───────────────────────── Excel ─────────────────────────
 
     // Acerto do mês por motorista (VIA-21); sem motorista, pela placa (viagens antigas soltas)
