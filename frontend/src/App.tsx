@@ -241,6 +241,7 @@ function Layout() {
 // Guard: redireciona para /login se não autenticado
 function PrivateRoutes() {
   const { token, usuario, loading } = useAuth()
+  const location = useLocation()
 
   if (loading) {
     // Primeira carga (confere o login guardado). Com a API dormindo isso leva até
@@ -253,7 +254,21 @@ function PrivateRoutes() {
     )
   }
 
-  if (!token) return <Navigate to="/login" replace />
+  // /produtosA (o QR do barracão) sem login: a entrada pública do portal (entrar, criar conta,
+  // esqueci a senha). Logado, segue o caminho de sempre (perfil produtosA: o portal; escritório:
+  // o portal dentro do sistema; motorista: a folha dele). Fica aqui, e não numa rota própria
+  // "/produtosA" lá em cima: as rotas do Layout casariam só o resto do endereço ("/") e o
+  // escritório caía no Início em vez do portal.
+  if (!token) {
+    if (ehEntradaPortal(location.pathname)) return (
+      <ProtecaoTela>
+        <Suspense fallback={<div className="h-tela bg-menu" />}>
+          <PortalEntradaPage />
+        </Suspense>
+      </ProtecaoTela>
+    )
+    return <Navigate to="/login" replace />
+  }
 
   // Senha provisória do e-mail: primeiro cria a própria, depois entra.
   if (usuario?.trocarSenha) return <CriarSenhaPage />
@@ -291,19 +306,9 @@ function PortalSozinho() {
   )
 }
 
-// /produtosA (o QR do barracão): sem login, a entrada pública do portal (entrar, criar conta,
-// esqueci a senha); logado, segue o caminho de sempre (perfil produtosA: o portal; escritório:
-// o portal dentro do sistema; motorista: a folha dele).
-function ProdutosARoute() {
-  const { token, loading } = useAuth()
-  if (!loading && !token) return (
-    <ProtecaoTela>
-      <Suspense fallback={<div className="h-tela bg-menu" />}>
-        <PortalEntradaPage />
-      </Suspense>
-    </ProtecaoTela>
-  )
-  return <PrivateRoutes />
+// O endereço do QR do barracão (aceita "/produtosA/" e maiúsculas, como a rota fazia)
+function ehEntradaPortal(pathname: string) {
+  return pathname.replace(/\/+$/, '').toLowerCase() === '/produtosA'
 }
 
 export default function App() {
@@ -312,7 +317,6 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<PublicRoute />} />
-          <Route path="/produtosA" element={<ProdutosARoute />} />
           <Route path="/*" element={<PrivateRoutes />} />
         </Routes>
       </BrowserRouter>
