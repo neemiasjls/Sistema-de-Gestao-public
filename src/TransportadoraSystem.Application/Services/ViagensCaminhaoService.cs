@@ -216,7 +216,9 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
                 throw new ErroViagemExistente(
                     $"Já existe viagem desta placa com saída em {existente.DataSaida:dd/MM} (situação {NomeSituacao(existente.Status)}): abra aquela.",
                     existente.Id);
-            return await JuntarEnvioDoMotoristaAsync(existente, e, origem, usuarioId, motoristaFixo);
+            var junta = await JuntarEnvioDoMotoristaAsync(existente, e, origem, usuarioId, motoristaFixo);
+            await LigarRetornosDaViagemAsync(junta);
+            return junta;
         }
         ViagemCaminhao v;
         if (id is { } vid)
@@ -342,6 +344,8 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         await db.SaveChangesAsync();
         // Anotação "outra carga" sem retorno ligado: o sistema procura o importado (VIA-22)
         await LigarAnotacoesAsync(v.Id);
+        // VIA-25: retornos livres da placa no período da viagem
+        await LigarRetornosDaViagemAsync(v);
 
         // Viagem sem volumes ainda: tenta o controle de carregamento da placa e do dia
         if (v.Volumes.Count == 0) await CasarCarregamentoAsync(v);
@@ -681,17 +685,26 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         r.ForaDoControle = e.ForaDoControle;
         r.Conferido = e.Conferido ?? true;
         r.AtualizadoEm = DateTime.UtcNow;
+        var viagemAntes = r.ViagemId;
         if (e.ViagemId is { } vid)
         {
             if (!await db.ViagensCaminhao.AnyAsync(v => v.Id == vid)) throw new ErroViagem("Viagem não encontrada.");
             r.ViagemId = vid;
+            // VIA-25: viagem escolhida à mão; a mesma de antes mantém como estava (auto continua auto)
+            if (vid != viagemAntes) r.ViagemLigacao = ViagemPeriodoLigador.Manual;
         }
-        else r.ViagemId = null;
+        else
+        {
+            r.ViagemId = null;
+            if (viagemAntes != null) r.ViagemLigacao = ViagemPeriodoLigador.Solto;   // tirado da viagem: não volta sozinho
+        }
         if (r.ViagemId != null && r.MotoristaId == null)
             r.MotoristaId = await db.ViagensCaminhao.Where(v => v.Id == r.ViagemId).Select(v => v.MotoristaId).FirstOrDefaultAsync();
         AplicarEscolhaDoContrato(r, e);
         await db.SaveChangesAsync();
         await AtualizarCargaDoRetornoAsync(r);
+        // VIA-25: sem viagem (e não tirado à mão) procura a viagem da placa pelo período
+        if (r.ViagemId == null && r.ViagemLigacao != ViagemPeriodoLigador.Solto) await LigarRetornosPeloPeriodoAsync(r.Data, r.Data);
         // VIA-27: liga ao contrato da Strada (PDF) e recalcula o adiantamento com o frete novo
         await StradaRetornos.SincronizarAsync(db);
         return r;
@@ -750,6 +763,8 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         var r = await db.RetornosFrete.FindAsync(retornoId) ?? throw new ErroViagem("Retorno não encontrado.");
         if (viagemId is { } vid && !await db.ViagensCaminhao.AnyAsync(v => v.Id == vid)) throw new ErroViagem("Viagem não encontrada.");
         r.ViagemId = viagemId;
+        // VIA-25: escolha à mão vale; tirado da viagem não volta sozinho
+        r.ViagemLigacao = viagemId == null ? ViagemPeriodoLigador.Solto : ViagemPeriodoLigador.Manual;
         r.AtualizadoEm = DateTime.UtcNow;
         await db.SaveChangesAsync();
         await AtualizarCargaDoRetornoAsync(r);
@@ -889,27 +904,47 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         return trocas;
     }
 
-    /// <summary>Liga retornos sem viagem à viagem do mesmo caminhão que estava na estrada naquele dia (só quando há uma).</summary>
-    public async Task<int> VincularRetornosSemViagemAsync(int ano, int mes)
+    /// <summary>Liga retornos sem viagem do mês (± 7 dias) pela placa e pelo período da viagem (VIA-25).</summary>
+    public Task<int> VincularRetornosSemViagemAsync(int ano, int mes) =>
+        LigarRetornosPeloPeriodoAsync(new DateOnly(ano, mes, 1).AddDays(-7), new DateOnly(ano, mes, 1).AddMonths(1).AddDays(6));
+
+    /// <summary>
+    /// VIA-25: retornos livres com data entre ini e fim entram na viagem da placa cujo período contém a data
+    /// (ViagemPeriodoLigador). Só quando há uma viagem; retorno tirado à mão ("solto") ou fora do controle não entra.
+    /// </summary>
+    private async Task<int> LigarRetornosPeloPeriodoAsync(DateOnly ini, DateOnly fim)
     {
-        var ini = new DateOnly(ano, mes, 1).AddDays(-7);
-        var fim = new DateOnly(ano, mes, 1).AddMonths(1).AddDays(7);
-        var soltos = await db.RetornosFrete.Where(r => r.ViagemId == null && !r.ForaDoControle && r.Data >= ini && r.Data < fim && r.Placa != null).ToListAsync();
-        if (soltos.Count == 0) return 0;
-        var placas = soltos.Select(r => r.Placa!).Distinct().ToList();
-        var viagens = await db.ViagensCaminhao.AsNoTracking()
-            .Where(v => placas.Contains(v.Placa) && v.DataSaida != null && v.DataSaida <= fim && (v.DataChegada ?? v.DataSaida) >= ini.AddDays(-20))
+        var livres = await db.RetornosFrete.Where(r => r.ViagemId == null && !r.ForaDoControle && r.Placa != null
+                && (r.ViagemLigacao == null || r.ViagemLigacao != ViagemPeriodoLigador.Solto) && r.Data >= ini && r.Data <= fim)
             .ToListAsync();
+        if (livres.Count == 0) return 0;
+        // Viagens que podem cobrir o intervalo e as seguintes (a próxima saída fecha o período da que não tem chegada)
+        var viagens = await db.ViagensCaminhao.AsNoTracking()
+            .Where(v => v.DataSaida != null && v.DataSaida >= ini.AddDays(-60) && v.DataSaida <= fim.AddDays(ViagemPeriodoLigador.DiasSemChegada + 1))
+            .Select(v => new ViagemPeriodoLigador.Viagem(v.Id, v.Placa, v.PlacaCarreta, v.DataSaida, v.DataChegada, v.MotoristaId))
+            .ToListAsync();
+        var res = ViagemPeriodoLigador.Ligar(
+            livres.Select(r => new ViagemPeriodoLigador.Retorno(r.Id, r.Placa, r.Data, r.ViagemId, r.ViagemLigacao)), viagens);
         var n = 0;
-        foreach (var r in soltos)
+        foreach (var x in res.Where(x => x.ViagemId != null))
         {
-            var cand = viagens.Where(v => v.Placa == r.Placa && v.DataSaida <= r.Data && (v.DataChegada ?? v.DataSaida.Value.AddDays(3)) >= r.Data).ToList();
-            if (cand.Count != 1) continue;
-            r.ViagemId = cand[0].Id;
+            var r = livres.First(l => l.Id == x.RetornoId);
+            r.ViagemId = x.ViagemId;
+            r.ViagemLigacao = ViagemPeriodoLigador.Auto;
+            if (x.MotoristaId != null) r.MotoristaId = x.MotoristaId;
+            r.AtualizadoEm = DateTime.UtcNow;
             n++;
         }
-        await db.SaveChangesAsync();
+        if (n > 0) await db.SaveChangesAsync();
         return n;
+    }
+
+    /// <summary>Depois de gravar a viagem: os retornos livres do período dela (VIA-25).</summary>
+    private async Task LigarRetornosDaViagemAsync(ViagemCaminhao v)
+    {
+        if (v.DataSaida is not { } s) return;
+        var fim = v.DataChegada is { } c && c >= s ? c : s.AddDays(ViagemPeriodoLigador.DiasSemChegada);
+        await LigarRetornosPeloPeriodoAsync(s, fim);
     }
 
     public static MotoristaFrota? AcharMotorista(string? nome, IEnumerable<MotoristaFrota> lista)
@@ -1495,6 +1530,11 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
             jaAchadas.Add(novo.Id);
             viagens.Add(new { aba = a.Aba, situacao = "NOVA", grau = (string?)null, viagemId = novo.Id, origem = novo.Origem, status = novo.Status, saida = a.Saida, diferencas = new List<object>() });
         }
+
+        // VIA-25: retornos livres do mês do acerto entram na viagem da placa pelo período
+        var inicioAcerto = new DateOnly(lido.Ano, lido.Mes, 1);
+        var ligadosPeriodo = await LigarRetornosPeloPeriodoAsync(inicioAcerto.AddDays(-7), inicioAcerto.AddMonths(1).AddDays(6));
+        if (ligadosPeriodo > 0) avisos.Add($"{ligadosPeriodo} retorno(s) sem viagem entraram na viagem pela placa e pelo período.");
 
         // Confere: o que o sistema calcula contra os totais guardados na planilha
         var viagensMes = await ComTudo().AsNoTracking().Where(v => v.Placa == lido.Placa && v.AnoReferencia == lido.Ano && v.MesReferencia == lido.Mes).ToListAsync();
