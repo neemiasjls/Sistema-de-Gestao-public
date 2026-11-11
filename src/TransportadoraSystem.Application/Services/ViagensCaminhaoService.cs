@@ -790,37 +790,103 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
     public async Task<object> ImportarRetornosAsync(byte[] bytes, string nome)
     {
         var lido = RetornosLeitor.Ler(bytes, nome);
-        var chaves = lido.Linhas.Select(l => l.Chave).ToList();
-        var existentes = await db.RetornosFrete.Where(r => r.ChaveImportacao != null && chaves.Contains(r.ChaveImportacao))
-            .Select(r => r.ChaveImportacao!).ToListAsync();
+        var inicioMes = new DateOnly(lido.Ano, lido.Mes, 1);
+        var fimMes = inicioMes.AddMonths(1).AddDays(-1);
+        // UI-22: importar de novo mescla com o que já está gravado (qualquer origem, mês ± 3 dias), nunca duplica
+        var gravados = await db.RetornosFrete.Where(r => r.Data >= inicioMes.AddDays(-3) && r.Data <= fimMes.AddDays(3)).ToListAsync();
+        var pares = RetornosCasamento.Casar(lido.Linhas, gravados
+            .Select(r => new RetornosCasamento.Gravado(r.Id, r.Data, r.Placa, r.Transportadora, r.Destino, r.ValorFrete, r.ChaveImportacao)).ToList());
         var motoristas = await db.MotoristasFrota.AsNoTracking().ToListAsync();
-        var novos = 0;
-        foreach (var l in lido.Linhas.Where(l => !existentes.Contains(l.Chave)))
+        var avisos = new List<string>(lido.Avisos);
+        int novos = 0, atualizados = 0, iguais = 0;
+        foreach (var p in pares)
         {
-            db.RetornosFrete.Add(new RetornoFrete
+            var l = p.Linha;
+            if (p.Aviso != null) avisos.Add(p.Aviso);
+            var motoristaId = AcharMotorista(l.Motorista, motoristas)?.Id;
+            if (p.GravadoId is not { } gid)
             {
-                Data = l.Data, Destino = l.Destino, Transportadora = l.Transportadora, ValorFrete = l.ValorFrete,
-                Pedagio = l.Pedagio, Adicional = l.Adicional, DescontoSeguro = l.DescontoSeguro, PorcentagemTip = l.PorcentagemTip,
-                DescontoManual = l.DescontoManual, Motorista = l.Motorista, Placa = l.Placa, Observacoes = l.Observacoes,
-                FormaPagamento = l.FormaPagamento, Origem = "importacao", Conferido = true, ChaveImportacao = l.Chave,
-                MotoristaId = AcharMotorista(l.Motorista, motoristas)?.Id,
-            });
-            novos++;
+                db.RetornosFrete.Add(new RetornoFrete
+                {
+                    Data = l.Data, Destino = l.Destino, Transportadora = l.Transportadora, ValorFrete = l.ValorFrete,
+                    Pedagio = l.Pedagio, Adicional = l.Adicional, DescontoSeguro = l.DescontoSeguro, PorcentagemTip = l.PorcentagemTip,
+                    DescontoManual = l.DescontoManual, Motorista = l.Motorista, Placa = l.Placa, Observacoes = l.Observacoes,
+                    FormaPagamento = l.FormaPagamento, Origem = "importacao", Conferido = true, ChaveImportacao = l.Chave,
+                    MotoristaId = motoristaId,
+                });
+                novos++;
+                continue;
+            }
+            var r = gravados.First(g => g.Id == gid);
+            var trocas = AtualizarRetornoDaPlanilha(r, l, motoristaId);
+            var mudouChave = r.ChaveImportacao != l.Chave;
+            r.ChaveImportacao = l.Chave;
+            if (trocas.Count > 0)
+            {
+                atualizados++;
+                avisos.AddRange(trocas.Select(t => $"{l.Data:dd/MM} {l.Placa} {l.Transportadora}: {t}"));
+            }
+            else iguais++;
+            if (trocas.Count > 0 || mudouChave) r.AtualizadoEm = DateTime.UtcNow;
         }
+        // Importado antes e sumiu da planilha: só avisa, nunca apaga
+        var casados = pares.Where(p => p.GravadoId != null).Select(p => p.GravadoId!.Value).ToHashSet();
+        foreach (var r in gravados.Where(r => r.Origem == "importacao" && r.Data >= inicioMes && r.Data <= fimMes && !casados.Contains(r.Id)).OrderBy(r => r.Data))
+            avisos.Add($"{r.Data:dd/MM} {r.Placa} {r.Transportadora} {r.ValorFrete:N2}: está no sistema e não na planilha.");
         await db.SaveChangesAsync();
         // Primeiro as anotações dos motoristas (VIA-22: a ligação delas diz a viagem), depois a viagem pelas datas
-        var inicioMes = new DateOnly(lido.Ano, lido.Mes, 1);
         var anotacoesLigadas = await LigarAnotacoesAsync(null, inicioMes.AddDays(-2), inicioMes.AddMonths(1).AddDays(1));
         var anotacoesPendentes = (await AnotacoesPendentesAsync(lido.Ano, lido.Mes)).Count;
         var vinculados = await VincularRetornosSemViagemAsync(lido.Ano, lido.Mes);
+        // VIA-27: liga ao contrato da Strada e recalcula o adiantamento com o frete atualizado
+        await StradaRetornos.SincronizarAsync(db);
         var total = lido.Linhas.Sum(l => l.FreteTotal);
         return new
         {
-            arquivo = nome, mes = lido.Mes, ano = lido.Ano, linhas = lido.Linhas.Count, novos,
+            arquivo = nome, mes = lido.Mes, ano = lido.Ano, linhas = lido.Linhas.Count, novos, atualizados, iguais,
             jaExistiam = lido.Linhas.Count - novos, vinculados, anotacoesLigadas, anotacoesPendentes, total, totalPlanilha = lido.TotalPlanilha,
             confere = lido.TotalPlanilha == null || Math.Abs(lido.TotalPlanilha.Value - total) < 0.01m,
-            avisos = lido.Avisos,
+            avisos,
         };
+    }
+
+    /// <summary>
+    /// Copia a linha da planilha para o retorno casado e devolve cada troca ("campo: anterior → atual").
+    /// Viagem, fora do controle, conferido, contrato e a coluna Descarga ficam como estão (UI-22, VIA-27).
+    /// </summary>
+    private static List<string> AtualizarRetornoDaPlanilha(RetornoFrete r, RetornoLido l, int? motoristaId)
+    {
+        var trocas = new List<string>();
+        static string T(string? s) => string.IsNullOrWhiteSpace(s) ? "(vazio)" : s.Trim();
+        static string V(decimal? v) => v is { } x ? x.ToString("N2", new System.Globalization.CultureInfo("pt-BR")) : "(vazio)";
+        void Texto(string campo, string? antes, string? depois, Action<string?> gravar)
+        {
+            if ((antes ?? "").Trim() == (depois ?? "").Trim()) return;
+            trocas.Add($"{campo} {T(antes)} → {T(depois)}");
+            gravar(depois);
+        }
+        void Valor(string campo, decimal? antes, decimal? depois, Action<decimal?> gravar)
+        {
+            if (antes == depois) return;
+            trocas.Add($"{campo} {V(antes)} → {V(depois)}");
+            gravar(depois);
+        }
+        if (r.Data != l.Data) { trocas.Add($"data {r.Data:dd/MM} → {l.Data:dd/MM}"); r.Data = l.Data; }
+        Texto("placa", r.Placa, l.Placa, v => r.Placa = v);
+        Texto("transportadora", r.Transportadora, l.Transportadora, v => r.Transportadora = v);
+        Texto("destino", r.Destino, l.Destino, v => r.Destino = v);
+        Valor("valor do frete", r.ValorFrete, l.ValorFrete, v => r.ValorFrete = v ?? 0);
+        Valor("pedágio", r.Pedagio, l.Pedagio, v => r.Pedagio = v ?? 0);
+        Valor("adicional", r.Adicional, l.Adicional, v => r.Adicional = v ?? 0);
+        Valor("seguro", r.DescontoSeguro, l.DescontoSeguro, v => r.DescontoSeguro = v ?? 0);
+        Valor("% TIP", r.PorcentagemTip, l.PorcentagemTip, v => r.PorcentagemTip = v);
+        Valor("desconto", r.DescontoManual, l.DescontoManual, v => r.DescontoManual = v);
+        Texto("motorista", r.Motorista, l.Motorista, v => r.Motorista = v);
+        Texto("observações", r.Observacoes, l.Observacoes, v => r.Observacoes = v);
+        Texto("forma de pagamento", r.FormaPagamento, l.FormaPagamento, v => r.FormaPagamento = v);
+        // Motorista do cadastro: só troca quando a planilha acha um (não solta o que veio da viagem)
+        if (motoristaId != null && r.MotoristaId != motoristaId) r.MotoristaId = motoristaId;
+        return trocas;
     }
 
     /// <summary>Liga retornos sem viagem à viagem do mesmo caminhão que estava na estrada naquele dia (só quando há uma).</summary>

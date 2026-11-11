@@ -12,9 +12,9 @@ import { useConfirmar } from '../components/ui/Confirmar'
 import { Card } from '../components/ModalBase'
 import { brl, dataBr, num } from '../utils/formato'
 import { erroDaApi } from '../services/semPararApi'
-import { retornosApi, type RetornosMes, type ResultadoRetornos, type RetornoEntrada, type AnotacaoPendente } from '../services/viagensCaminhaoApi'
+import { retornosApi, type RetornosMes, type ResultadoRetornos, type RetornoEntrada, type AnotacaoPendente, type Retorno } from '../services/viagensCaminhaoApi'
 import {
-  NavegaMes, RetornoModal, Selo, ListaResultado, retornoVazio, entradaDoRetorno, mesExtenso,
+  NavegaMes, RetornoModal, Selo, ValorOuAviso, ListaResultado, retornoVazio, entradaDoRetorno, mesExtenso,
 } from '../components/viagens/ViagensPecas'
 
 // Retornos: a planilha "CONTROLE MENSAL DE RETORNOS" como tela. Cada frete de
@@ -33,7 +33,7 @@ export default function RetornosPage() {
   const [dados, setDados] = useState<RetornosMes | null>(null)
   const [falhou, setFalhou] = useState(false)
   const [filtro, setFiltro] = useState<Filtro>('todos')
-  const [edicao, setEdicao] = useState<{ id: number | null; inicial: RetornoEntrada } | null>(null)
+  const [edicao, setEdicao] = useState<{ id: number | null; inicial: RetornoEntrada; retorno?: Retorno } | null>(null)
   const [importando, setImportando] = useState(false)
   const [mostrarImportar, setMostrarImportar] = useState(false)
   const [resultado, setResultado] = useState<ResultadoRetornos[] | null>(null)
@@ -104,7 +104,7 @@ export default function RetornosPage() {
         <ListaResultado titulo="Planilhas de retornos" onFechar={() => setResultado(null)} itens={resultado.map((r, i) => ({
           chave: `${r.arquivo}-${i}`, nome: r.arquivo, erro: r.erro, avisos: r.avisos, problema: r.confere === false,
           linha: r.erro ? null : <>
-            {r.mes && r.ano ? mesExtenso(r.mes, r.ano) : ''} · {r.linhas} linhas · {r.novos} novas · {r.jaExistiam} já estavam
+            {r.mes && r.ano ? mesExtenso(r.mes, r.ano) : ''} · {r.linhas} linhas · {r.novos ?? 0} novos, {r.atualizados ?? 0} atualizados, {r.iguais ?? 0} iguais
             {(r.vinculados ?? 0) > 0 && <> · {r.vinculados} ligadas à viagem</>}
             {(r.anotacoesLigadas ?? 0) > 0 && <> · {r.anotacoesLigadas} anotações do motorista ligadas</>}
             {(r.anotacoesPendentes ?? 0) > 0 && <> · <span className="text-amber-800 font-medium">{r.anotacoesPendentes} anotações sem par ou em dúvida</span></>}
@@ -185,6 +185,13 @@ export default function RetornosPage() {
                       </div>
                       <p className="font-display text-lg font-semibold tabular-nums whitespace-nowrap">{brl(r.freteTotal)}</p>
                     </div>
+                    <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-sm">
+                      <dt className="text-gray-600">Frete contratado</dt><dd className="text-right tabular-nums">{brl(r.valorFrete)}</dd>
+                      <dt className="text-gray-600">Descarga</dt><dd className="text-right tabular-nums">{r.adicional ? brl(r.adicional) : '—'}</dd>
+                      <dt className="text-gray-600">Valor do contrato</dt><dd className="text-right"><ValorOuAviso valor={r.valorContrato} aviso={r.contratoAviso ?? 'Sem contrato ligado'} /></dd>
+                      <dt className="text-gray-600">Adiantamento</dt><dd className="text-right"><ValorOuAviso valor={r.adiantamentoDescarga} aviso={r.contratoAviso ?? 'Sem contrato ligado'} /></dd>
+                      <dt className="text-gray-600">Falta receber no TIP</dt><dd className="text-right"><ValorOuAviso valor={r.reembolsoDescarga} aviso={r.contratoAviso ?? 'Sem contrato ou descarga'} /></dd>
+                    </dl>
                     <div className="flex flex-wrap gap-1">
                       {!r.conferido && <Selo tom="atencao">A conferir</Selo>}
                       {r.foraDoControle && <Selo>Fora do controle</Selo>}
@@ -194,7 +201,7 @@ export default function RetornosPage() {
                         : !r.foraDoControle && <Selo>Sem viagem</Selo>}
                     </div>
                     <div className="flex gap-1 justify-end">
-                      <BotaoIcone icone={Pencil} rotulo="Editar retorno" onClick={() => setEdicao({ id: r.id, inicial: entradaDoRetorno(r) })} />
+                      <BotaoIcone icone={Pencil} rotulo="Editar retorno" onClick={() => setEdicao({ id: r.id, inicial: entradaDoRetorno(r), retorno: r })} />
                       <BotaoIcone icone={Trash2} rotulo="Apagar retorno" perigo onClick={() => excluir(r.id, `${dataBr(r.data)} · ${r.transportadora ?? ''} · ${brl(r.freteTotal)}`)} />
                     </div>
                   </li>
@@ -208,12 +215,15 @@ export default function RetornosPage() {
                       <th className="px-3 py-2 font-medium">Data</th>
                       <th className="px-3 py-2 font-medium">Destino</th>
                       <th className="px-3 py-2 font-medium">Transportadora</th>
-                      <th className="px-3 py-2 font-medium text-right">Valor do frete</th>
+                      <th className="px-3 py-2 font-medium text-right">Frete contratado</th>
                       <th className="px-3 py-2 font-medium text-right">Pedágio</th>
-                      <th className="px-3 py-2 font-medium text-right">Adicional</th>
+                      <th className="px-3 py-2 font-medium text-right">Descarga</th>
                       <th className="px-3 py-2 font-medium text-right">Desconto do seguro</th>
                       <th className="px-3 py-2 font-medium text-right">Desconto</th>
                       <th className="px-3 py-2 font-medium text-right">Frete total</th>
+                      <th className="px-3 py-2 font-medium text-right">Valor do contrato</th>
+                      <th className="px-3 py-2 font-medium text-right">Adiantamento</th>
+                      <th className="px-3 py-2 font-medium text-right">Falta receber no TIP</th>
                       <th className="px-3 py-2 font-medium">Motorista</th>
                       <th className="px-3 py-2 font-medium">Placa</th>
                       <th className="px-3 py-2 font-medium">Origem</th>
@@ -233,6 +243,9 @@ export default function RetornosPage() {
                         <td className="px-3 py-2 text-right tabular-nums">{r.descontoSeguro ? num(r.descontoSeguro) : ''}</td>
                         <td className="px-3 py-2 text-right tabular-nums" title={r.descontoManual != null ? 'Digitado à mão' : r.porcentagemTip ? `${num(r.porcentagemTip)}% TIP` : ''}>{r.desconto ? num(r.desconto) : ''}</td>
                         <td className="px-3 py-2 text-right tabular-nums font-semibold">{num(r.freteTotal)}</td>
+                        <td className="px-3 py-2 text-right whitespace-nowrap"><ValorOuAviso valor={r.valorContrato} aviso={r.contratoAviso ?? 'Sem contrato ligado'} /></td>
+                        <td className="px-3 py-2 text-right whitespace-nowrap"><ValorOuAviso valor={r.adiantamentoDescarga} aviso={r.contratoAviso ?? 'Sem contrato ligado'} /></td>
+                        <td className="px-3 py-2 text-right whitespace-nowrap"><ValorOuAviso valor={r.reembolsoDescarga} aviso={r.contratoAviso ?? 'Sem contrato ou descarga'} /></td>
                         <td className="px-3 py-2">{r.motorista}</td>
                         <td className="px-3 py-2 whitespace-nowrap">{r.placa}</td>
                         <td className="px-3 py-2">{r.observacoes}</td>
@@ -246,7 +259,7 @@ export default function RetornosPage() {
                           </div>
                         </td>
                         <td className="px-1 py-1 whitespace-nowrap">
-                          <BotaoIcone icone={Pencil} rotulo="Editar retorno" onClick={() => setEdicao({ id: r.id, inicial: entradaDoRetorno(r) })} />
+                          <BotaoIcone icone={Pencil} rotulo="Editar retorno" onClick={() => setEdicao({ id: r.id, inicial: entradaDoRetorno(r), retorno: r })} />
                           <BotaoIcone icone={Trash2} rotulo="Apagar retorno" perigo onClick={() => excluir(r.id, `${dataBr(r.data)} · ${r.transportadora ?? ''} · ${brl(r.freteTotal)}`)} />
                         </td>
                       </tr>
@@ -257,7 +270,7 @@ export default function RetornosPage() {
                       <tr>
                         <td className="px-3 py-2" colSpan={8}>Valor total de retornos</td>
                         <td className="px-3 py-2 text-right tabular-nums">{num(dados.total)}</td>
-                        <td colSpan={5} />
+                        <td colSpan={8} />
                       </tr>
                     </tfoot>
                   )}
@@ -269,7 +282,7 @@ export default function RetornosPage() {
       )}
 
       {edicao && (
-        <RetornoModal id={edicao.id} inicial={edicao.inicial} onClose={() => setEdicao(null)}
+        <RetornoModal id={edicao.id} inicial={edicao.inicial} retorno={edicao.retorno} onClose={() => setEdicao(null)}
                       onSalvou={() => { setEdicao(null); carregar() }} />
       )}
     </div>

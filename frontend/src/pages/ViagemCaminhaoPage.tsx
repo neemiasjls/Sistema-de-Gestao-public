@@ -19,7 +19,7 @@ import {
   type ViagemDetalhe, type ViagemEntrada, type MotoristaFrota, type PrecoCliente, type Volumes, type Abastecimento,
   type Despesa, type Carga, type Retorno,
 } from '../services/viagensCaminhaoApi'
-import { CampoNumero, SeloStatus, Selo, RetornoModal, retornoVazio, entradaDoRetorno } from '../components/viagens/ViagensPecas'
+import { CampoNumero, SeloStatus, Selo, RetornoModal, retornoVazio, entradaDoRetorno, ValorOuAviso } from '../components/viagens/ViagensPecas'
 
 // Uma viagem do caminhão: a aba VIAGEMn do acerto mensal, para conferir e editar.
 // As contas aparecem na hora (mesmas fórmulas da API e da planilha); salvar grava
@@ -94,7 +94,7 @@ export default function ViagemCaminhaoPage() {
   const [motoristas, setMotoristas] = useState<MotoristaFrota[]>([])
   const [precos, setPrecos] = useState<PrecoCliente[]>([])
   const [salvando, setSalvando] = useState(false)
-  const [retornoEdit, setRetornoEdit] = useState<{ id: number | null; inicial: ReturnType<typeof retornoVazio> } | null>(null)
+  const [retornoEdit, setRetornoEdit] = useState<{ id: number | null; inicial: ReturnType<typeof retornoVazio>; retorno?: Retorno } | null>(null)
   const [informarSobra, setInformarSobra] = useState(false)
 
   const carregar = useCallback(async () => {
@@ -401,10 +401,17 @@ export default function ViagemCaminhaoPage() {
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-gray-900">{r.transportadora ?? 'Sem transportadora'} · {dataBr(r.data)}</p>
                       <p className="text-gray-600 truncate">{[r.observacoes, r.destino].filter(Boolean).join(' / ')}</p>
+                      <dl className="flex flex-wrap gap-x-3 text-gray-600">
+                        <div className="flex gap-1"><dt>Frete contratado</dt><dd className="tabular-nums text-gray-900">{brl(r.valorFrete)}</dd></div>
+                        <div className="flex gap-1"><dt>Descarga</dt><dd className="tabular-nums text-gray-900">{r.adicional ? brl(r.adicional) : '—'}</dd></div>
+                        <div className="flex gap-1"><dt>Valor do contrato</dt><dd className="text-gray-900"><ValorOuAviso valor={r.valorContrato} aviso={r.contratoAviso ?? 'Sem contrato ligado'} /></dd></div>
+                        <div className="flex gap-1"><dt>Adiantamento</dt><dd className="text-gray-900"><ValorOuAviso valor={r.adiantamentoDescarga} aviso={r.contratoAviso ?? 'Sem contrato ligado'} /></dd></div>
+                        <div className="flex gap-1"><dt>Falta receber no TIP</dt><dd className="text-gray-900"><ValorOuAviso valor={r.reembolsoDescarga} aviso={r.contratoAviso ?? 'Sem contrato ou descarga'} /></dd></div>
+                      </dl>
                       <div className="flex flex-wrap gap-1">{!r.conferido && <Selo tom="atencao">A conferir</Selo>}{r.foraDoControle && <Selo>Fora do controle mensal</Selo>}</div>
                     </div>
                     <span className="tabular-nums font-semibold whitespace-nowrap">{brl(r.freteTotal)}</span>
-                    <BotaoIcone icone={Pencil} rotulo="Editar retorno" onClick={() => setRetornoEdit({ id: r.id, inicial: entradaDoRetorno(r) })} />
+                    <BotaoIcone icone={Pencil} rotulo="Editar retorno" onClick={() => setRetornoEdit({ id: r.id, inicial: entradaDoRetorno(r), retorno: r })} />
                     <BotaoIcone icone={Unlink} rotulo="Soltar da viagem" onClick={() => vincular(r, false)} />
                   </li>
                 ))}
@@ -552,7 +559,7 @@ export default function ViagemCaminhaoPage() {
       )}
 
       {retornoEdit && (
-        <RetornoModal id={retornoEdit.id} inicial={retornoEdit.inicial} onClose={() => setRetornoEdit(null)}
+        <RetornoModal id={retornoEdit.id} inicial={retornoEdit.inicial} retorno={retornoEdit.retorno} onClose={() => setRetornoEdit(null)}
                       onSalvou={() => { setRetornoEdit(null); carregar() }} />
       )}
     </div>

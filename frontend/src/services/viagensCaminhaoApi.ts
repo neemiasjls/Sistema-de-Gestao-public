@@ -193,7 +193,7 @@ export type ResultadoCarregamento = {
   }[]
 }
 export type ResultadoRetornos = {
-  arquivo: string; erro?: string; mes?: number; ano?: number; linhas?: number; novos?: number; jaExistiam?: number
+  arquivo: string; erro?: string; mes?: number; ano?: number; linhas?: number; novos?: number; atualizados?: number; iguais?: number; jaExistiam?: number
   vinculados?: number; anotacoesLigadas?: number; anotacoesPendentes?: number; total?: number; totalPlanilha?: number | null; confere?: boolean; avisos?: string[]
 }
 
