@@ -1,13 +1,14 @@
 import { Carregando, ErroCarga, Vazio } from '../components/ui/Estados'
 import { useConfirmar } from '../components/ui/Confirmar'
-import Botao from '../components/ui/Botao'
+import Botao, { classesBotao } from '../components/ui/Botao'
+import { Link, useNavigate } from 'react-router-dom'
 import Aviso from '../components/ui/Aviso'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
-import { Boxes, FileUp, PackageCheck, Plus, RefreshCw, Users } from 'lucide-react'
+import { Boxes, FileUp, PackageCheck, Plus, RefreshCw, Tags } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import api, { downloadBlob, nomeDoArquivo } from '../services/api'
-import ClientesEstoqueModal, { ClienteEstoque, TipoProdutoB } from '../components/ClientesEstoqueModal'
+import type { ClienteEstoque, TipoProdutoB } from '../components/ClientesEstoqueModal'
 import ImportarPlanilhaModal from '../components/ImportarPlanilhaModal'
 import { Modal, Campo, BotoesModal } from '../components/ModalBase'
 import {
@@ -68,7 +69,7 @@ export default function EstoqueProdutosBPage({ produto = 'PRODUTOB' }: { produto
 
   const [modalCarga, setModalCarga] = useState(false)
   const [modalVenda, setModalVenda] = useState(false)
-  const [modalClientes, setModalClientes] = useState(false)
+  const navegar = useNavigate()
   const [modalImportar, setModalImportar] = useState(false)
   const [romaneio, setRomaneio] = useState<Venda | null>(null)
   const [aberta, setAberta] = useState<number | null>(null)
@@ -185,7 +186,9 @@ export default function EstoqueProdutosBPage({ produto = 'PRODUTOB' }: { produto
           ? 'ProdutosC vazias em pacotes de 100. O custo por pacote sai da carga; o preço de cada cliente, do painel de preços; a diferença é a comissão. As saídas vêm do controle de carregamento (coluna U).'
           : 'O custo por pacote sai da carga (produtosB + frete ÷ pacotes). O preço de cada cliente vem do painel de preços; a diferença é a comissão. As saídas vêm do controle de carregamento e do uso nos volumes embalados.'}
         acoes={<>
-          <Botao variante="secundario" icone={Users} onClick={() => setModalClientes(true)}>Clientes</Botao>
+          <Link to="/precos?vista=venda" className={classesBotao('secundario')}>
+            <Tags className="w-4 h-4" aria-hidden="true" /> Preços dos clientes
+          </Link>
           {!ehProdutoC && <Botao variante="secundario" icone={RefreshCw} carregando={acertando} textoCarregando="Acertando..." onClick={acertarEmbalados}>Acertar uso nos embalados</Botao>}
           {!ehProdutoC && <Botao variante="secundario" icone={FileUp} onClick={() => setModalImportar(true)}>Importar planilha</Botao>}
           <Botao variante="primario" icone={Plus} onClick={() => setModalCarga(true)}>Nova carga</Botao>
@@ -334,7 +337,7 @@ export default function EstoqueProdutosBPage({ produto = 'PRODUTOB' }: { produto
           clientes={clientes.filter(c => c.ativo)}
           onClose={() => setModalVenda(false)}
           onSalvou={() => { setModalVenda(false); recarregar() }}
-          onCadastrarCliente={() => { setModalVenda(false); setModalClientes(true) }}
+          onCadastrarCliente={() => { setModalVenda(false); navegar('/precos?vista=venda') }}
         />
       )}
 
@@ -351,14 +354,6 @@ export default function EstoqueProdutosBPage({ produto = 'PRODUTOB' }: { produto
         onImportou={id => { setModalImportar(false); carregarCargas(id); carregarClientes() }}
       />
 
-      <ClientesEstoqueModal
-        aberto={modalClientes}
-        foco="produtoB"
-        produto={produto}
-        onClose={() => setModalClientes(false)}
-        tipos={tipos}
-        onSalvou={carregarClientes}
-      />
     </div>
   )
 }
