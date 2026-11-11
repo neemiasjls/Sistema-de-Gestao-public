@@ -30,7 +30,8 @@ const precoDe = (l: LinhaPreco, tipoId: number) => l.venda?.precos.find(p => p.t
 export default function PrecosPage() {
   const [dados, setDados] = useState<Painel | null>(null)
   const [falhou, setFalhou] = useState(false)
-  const [vista, setVista] = useState<Vista>('frete')
+  // ?vista=venda abre direto na Venda (vindo de ProdutosA)
+  const [vista, setVista] = useState<Vista>(() => new URLSearchParams(window.location.search).get('vista') === 'venda' ? 'venda' : 'frete')
   const [busca, setBusca] = useState('')
   const [edicao, setEdicao] = useState<LinhaPreco | 'novo' | null>(null)
 

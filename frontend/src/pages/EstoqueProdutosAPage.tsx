@@ -1,5 +1,5 @@
-import { Disc3, FileUp, History, PackageCheck, Plus, Users, X } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Disc3, FileUp, History, PackageCheck, Plus, Tags, X } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { Carregando, ErroCarga, Vazio } from '../components/ui/Estados'
 import { useConfirmar } from '../components/ui/Confirmar'
@@ -9,7 +9,7 @@ import CabecalhoTela from '../components/ui/CabecalhoTela'
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import api, { downloadBlob, nomeDoArquivo } from '../services/api'
-import ClientesEstoqueModal, { ClienteEstoque, TipoProdutoB, brlKg } from '../components/ClientesEstoqueModal'
+import { type ClienteEstoque, type TipoProdutoB, brlKg } from '../components/ClientesEstoqueModal'
 import ImportarPlanilhaModal from '../components/ImportarPlanilhaModal'
 import { Modal, Campo, BotoesModal } from '../components/ModalBase'
 import {
@@ -65,7 +65,7 @@ export default function EstoqueProdutosAPage() {
   const [modalCarga, setModalCarga] = useState(false)
   const [modalVenda, setModalVenda] = useState(false)
   const [editando, setEditando] = useState<Venda | null>(null)
-  const [modalClientes, setModalClientes] = useState(false)
+  const navegar = useNavigate()
   const [modalImportar, setModalImportar] = useState(false)
   const [romaneio, setRomaneio] = useState<Venda | null>(null)
   const [aberta, setAberta] = useState<number | null>(null)
@@ -171,7 +171,9 @@ export default function EstoqueProdutosAPage() {
               <History className="w-4 h-4" aria-hidden="true" /> Histórico do portal
             </Link>
           )}
-          <Botao variante="secundario" icone={Users} onClick={() => setModalClientes(true)}>Clientes</Botao>
+          <Link to="/precos?vista=venda" className={classesBotao('secundario')}>
+            <Tags className="w-4 h-4" aria-hidden="true" /> Preços dos clientes
+          </Link>
           <Botao variante="secundario" icone={FileUp} onClick={() => setModalImportar(true)}>Importar planilha</Botao>
           <Botao variante="primario" icone={Plus} onClick={() => setModalCarga(true)}>Nova carga</Botao>
         </>}
@@ -187,7 +189,7 @@ export default function EstoqueProdutosAPage() {
       {avisos && avisos.clientesSemPreco.length > 0 && (
         <Aviso tipo="atencao" titulo="Clientes sem preço por kg"
                itens={avisos.clientesSemPreco.map(c => <>{c.nome} · {plural(c.saidas, 'saída', 'saídas')} a R$ 0</>)}
-               acao={<Botao variante="secundario" tamanho="sm" icone={Users} onClick={() => setModalClientes(true)}>Cadastrar o preço</Botao>}>
+               acao={<Botao variante="secundario" tamanho="sm" icone={Tags} onClick={() => navegar('/precos?vista=venda')}>Cadastrar o preço</Botao>}>
           O preço gravado no cliente passa para essas saídas.
         </Aviso>
       )}
@@ -305,7 +307,7 @@ export default function EstoqueProdutosAPage() {
           clientes={clientes.filter(c => c.ativo || c.id === editando?.clienteId)}
           onClose={() => { setModalVenda(false); setEditando(null) }}
           onSalvou={() => { setModalVenda(false); setEditando(null); recarregar() }}
-          onCadastrarCliente={() => { setModalVenda(false); setEditando(null); setModalClientes(true) }}
+          onCadastrarCliente={() => { setModalVenda(false); setEditando(null); navegar('/precos?vista=venda') }}
         />
       )}
 
@@ -322,13 +324,6 @@ export default function EstoqueProdutosAPage() {
         onImportou={id => { setModalImportar(false); carregarCargas(id); carregarClientes() }}
       />
 
-      <ClientesEstoqueModal
-        aberto={modalClientes}
-        foco="produtoA"
-        onClose={() => setModalClientes(false)}
-        tipos={tipos}
-        onSalvou={() => { carregarClientes(); recarregar() }}
-      />
     </div>
   )
 }
