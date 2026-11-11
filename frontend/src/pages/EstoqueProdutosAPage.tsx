@@ -430,20 +430,23 @@ function ModalVenda({ carga, editando, clientes, onClose, onSalvou, onCadastrarC
   const [data, setData] = useState(editando?.data.slice(0, 10) ?? hoje())
   const [espessura, setEspessura] = useState(editando?.espessura ? String(editando.espessura) : '')
   const [observacao, setObservacao] = useState(editando?.observacao ?? '')
+  // Preço desta saída digitado à mão (EST-12); vazio = o do cliente
+  const [precoManual, setPrecoManual] = useState(editando && editando.precoKg > 0 ? num(editando.precoKg) : '')
   const [pesos, setPesos] = useState<number[]>(editando?.produtosA.map(b => b.pesoGramas) ?? [])
   const [digitando, setDigitando] = useState('')
   const [salvando, setSalvando] = useState(false)
 
   const cliente = clientes.find(c => c.id === clienteId)
   const pesoKg = pesos.reduce((s, p) => s + p, 0) / 1000
-  const precoKg = cliente?.precoProdutoAKg ?? 0
+  const precoKg = precoManual ? lerNum(precoManual) : cliente?.precoProdutoAKg ?? 0
   const valor = pesoKg * precoKg
   const custo = pesoKg * carga.custoKg
   const comissao = valor - custo
   const sujo = editando
     ? !!(digitando || clienteId !== editando.clienteId || data !== editando.data.slice(0, 10)
       || espessura !== (editando.espessura ? String(editando.espessura) : '') || observacao !== (editando.observacao ?? '')
-      || pesos.join() !== editando.produtosA.map(b => b.pesoGramas).join())
+      || pesos.join() !== editando.produtosA.map(b => b.pesoGramas).join()
+      || precoManual !== (editando.precoKg > 0 ? num(editando.precoKg) : ''))
     : !!(clienteId || pesos.length || digitando || espessura || observacao)
 
   const adicionar = () => {
@@ -462,6 +465,7 @@ function ModalVenda({ carga, editando, clientes, onClose, onSalvou, onCadastrarC
         cargaId: carga.id, clienteId, data,
         espessura: espessura ? Math.round(lerNum(espessura)) : null,
         pesos, observacao: observacao || null,
+        precoKg: precoManual && lerNum(precoManual) > 0 ? lerNum(precoManual) : null,
       }
       const resp = editando
         ? await api.put<{ cargaEncerrada?: boolean }>(`/api/estoque/produtosA/vendas/${editando.id}`, corpo)
@@ -498,13 +502,17 @@ function ModalVenda({ carga, editando, clientes, onClose, onSalvou, onCadastrarC
       )}
       {cliente && precoKg <= 0 && (
         <Aviso tipo="atencao" acao={<Botao variante="secundario" tamanho="sm" onClick={onCadastrarCliente}>Cadastrar o preço</Botao>}>
-          <b>{cliente.nome}</b> está sem preço de produtoA. A saída vai sair com valor zero.
+          <b>{cliente.nome}</b> está sem preço de produtoA. Digite o preço desta saída abaixo ou cadastre o do cliente.
         </Aviso>
       )}
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Campo rotulo="Data da retirada">
           <input type="date" value={data} onChange={e => setData(e.target.value)} className={classeCampo} />
+        </Campo>
+        <Campo rotulo="Preço por kg desta saída" dica={cliente ? `Vazio = o do cliente (${brl(cliente.precoProdutoAKg ?? 0)})` : undefined}>
+          <input value={precoManual} onChange={e => setPrecoManual(e.target.value)}
+                 inputMode="decimal" placeholder={cliente ? num(cliente.precoProdutoAKg ?? 0) : 'Ex.: 18,90'} className={classeNumero} />
         </Campo>
         <Campo rotulo="Espessura">
           <input value={espessura} onChange={e => setEspessura(e.target.value)}

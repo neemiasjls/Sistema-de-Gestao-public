@@ -332,9 +332,12 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
         var pesos = (dto.Pesos ?? []).Where(p => p > 0).ToList();
         if (pesos.Count == 0)
             return BadRequest(new { erro = "Informe o peso de pelo menos uma produtoA." });
+        if (dto.PrecoKg < 0) return BadRequest(new { erro = "Preço negativo." });
 
         // Preço do cliente (embalado pelo custo, VOLUME-20), encerra a carga na última produtoA
         var (venda, acabou) = await saidas.CriarAsync(carga, cliente, dto.Data, dto.Espessura, dto.Observacao, pesos);
+        // Preço digitado na saída (EST-12): vale só para esta saída, não muda o cadastro do cliente
+        if (dto.PrecoKg is > 0) { venda.PrecoKg = dto.PrecoKg.Value; await db.SaveChangesAsync(); }
 
         return Created($"/api/estoque/produtosA/{carga.Id}", new { venda.Id, cargaEncerrada = acabou });
     }
@@ -368,6 +371,7 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
         venda.Observacao = string.IsNullOrWhiteSpace(dto.Observacao) ? null : dto.Observacao.Trim();
         // Preço (só se trocou o cliente), carga reabre/encerra pela contagem, embalado sincronizado
         await saidas.AlterarAsync(venda, dto.Data, cliente, pesos);
+        if (dto.PrecoKg is > 0) venda.PrecoKg = dto.PrecoKg.Value;
 
         if (venda.AnotadaPorUsuarioId != null && mudouAnotacao)
         {
@@ -382,6 +386,7 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
                 ip: HttpContext.Connection.RemoteIpAddress?.ToString());
             await db.SaveChangesAsync();
         }
+        await db.SaveChangesAsync();
         await tx.CommitAsync();
         return Ok(new { venda.Id, cargaEncerrada = venda.Carga?.Encerrada ?? false });
     }
@@ -839,7 +844,7 @@ public record CargaProdutoADto(DateOnly Data, string? Fornecedor, int Quantidade
     decimal ValorTotal, decimal CustoKg, string? Controle, string? Observacao, bool? Encerrada);
 
 public record VendaProdutoADto(int CargaId, int ClienteId, DateOnly Data, int? Espessura,
-    List<int>? Pesos, string? Observacao);
+    List<int>? Pesos, string? Observacao, decimal? PrecoKg = null);
 
 public record CargaProdutoBDto(DateOnly Data, string? Fornecedor, int QuantidadePacotes,
     decimal ValorProdutosB, decimal ValorFrete, string? Transportador, string? Observacao,
