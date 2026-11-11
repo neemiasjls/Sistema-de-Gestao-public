@@ -207,6 +207,32 @@ export type RetornoEntrada = {
 }
 
 const multipart = { headers: { 'Content-Type': 'multipart/form-data' } }
+// Viagens repetidas já gravadas (docs/planos/importacoes-mesclar.md, Partes 4 e 5)
+export type OrigemViagem = 'motorista' | 'escritorio' | 'importacao'
+export type ResumoDuplicada = {
+  id: number; placa: string; motoristaNome: string | null; origem: OrigemViagem; status: StatusViagem
+  dataSaida: string | null; dataChegada: string | null; destino: string | null; chaveImportacao: string | null
+  aba: string | null; levou: number; caixas: number; abastecimentos: number; despesas: number
+  retornos: number; anotacoes: number; carregamentos: string[]
+}
+export type ParDuplicado = {
+  placa: string; grau: 'data' | 'provavel'; sinal: string | null
+  manterId: number; removerId: number; valoresDe: number; motivo: string; situacaoFinal: StatusViagem
+  fica: ResumoDuplicada; sai: ResumoDuplicada
+  diferencas: { campo: string; fica: string; sai: string }[]
+  mudamDeViagem: {
+    retornos: { id: number; data: string | null; transportadora: string | null; freteTotal: number; sai: boolean }[]
+    carregamento: { id: number; data: string; vaiPara: 'fica' | 'solto' }[]
+    anotacoes: { id: number; tipo: string; data: string | null; transportadora: string | null; valor: number }[]
+  }
+}
+export type ViagemVazia = {
+  id: number; placa: string; motoristaNome: string | null; dataSaida: string | null; dataChegada: string | null
+  origem: OrigemViagem; status: StatusViagem; anotacoes: number; carregamento: boolean
+}
+export type Duplicadas = { pares: ParDuplicado[]; vazias: ViagemVazia[] }
+export type ItemJuntado = { manterId?: number; removerId?: number; apagadaId?: number; ok: boolean; avisos: string[] }
+
 const arquivos = (lista: File[]) => {
   const fd = new FormData()
   lista.forEach(a => fd.append('arquivos', a))
@@ -223,6 +249,11 @@ export const viagensApi = {
   salvar: (id: number, e: ViagemEntrada) => api.put<{ id: number }>(`/api/viagens-caminhao/${id}`, e).then(r => r.data),
   excluir: (id: number) => api.delete(`/api/viagens-caminhao/${id}`),
   status: (id: number, status: StatusViagem) => api.put(`/api/viagens-caminhao/${id}/status`, { status }),
+  /** Prévia (só leitura) das viagens repetidas e das vazias */
+  duplicadas: () => api.get('/api/viagens-caminhao/duplicadas').then(r => comoObjeto<Duplicadas>(r.data, ['pares', 'vazias'], 'viagens repetidas')),
+  /** Cada par e cada vazia têm resposta própria; um que falha não desfaz os outros */
+  juntar: (pares: { manterId: number; removerId: number }[], apagarVazias: number[] = []) =>
+    api.post('/api/viagens-caminhao/juntar', { pares, apagarVazias }).then(r => comoObjeto<{ itens: ItemJuntado[] }>(r.data, ['itens'], 'junção').itens),
   aplicarCarregamento: (id: number, carregamentoId: number) =>
     api.post<{ avisos: string[] }>(`/api/viagens-caminhao/${id}/carregamento/${carregamentoId}`).then(r => comoObjeto<{ avisos: string[] }>(r.data, ['avisos'])),
   // Acerto do motorista no mês (VIA-21); sem motorista, pela placa

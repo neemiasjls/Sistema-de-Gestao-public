@@ -20,6 +20,7 @@ import {
 } from '../services/viagensCaminhaoApi'
 import { Modal } from '../components/ModalBase'
 import FechamentoMes from '../components/viagens/FechamentoMes'
+import JuntarViagensModal, { useDuplicadas } from '../components/JuntarViagensModal'
 import { NavegaMes, SeloStatus, Selo, ListaResultado, mesExtenso } from '../components/viagens/ViagensPecas'
 
 // Viagens dos caminhões (escritório), no lugar do acerto mensal em planilha
@@ -67,6 +68,11 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
   const [importando, setImportando] = useState(false)
   const [resultado, setResultado] = useState<ResultadoAcerto[] | null>(null)
   const [exportando, setExportando] = useState<string | null>(null)
+  // Viagens repetidas e vazias já gravadas (docs/planos/importacoes-mesclar.md, Parte 5)
+  const duplicadas = useDuplicadas()
+  const [verDuplicadas, setVerDuplicadas] = useState(false)
+  const nDuplicadas = duplicadas.dados ? duplicadas.dados.pares.length * 2 : 0
+  const nVazias = duplicadas.dados?.vazias.length ?? 0
 
   const carregar = useCallback(() => {
     setFalhou(false); setDados(null)
@@ -90,6 +96,7 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
         const viagens = (x.viagens ?? []).filter(v => v.situacao === 'CONFIRMAR')
         return arquivo && viagens.length ? [{ arquivo, viagens }] : []
       })
+      duplicadas.carregar()
       if (espera.length) setPendentes(espera)
       else toast.success(n > 0 ? `${n} ${n === 1 ? 'viagem trazida' : 'viagens trazidas'}.` : 'Nada novo: essas viagens já estavam aqui, iguais.')
       carregar()
@@ -160,6 +167,17 @@ function Viagens({ mes, ano, onMes }: { mes: number; ano: number; onMes: (m: num
       )}
       {pendentes && (
         <ModalSubstituirViagens pendentes={pendentes} enviando={substituindo} onClose={() => setPendentes(null)} onSubstituir={substituir} />
+      )}
+      {(nDuplicadas > 0 || nVazias > 0) && (
+        <Aviso tipo="atencao" acao={<Botao tamanho="sm" onClick={() => setVerDuplicadas(true)}>Ver e juntar</Botao>}>
+          {nDuplicadas > 0 && <>{nDuplicadas} viagens parecem repetidas (a mesma viagem gravada duas vezes).</>}
+          {nDuplicadas > 0 && nVazias > 0 && ' '}
+          {nVazias > 0 && <>{nVazias} {nVazias === 1 ? 'viagem está vazia' : 'viagens estão vazias'}.</>}
+        </Aviso>
+      )}
+      {verDuplicadas && (
+        <JuntarViagensModal dados={duplicadas.dados} falhou={duplicadas.falhou} onRecarregar={duplicadas.carregar}
+                            onClose={() => setVerDuplicadas(false)} onMudou={carregar} />
       )}
       {dados && dados.aConferir > 0 && (
         <Aviso tipo="atencao">{dados.aConferir} {dados.aConferir === 1 ? 'viagem enviada por motorista espera' : 'viagens enviadas por motoristas esperam'} conferência (marcadas como Lançada).</Aviso>
