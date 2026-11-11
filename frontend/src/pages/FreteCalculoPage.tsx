@@ -4,7 +4,9 @@ import Campo from '../components/ui/Campo'
 import Aviso, { toastConfira } from '../components/ui/Aviso'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
 import AreaSoltar from '../components/ui/AreaSoltar'
+import { Link } from 'react-router-dom'
 import { Vazio } from '../components/ui/Estados'
+import { Abas, PainelAba, useAbas } from '../components/ui/Abas'
 import { Fragment, useCallback, useEffect, useState, useRef } from 'react'
 import ProdutoECampo from '../components/ProdutoECampo'
 import ProdutosCBrzCampo, { produtosCSemResposta, faltaProdutosC, type ProdutosCBrz } from '../components/ProdutosCBrzCampo'
@@ -13,7 +15,6 @@ import ProdutosSemTipo, { type ProdutoSemTipo } from '../components/ProdutosSemT
 import { ArrowRight, ArrowUp, Calculator, Check, ChevronDown, ChevronRight, Copy, Download, FileSpreadsheet, FileText, FileUp, MapPin, Pencil, Plus, Save, Trash2, Truck, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import CityAutocomplete from '../components/CityAutocomplete'
-import EditarRomaneio from '../components/EditarRomaneio'
 import api, { ctesApi, calculosFreteApi, downloadBlob, formatBRL, guardarArquivosNFe, nomeDoArquivo, type FreteCalculoResult, type ItemFreteCalculo, type NfDetalhe, type CalculoFreteSalvoResumo, type PlanilhaDaCarga, type ConflitoTipo, type CorrecaoTipo } from '../services/api'
 import ClienteBadge from '../components/ClienteBadge'
 import { recalcularRotasFrete } from '../services/freteRotas'
@@ -165,11 +166,11 @@ export default function FreteCalculoPage() {
   const [planilhasGeradas, setPlanilhasGeradas] = useState<{ nome: string; conteudo: string }[]>([])
   const [planilhasSalvas, setPlanilhasSalvas]   = useState<PlanilhaDaCarga[]>([])
   const [cargaAbertaId, setCargaAbertaId]       = useState<number | null>(null)
-  const [editandoPlanilha, setEditandoPlanilha] = useState<PlanilhaDaCarga | null>(null)
 
   // ── Cargas salvas ─────────────────────────────────────────────
   const [salvos, setSalvos]             = useState<CalculoFreteSalvoResumo[]>([])
-  const [mostrarSalvos, setMostrarSalvos] = useState(false)
+  const [aba, setAba] = useState<'calculo' | 'rotas' | 'cargas'>('calculo')
+  const idAbas = useAbas('viagens')
   const [salvandoCalc, setSalvandoCalc] = useState(false)
 
   // Copia o valor do pedágio de um CT-e (grupo de NFs) sem cifrão, no formato BR
@@ -281,7 +282,6 @@ export default function FreteCalculoPage() {
       toast.success(editar
         ? 'Carga atualizada.'
         : data.planilhas > 0 ? `Carga salva com ${data.planilhas} planilha(s)!` : 'Carga salva!')
-      setMostrarSalvos(true)
       await carregarSalvos()
     } catch { toast.error('Erro ao salvar cálculo.') }
     finally { setSalvandoCalc(false) }
@@ -323,7 +323,7 @@ export default function FreteCalculoPage() {
       setXmlFiles([])
       xmlRef.current = []
 
-      setMostrarSalvos(false)
+      setAba('calculo')
       window.scrollTo({ top: 0, behavior: 'smooth' })
       toast.success(`Carga de ${data.placa} aberta.`)
       // Restaura toda a carga antes de esperar pela consulta das rotas.
@@ -354,7 +354,6 @@ export default function FreteCalculoPage() {
 
   // ── Rotas cadastradas ─────────────────────────────────────────
   const [rotas, setRotas]               = useState<Rota[]>([])
-  const [mostrarRotas, setMostrarRotas] = useState(false)
   const [novaRota, setNovaRota]         = useState<Rota>({ origem: '', ufOrigem: '', destino: '', uf: '', km: 0 })
   const [salvandoRota, setSalvandoRota] = useState(false)
   const [editandoId, setEditandoId]     = useState<number | null>(null)
@@ -638,7 +637,7 @@ export default function FreteCalculoPage() {
     if (!xmlFiles.length) { if (!automatico) toast.error('Importe os XMLs primeiro.'); return }
     if (automatico && ultimaGeracao.current === chaveGeracao()) return
     const falha = (msg: string) => {
-      if (automatico) setAvisos(v => [...v, `Romaneios e .txt não foram gerados: ${msg} Depois clique em "Gerar planilhas de romaneio".`])
+      if (automatico) setAvisos(v => [...v, `Romaneios e .txt não foram gerados: ${msg} Depois clique de novo em "Calcular frete e pedágio e gerar romaneios".`])
       else toast.error(msg)
     }
     if (analise?.temBrz) {
@@ -678,7 +677,7 @@ export default function FreteCalculoPage() {
       setPlanilhasGeradas(resp.data.arquivos)
       ultimaGeracao.current = chaveGeracao()
       if (automatico && analise?.temFrete && !analise.produtosENasNotas && caixasProdutoE <= 0)
-        setAvisos(v => [...v, 'O .txt do frete da Girassol saiu com 0 caixas de produtoE (a nota do Beta não veio). Se teve produtoE, informe e clique em "Gerar planilhas de romaneio".'])
+        setAvisos(v => [...v, 'O .txt do frete da Girassol saiu com 0 caixas de produtoE (a nota do Beta não veio). Se teve produtoE, informe e clique de novo em "Calcular frete e pedágio e gerar romaneios".'])
 
       // Carga já salva: guarda agora. Ainda não salva: vai junto no salvar.
       if (cargaAbertaId) {
@@ -914,148 +913,20 @@ export default function FreteCalculoPage() {
     <div className="space-y-5 w-full">
       <CabecalhoTela descricao="Importe os XMLs da carga: o sistema agrupa por emitente e destinatário, calcula a líquota e tira os romaneios da mesma viagem." />
 
-      {/* ── Importar XMLs ── */}
-      <AreaSoltar
-        aceita={['.xml', '.pdf']}
-        onArquivos={importarXmls}
-        icone={FileUp}
-        titulo="Arraste aqui os XMLs e os PDFs das notas da carga"
-        dica="O XML monta o cálculo; o PDF (DANFE) fica guardado em Notas Fiscais."
-        textoBotao="Escolher arquivos"
-        carregando={importandoXml}
-        textoCarregando="Lendo as notas..."
-      />
+      <Abas id={idAbas} valor={aba} onChange={setAba} rotulo="Partes da tela Viagens"
+        opcoes={[['calculo', 'Cálculo do frete', Calculator], ['rotas', `Rotas cadastradas (${rotas.length})`, MapPin], ['cargas', `Cargas (${salvos.length})`, Truck]]} />
+      <PainelAba id={idAbas} valor={aba}>
 
-      {avisos.length > 0 && <Aviso tipo="atencao" titulo="Confira" itens={avisos} onFechar={() => setAvisos([])} />}
-
-      {/* ── Planilhas de romaneio desta carga ── */}
-      {(analise !== null || planilhasSalvas.length > 0) && (
-        <section aria-labelledby="via-planilhas" className="bg-white rounded-xl border border-gray-200 p-4 sm:p-5 space-y-4 animate-entrada">
-          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-            <h2 id="via-planilhas" className="text-base font-semibold text-gray-900">Planilhas da carga</h2>
-            {cargaAbertaId && (
-              <span className="text-sm text-gray-500">guardadas na carga aberta</span>
-            )}
-          </div>
-
-          {analise && analise.clientesEncontrados.length === 0 && (
-            <p className="text-sm text-gray-600">
-              Nenhum cliente de romaneio nesses XMLs: essa carga não gera planilha.
-            </p>
-          )}
-
-          {analise && analise.clientesEncontrados.length > 0 && (
-            <>
-              <div className="flex flex-wrap gap-2">
-                {analise.clientesEncontrados.map(c => <ClienteBadge key={c} apelido={c} />)}
-              </div>
-
-              {Object.keys(numerosRom).length > 0 && (
-                <Campo grupo rotulo="Número do romaneio (sugerido, ajuste se precisar)">
-                  <div className="flex flex-wrap gap-2 mt-0.5">
-                    {Object.entries(numerosRom).map(([apelido, n]) => (
-                      <label key={apelido} className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg pl-3 pr-1.5 py-1.5">
-                        <span className="text-sm font-semibold text-gray-800">{apelido}</span>
-                        <input
-                          type="number"
-                          min={1}
-                          value={n || ''}
-                          onChange={e => setNumerosRom(prev => ({ ...prev, [apelido]: Math.max(0, parseInt(e.target.value) || 0) }))}
-                          className="w-24 border border-gray-300 rounded-md px-2 py-1 text-sm text-center tabular-nums"
-                        />
-                      </label>
-                    ))}
-                  </div>
-                </Campo>
-              )}
-
-              {analise.temBrz && <ProdutosCBrzCampo valor={produtosC} onChange={setProdutosC} />}
-
-              {analise.temCedro && (
-                <div className={`rounded-lg px-4 py-3 border ${qtdProdutosD > 0 ? 'bg-gray-50 border-gray-200' : 'bg-red-50 border-red-200'}`}>
-                  <Campo
-                    rotulo="Cedro Frutas: caixas de produtosD"
-                    erro={qtdProdutosD <= 0 ? 'Obrigatório para gerar o romaneio da Cedro Frutas.' : undefined}
-                  >
-                    <input
-                      type="number"
-                      min={1}
-                      value={qtdProdutosD || ''}
-                      placeholder="0"
-                      onChange={e => setQtdProdutosD(Math.max(0, parseInt(e.target.value) || 0))}
-                      className="w-28 border border-gray-300 rounded-lg px-3 py-1.5 text-sm text-center tabular-nums"
-                    />
-                  </Campo>
-                </div>
-              )}
-
-              <ConflitosTipoVolume conflitos={analise.conflitosTipo ?? []} tipos={analise.tiposRomaneio ?? []}
-                                correcoes={correcoes} onChange={setCorrecoes} />
-              <ProdutosSemTipo produtos={analise.produtosSemTipo ?? []}
-                               onResolvido={p => setAnalise(a => a && { ...a, produtosSemTipo: (a.produtosSemTipo ?? []).filter(x => x.produto !== p) })} />
-
-              {analise.temFrete && (
-                <ProdutoECampo nasNotas={analise.produtosENasNotas} valor={caixasProdutoE} onChange={setCaixasProdutoE} />
-              )}
-
-              <Botao variante="primario" icone={FileSpreadsheet} onClick={() => gerarPlanilhas()} carregando={gerandoPlan} textoCarregando="Gerando..."
-                     bloco className="sm:w-auto">
-                Gerar planilhas de romaneio
-              </Botao>
-            </>
-          )}
-
-          {editandoPlanilha && (
-            <EditarRomaneio id={editandoPlanilha.id} nome={editandoPlanilha.nome} onClose={() => setEditandoPlanilha(null)}
-                            onSalvo={nomeNovo => {
-                              const id = editandoPlanilha.id
-                              setPlanilhasSalvas(prev => prev.map(p => p.id === id ? { ...p, nome: nomeNovo } : p))
-                              // Número novo vale para gerar de novo nesta carga
-                              const mm = /^(\d+)--(.+?)-\d{2}-\d{2}-\d{4}\.xlsx$/i.exec(nomeNovo)
-                              if (mm) setNumerosRom(prev => {
-                                const ap = Object.keys(prev).find(k => k.toUpperCase() === mm[2].toUpperCase())
-                                return ap ? { ...prev, [ap]: Number(mm[1]) } : prev
-                              })
-                            }} />
-          )}
-
-          {planilhasSalvas.length > 0 && (
-            <div className="space-y-2">
-              <h3 className="text-sm font-semibold text-gray-800">Guardadas nesta carga</h3>
-              <ul className="rounded-lg border border-gray-200 divide-y divide-gray-100">
-                {planilhasSalvas.map(pl => (
-                  <li key={pl.id} className="flex items-center justify-between gap-2 pl-3 pr-1 py-1">
-                    <span className="flex items-center gap-2 min-w-0">
-                      <FileSpreadsheet size={16} className="text-tinta-500 shrink-0" aria-hidden />
-                      <span className="text-sm text-gray-800 truncate" title={pl.nome}>{pl.nome}</span>
-                    </span>
-                    <span className="flex items-center shrink-0">
-                      <BotaoIcone icone={Pencil} rotulo={`Editar ${pl.nome}`} onClick={() => setEditandoPlanilha(pl)} />
-                      <BotaoIcone icone={Download} rotulo={`Baixar ${pl.nome}`} onClick={() => baixarPlanilhaSalva(pl)} />
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </section>
-      )}
-
-      {/* ── Painel de Rotas Cadastradas ── */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <button
-          onClick={() => setMostrarRotas(p => !p)}
-          aria-expanded={mostrarRotas}
-          className="w-full px-4 sm:px-5 min-h-14 flex items-center justify-between gap-3 text-left hover:bg-gray-50 transition-colors"
-        >
+      {/* ── Rotas cadastradas (aba) ── */}
+      {aba === 'rotas' && <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="px-4 sm:px-5 min-h-14 flex items-center">
           <span className="font-semibold text-gray-900 text-sm flex items-center gap-2">
             Rotas cadastradas
             <span className="bg-gray-100 text-gray-700 text-xs font-medium px-2 py-0.5 rounded-full tabular-nums">{rotas.length}</span>
           </span>
-          <span className="text-sm text-gray-600 shrink-0 inline-flex items-center gap-1">{mostrarRotas ? 'Ocultar' : 'Mostrar'}<ChevronDown size={16} aria-hidden className={`transition-transform duration-200 ${mostrarRotas ? 'rotate-180' : ''}`} /></span>
-        </button>
+        </div>
 
-        {mostrarRotas && (
+        {(
           <div className="border-t border-gray-100 animate-entrada">
             {rotas.length === 0 ? (
               <Vazio compacto icone={MapPin} titulo="Nenhuma rota cadastrada">Cadastre a primeira logo abaixo.</Vazio>
@@ -1236,23 +1107,18 @@ export default function FreteCalculoPage() {
             </div>
           </div>
         )}
-      </div>
+      </div>}
 
-      {/* ── Cargas salvas ── */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <button
-          onClick={() => setMostrarSalvos(p => !p)}
-          aria-expanded={mostrarSalvos}
-          className="w-full px-4 sm:px-5 min-h-14 flex items-center justify-between gap-3 text-left hover:bg-gray-50 transition-colors"
-        >
+      {/* ── Cargas salvas (aba) ── */}
+      {aba === 'cargas' && <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="px-4 sm:px-5 min-h-14 flex items-center">
           <span className="font-semibold text-gray-900 text-sm flex items-center gap-2">
             Cargas
             <span className="bg-gray-100 text-gray-700 text-xs font-medium px-2 py-0.5 rounded-full tabular-nums">{salvos.length}</span>
           </span>
-          <span className="text-sm text-gray-600 shrink-0 inline-flex items-center gap-1">{mostrarSalvos ? 'Ocultar' : 'Mostrar'}<ChevronDown size={16} aria-hidden className={`transition-transform duration-200 ${mostrarSalvos ? 'rotate-180' : ''}`} /></span>
-        </button>
+        </div>
 
-        {mostrarSalvos && (
+        {(
           <ul className="border-t border-gray-100 divide-y divide-gray-100 max-h-96 overflow-y-auto animate-entrada">
             {salvos.length === 0 && (
               <li><Vazio compacto icone={Truck} titulo="Nenhuma carga salva ainda">Depois de calcular, use Salvar cálculo.</Vazio></li>
@@ -1284,7 +1150,123 @@ export default function FreteCalculoPage() {
             ))}
           </ul>
         )}
-      </div>
+      </div>}
+
+
+      {aba === 'calculo' && <>
+
+      {/* ── Importar XMLs ── */}
+      <AreaSoltar
+        aceita={['.xml', '.pdf']}
+        onArquivos={importarXmls}
+        icone={FileUp}
+        titulo="Arraste aqui os XMLs e os PDFs das notas da carga"
+        dica="O XML monta o cálculo; o PDF (DANFE) fica guardado em Notas Fiscais."
+        textoBotao="Escolher arquivos"
+        carregando={importandoXml}
+        textoCarregando="Lendo as notas..."
+      />
+
+      {avisos.length > 0 && <Aviso tipo="atencao" titulo="Confira" itens={avisos} onFechar={() => setAvisos([])} />}
+
+      {/* ── Planilhas de romaneio desta carga ── */}
+      {(analise !== null || planilhasSalvas.length > 0) && (
+        <section aria-labelledby="via-planilhas" className="bg-white rounded-xl border border-gray-200 p-4 sm:p-5 space-y-4 animate-entrada">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+            <h2 id="via-planilhas" className="text-base font-semibold text-gray-900">Romaneios da carga</h2>
+            {cargaAbertaId && (
+              <span className="text-sm text-gray-500">guardadas na carga aberta</span>
+            )}
+          </div>
+
+          {analise && analise.clientesEncontrados.length === 0 && (
+            <p className="text-sm text-gray-600">
+              Nenhum cliente de romaneio nesses XMLs: essa carga não gera romaneio.
+            </p>
+          )}
+
+          {analise && analise.clientesEncontrados.length > 0 && (
+            <>
+              <div className="flex flex-wrap gap-2">
+                {analise.clientesEncontrados.map(c => <ClienteBadge key={c} apelido={c} />)}
+              </div>
+
+              {Object.keys(numerosRom).length > 0 && (
+                <Campo grupo rotulo="Número do romaneio (sugerido, ajuste se precisar)">
+                  <div className="flex flex-wrap gap-2 mt-0.5">
+                    {Object.entries(numerosRom).map(([apelido, n]) => (
+                      <label key={apelido} className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg pl-3 pr-1.5 py-1.5">
+                        <span className="text-sm font-semibold text-gray-800">{apelido}</span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={n || ''}
+                          onChange={e => setNumerosRom(prev => ({ ...prev, [apelido]: Math.max(0, parseInt(e.target.value) || 0) }))}
+                          className="w-24 border border-gray-300 rounded-md px-2 py-1 text-sm text-center tabular-nums"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </Campo>
+              )}
+
+              {analise.temBrz && <ProdutosCBrzCampo valor={produtosC} onChange={setProdutosC} />}
+
+              {analise.temCedro && (
+                <div className={`rounded-lg px-4 py-3 border ${qtdProdutosD > 0 ? 'bg-gray-50 border-gray-200' : 'bg-red-50 border-red-200'}`}>
+                  <Campo
+                    rotulo="Cedro Frutas: caixas de produtosD"
+                    erro={qtdProdutosD <= 0 ? 'Obrigatório para gerar o romaneio da Cedro Frutas.' : undefined}
+                  >
+                    <input
+                      type="number"
+                      min={1}
+                      value={qtdProdutosD || ''}
+                      placeholder="0"
+                      onChange={e => setQtdProdutosD(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-28 border border-gray-300 rounded-lg px-3 py-1.5 text-sm text-center tabular-nums"
+                    />
+                  </Campo>
+                </div>
+              )}
+
+              <ConflitosTipoVolume conflitos={analise.conflitosTipo ?? []} tipos={analise.tiposRomaneio ?? []}
+                                correcoes={correcoes} onChange={setCorrecoes} />
+              <ProdutosSemTipo produtos={analise.produtosSemTipo ?? []}
+                               onResolvido={p => setAnalise(a => a && { ...a, produtosSemTipo: (a.produtosSemTipo ?? []).filter(x => x.produto !== p) })} />
+
+              {analise.temFrete && (
+                <ProdutoECampo nasNotas={analise.produtosENasNotas} valor={caixasProdutoE} onChange={setCaixasProdutoE} />
+              )}
+
+            </>
+          )}
+
+          {planilhasSalvas.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                <h3 className="text-sm font-semibold text-gray-800">Guardados nesta carga</h3>
+                <Link to="/romaneios" className="text-sm font-medium text-tinta-700 hover:underline inline-flex items-center gap-1">
+                  Para editar, abra Romaneios <ArrowRight size={14} aria-hidden />
+                </Link>
+              </div>
+              <ul className="rounded-lg border border-gray-200 divide-y divide-gray-100">
+                {planilhasSalvas.map(pl => (
+                  <li key={pl.id} className="flex items-center justify-between gap-2 pl-3 pr-1 py-1">
+                    <span className="flex items-center gap-2 min-w-0">
+                      <FileSpreadsheet size={16} className="text-tinta-500 shrink-0" aria-hidden />
+                      <span className="text-sm text-gray-800 truncate" title={pl.nome}>{pl.nome}</span>
+                    </span>
+                    <span className="flex items-center shrink-0">
+                      <BotaoIcone icone={Download} rotulo={`Baixar ${pl.nome}`} onClick={() => baixarPlanilhaSalva(pl)} />
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+      )}
 
       {/* ── Valores da viagem ── */}
       <section aria-label="Valores da viagem" className="bg-white rounded-xl border border-gray-200 p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
@@ -1575,7 +1557,7 @@ export default function FreteCalculoPage() {
 
       <Botao variante="primario" icone={Calculator} onClick={calcular} carregando={calculando} textoCarregando="Calculando..."
              bloco className="sm:w-auto">
-        Calcular frete e pedágio
+        Calcular frete e pedágio e gerar romaneios
       </Botao>
 
       {/* ── Resultado ── */}
@@ -1636,7 +1618,7 @@ export default function FreteCalculoPage() {
               acao={
                 <Botao variante="secundario" tamanho="sm" icone={ArrowUp}
                        // A página rola dentro do <main>, não da janela
-                       onClick={() => { setMostrarRotas(true); document.querySelector('main')?.scrollTo({ top: 0, behavior: 'smooth' }) }}>
+                       onClick={() => { setAba('rotas'); document.querySelector('main')?.scrollTo({ top: 0, behavior: 'smooth' }) }}>
                   Ir para o painel de rotas
                 </Botao>
               }
@@ -1769,6 +1751,8 @@ export default function FreteCalculoPage() {
         </section>
         )
       })()}
+      </>}
+      </PainelAba>
     </div>
   )
 }

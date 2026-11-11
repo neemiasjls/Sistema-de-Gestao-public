@@ -55,14 +55,14 @@ export const secoesMenu: SecaoMenu[] = [
   {
     titulo: 'Estoques',
     itens: [
-      { to: '/estoque/produtosA',    label: 'ProdutosA',        icon: Disc3 },
+      { to: '/barracao/comissoes', label: 'Comissões',      icon: HandCoins },
       { to: '/estoque/produtosB', label: 'ProdutosB',     icon: Boxes },
+      { to: '/estoque/produtosA',    label: 'ProdutosA',        icon: Disc3 },
     ],
   },
   {
     titulo: 'Barracão',
     itens: [
-      { to: '/barracao/comissoes', label: 'Comissões barracão', icon: HandCoins },
       { to: '/barracao/despesas', label: 'Despesas barracão', icon: ShoppingBag },
     ],
   },
