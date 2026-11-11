@@ -1286,6 +1286,26 @@ public class ViagensCaminhaoService(AppDbContext db, PrecosClienteService precos
         return avisos;
     }
 
+    /// <summary>
+    /// Histórico das produtosC (EST-14): cria a venda de produtoC que falta para cada controle já guardado (coluna U,
+    /// por cliente). Só cria (não troca nem apaga) e não mexe em produtosB; rodar de novo não duplica.
+    /// </summary>
+    public async Task<object> PreencherProdutosCAsync()
+    {
+        var antes = await db.VendasProdutoB.CountAsync();
+        var ids = await db.CarregamentosVolumes.AsNoTracking().OrderBy(c => c.Data).ThenBy(c => c.Id).Select(c => c.Id).ToListAsync();
+        var avisos = new List<string>();
+        foreach (var id in ids)
+        {
+            var c = await db.CarregamentosVolumes.FirstAsync(x => x.Id == id);
+            var saidas = ItensDe(c).Where(i => i.produtosC > 0)
+                .Select(i => new SaidaDoCarregamento(i.cliente, 0, 0, i.produtosC)).ToList();
+            if (saidas.Count == 0) continue;
+            avisos.AddRange(await vendas.SincronizarCarregamentoAsync(c, saidas, soProdutosCQueFaltam: true));
+        }
+        return new { controles = ids.Count, criadas = await db.VendasProdutoB.CountAsync() - antes, avisos = avisos.Distinct().ToList() };
+    }
+
     /// <summary>ProdutosC da BRZ no controle de carregamento do dia (para conferir o romaneio gerado depois).</summary>
     public async Task<decimal?> ProdutosCBrzNoControleAsync(DateOnly dia)
     {

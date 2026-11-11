@@ -14,7 +14,8 @@ namespace TransportadoraSystem.Application.Services;
 ///      paga, transfere ou devolve Pix.
 /// </summary>
 public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob, PostosPagosExtratoService postos,
-    BoletoMontagemService montagem, ILogger<ConferenciaAutomaticaService> log)
+    BoletoMontagemService montagem, ProdutosCReceberService produtosC, ViagensCaminhaoService viagens,
+    ILogger<ConferenciaAutomaticaService> log)
 {
     public const int DiasExtrato = 10;
     public const int MaxConsultas = 40;
@@ -34,14 +35,16 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
     public record PartePostos(List<PostoMarcado> Marcados, int Duvidas, string? Erro);
     public record PixAguardando(string Id, DateOnly Data, decimal Valor, string Pagador, bool Duvida, List<string> Boletos);
     public record PartePix(List<PixAguardando> Aguardando, string? Erro);
-    public record Resumo(DateTime Em, DateOnly Inicio, DateOnly Fim, ParteReceber Receber, PartePostos Postos, PartePix Pix)
+    public record Resumo(DateTime Em, DateOnly Inicio, DateOnly Fim, ParteReceber Receber, PartePostos Postos, PartePix Pix,
+        ProdutosCReceberService.ResultadoPix? ProdutosC = null)
     {
         // Para o log: só contagens, nada de conta, CNPJ ou nome
         public string Texto =>
             $"recebidos marcados {Receber.Marcados.Count} (consultados {Receber.Consultados}/{Receber.EmAberto}" +
             $"{(Receber.ParouNoLimite ? ", parou no limite do Sicoob" : "")}{(Receber.Erro != null ? ", erro" : "")}), " +
             $"não marcados {Receber.NaoMarcados.Count}; postos marcados {Postos.Marcados.Count}, dúvidas {Postos.Duvidas}" +
-            $"{(Postos.Erro != null ? ", erro" : "")}; Pix aguardando confirmação {Pix.Aguardando.Count}{(Pix.Erro != null ? ", erro" : "")}";
+            $"{(Postos.Erro != null ? ", erro" : "")}; Pix aguardando confirmação {Pix.Aguardando.Count}{(Pix.Erro != null ? ", erro" : "")}" +
+            $"; produtosC da BRZ baixadas {ProdutosC?.Marcadas ?? 0}";
     }
 
     private static DateOnly Hoje() => DateOnly.FromDateTime(DateTime.UtcNow.AddHours(-3));
@@ -62,6 +65,7 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
             var (extrato, erroExtrato) = await sicoob.ExtratoAsync(de, hoje, ct);
             PartePostos partePostos;
             PartePix partePix;
+            ProdutosCReceberService.ResultadoPix? parteProdutosC = null;
             if (extrato == null)
             {
                 partePostos = new([], 0, erroExtrato);
@@ -74,8 +78,18 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
                     .Select(m => new PostoMarcado(m.Boleto.Id, m.Boleto.Posto, m.Boleto.Numero, m.Boleto.Valor, m.Data)).ToList(),
                     r.Duvidas.Count, null);
                 partePix = await IdentificarPixAsync(extrato.Lancamentos, de, ct);
+                // EST-08: Pix da BRZ paga produtosC; a combinação única dá baixa sozinha (só no site, nada no banco)
+                // EST-14: antes, cria as vendas de produtoC que faltam dos controles já guardados (não duplica)
+                try { await viagens.PreencherProdutosCAsync(); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { log.LogError(ex, "Histórico das produtosC falhou"); }
+                try { parteProdutosC = await produtosC.ConferirPixAsync(PixDoExtrato(extrato.Lancamentos), aplicar: true, ct); }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    log.LogError(ex, "Conferência das produtosC da BRZ falhou");
+                    parteProdutosC = new([], 0, "Não consegui conferir as produtosC da BRZ.");
+                }
             }
-            return new(DateTime.UtcNow, de, hoje, receber, partePostos, partePix);
+            return new(DateTime.UtcNow, de, hoje, receber, partePostos, partePix, parteProdutosC);
         }
         finally { Trava.Release(); }
     }
@@ -127,6 +141,10 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
         if (parou) log.LogWarning("Conferência automática: o Sicoob pediu um tempo depois de {N} consultas", consultados);
         return new(abertos.Count, consultados, aindaAberto, parou, marcados, relatos, erroGeral);
     }
+
+    public static List<PixBoletos.Pix> PixDoExtrato(IEnumerable<SicoobService.Lancamento> lancamentos) =>
+        lancamentos.Where(l => l.Credito && l.Data != null && PixBoletos.EhPix(l.Descricao, l.Complemento))
+            .Select(l => new PixBoletos.Pix(l.Id, l.Data!.Value, l.Valor, l.Descricao, l.Complemento, l.CpfCnpj)).ToList();
 
     // Mesmo critério da tela do extrato (SicoobController.PixDoExtrato): só aponta, nunca baixa
     private async Task<PartePix> IdentificarPixAsync(IReadOnlyList<SicoobService.Lancamento> lancamentos, DateOnly de, CancellationToken ct)

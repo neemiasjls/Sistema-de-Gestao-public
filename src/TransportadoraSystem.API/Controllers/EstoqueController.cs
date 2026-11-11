@@ -19,7 +19,8 @@ namespace TransportadoraSystem.API.Controllers;
 [ApiController]
 [Route("api/estoque")]
 public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios, EstoqueVendasService vendas,
-    EmbaladosService embalados, ProdutosASaidaService saidas, PortalProdutosAHistoricoService historico) : ControllerBase
+    EmbaladosService embalados, ProdutosASaidaService saidas, PortalProdutosAHistoricoService historico,
+    ProdutosCReceberService produtosC, ViagensCaminhaoService viagens, SicoobService sicoob) : ControllerBase
 {
     // ── Clientes e preços ─────────────────────────────────────────────────
 
@@ -734,6 +735,50 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
         return NoContent();
     }
 
+    // ── ProdutosC a receber (EST-14/EST-08): sem carga, só vendas; tela em Boletos → A receber ──
+
+    [HttpGet("produtosC")]
+    public async Task<IActionResult> ProdutosC() => Ok(await produtosC.ListarAsync());
+
+    [HttpPut("produtosC/vendas/{id}")]
+    public async Task<IActionResult> AlterarVendaProdutoC(int id, [FromBody] VendaProdutoCEdicao dto)
+    {
+        try { await vendas.AlterarVendaProdutoCAsync(id, dto); return Ok(new { id }); }
+        catch (ErroEstoque ex) { return BadRequest(new { erro = ex.Message }); }
+    }
+
+    // Recebida à mão (data) ou volta para "a receber" (sem data)
+    [HttpPost("produtosC/vendas/{id}/recebido")]
+    public async Task<IActionResult> MarcarProdutoCRecebida(int id, [FromBody] RecebidoDto dto)
+    {
+        try { await produtosC.MarcarAsync(id, dto.RecebidoEm); return Ok(new { id }); }
+        catch (ErroEstoque ex) { return BadRequest(new { erro = ex.Message }); }
+    }
+
+    // Histórico: cria a venda de produtoC que falta de cada controle de carregamento guardado (não duplica nem apaga)
+    [HttpPost("produtosC/preencher-historico")]
+    public async Task<IActionResult> PreencherHistoricoProdutosC() => Ok(await viagens.PreencherProdutosCAsync());
+
+    // Pix da BRZ no extrato (40 dias) × produtosC em aberto: baixa só a combinação única; dúvida e sem soma voltam para a tela
+    [HttpPost("produtosC/conferir-pix")]
+    public async Task<IActionResult> ConferirPixProdutosC(CancellationToken ct)
+    {
+        if (sicoob.FaltaConfigurar() is { } falta) return Ok(new ProdutosCReceberService.ResultadoPix([], 0, falta));
+        var hoje = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(-3));
+        var (extrato, erro) = await sicoob.ExtratoAsync(hoje.AddDays(-40), hoje, ct);
+        if (extrato == null) return Ok(new ProdutosCReceberService.ResultadoPix([], 0, erro));
+        return Ok(await produtosC.ConferirPixAsync(ConferenciaAutomaticaService.PixDoExtrato(extrato.Lancamentos), aplicar: true, ct));
+    }
+
+    // Dúvida escolhida na tela: estas vendas foram pagas por este Pix
+    [HttpPost("produtosC/baixar-pix")]
+    public async Task<IActionResult> BaixarPixProdutosC([FromBody] BaixaPixProdutosCDto dto)
+    {
+        if (string.IsNullOrWhiteSpace(dto.Chave) || dto.VendaIds is not { Count: > 0 }) return BadRequest(new { erro = "Escolha as vendas." });
+        try { return Ok(new { marcadas = await produtosC.BaixarAsync(dto.VendaIds, dto.Data, dto.Chave) }); }
+        catch (ErroEstoque ex) { return BadRequest(new { erro = ex.Message }); }
+    }
+
     // ── Romaneio da venda em Excel ────────────────────────────────────────
     // Mesmo modelo preenchido à mão hoje, com as duas vias. O número informado
     // fica gravado na venda, então reexportar sai com o mesmo número.
@@ -813,6 +858,8 @@ public class EstoqueController(AppDbContext db, RomaneioEstoqueService romaneios
             {
                 decimal eq = Equivalente(i, tipos);
                 var produto = tipos.FirstOrDefault(t => t.Id == i.TipoProdutoBId)?.Produto == ProdutoPacote.ProdutoC ? "PRODUTOC" : "PRODUTOB";
+                // ProdutoC não tem custo (EST-14): fica fora da comissão
+                if (produto == "PRODUTOC") continue;
                 linhas.Add(new LinhaComissao(produto, v.Data, v.Cliente?.Nome ?? "",
                     v.Carga?.Fornecedor ?? "",
                     tipos.FirstOrDefault(t => t.Id == i.TipoProdutoBId)?.Nome ?? "",
@@ -852,7 +899,11 @@ public record CargaProdutoBDto(DateOnly Data, string? Fornecedor, int Quantidade
 
 public record ItemCargaDto(int TipoProdutoBId, int Quantidade);
 
-public record VendaProdutoBDto(int CargaId, int ClienteId, DateOnly Data,
+public record RecebidoDto(DateOnly? RecebidoEm);
+public record BaixaPixProdutosCDto(string Chave, DateOnly Data, List<int>? VendaIds);
+
+// CargaId nulo = produtoC (EST-14: sem carga)
+public record VendaProdutoBDto(int? CargaId, int ClienteId, DateOnly Data,
     List<ItemVendaDto>? Itens, string? Observacao);
 
 public record ItemVendaDto(int TipoProdutoBId, int Pacotes, int Unidades);

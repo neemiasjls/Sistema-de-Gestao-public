@@ -9,7 +9,9 @@ namespace TransportadoraSystem.Application.Services;
 public class ErroEstoque(string mensagem) : Exception(mensagem);
 
 public record ItemVendaNova(int TipoProdutoBId, int Pacotes, int Unidades);
-public record VendaNova(int CargaId, int ClienteId, DateOnly Data, List<ItemVendaNova>? Itens, string? Observacao);
+public record VendaNova(int? CargaId, int ClienteId, DateOnly Data, List<ItemVendaNova>? Itens, string? Observacao);
+/// <summary>Correção de uma saída de produtosC (EST-14): cliente, dia, quantidade e observação.</summary>
+public record VendaProdutoCEdicao(int ClienteId, DateOnly Data, int Pacotes, int Unidades, string? Observacao);
 public record VendaCriada(int Id, bool CargaEncerrada);
 
 /// <summary>Pacotes que um cliente levou no controle de carregamento.</summary>
@@ -32,19 +34,80 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
 
     // ───────────────────────── Saída lançada à mão ─────────────────────────
 
+    /// <summary>
+    /// ProdutoB sai de uma carga (custo da carga). ProdutoC não tem carga (EST-14):
+    /// a saída fica sem carga e sem custo, com o preço e o frete do cliente.
+    /// </summary>
     public async Task<VendaCriada> CriarVendaAsync(VendaNova dto)
     {
-        var carga = await db.CargasProdutoB.FindAsync(dto.CargaId) ?? throw new ErroEstoque("Carga não encontrada.");
         var cliente = await db.EstoqueClientes.Include(c => c.PrecosProdutoB).FirstOrDefaultAsync(c => c.Id == dto.ClienteId)
             ?? throw new ErroEstoque("Cliente não encontrado.");
+        if ((dto.Itens ?? []).Any(i => i.Pacotes < 0 || i.Unidades < 0)) throw new ErroEstoque("Quantidade não pode ser negativa.");
         var itens = (dto.Itens ?? []).Where(i => i.Pacotes > 0 || i.Unidades > 0).ToList();
         if (itens.Count == 0) throw new ErroEstoque("Informe a quantidade de pelo menos um tipo.");
+        var tipos = await db.TiposProdutoB.AsNoTracking().ToListAsync();
+        var produto = ProdutoDosItens(itens.Select(i => i.TipoProdutoBId), tipos);
 
-        var venda = NovaVenda(carga, cliente, dto.Data, dto.Observacao, itens.Select(i => (i.TipoProdutoBId, i.Pacotes, i.Unidades)));
+        CargaProdutoB? carga = null;
+        if (produto == ProdutoPacote.ProdutoB)
+        {
+            carga = await db.CargasProdutoB.FindAsync(dto.CargaId ?? 0) ?? throw new ErroEstoque("Carga não encontrada.");
+            if (ProdutoPacote.Normalizar(carga.Produto) != ProdutoPacote.ProdutoB) throw new ErroEstoque("Esta carga não é de produtosB.");
+        }
+
+        var venda = NovaVenda(carga, produto, cliente, dto.Data, dto.Observacao, itens.Select(i => (i.TipoProdutoBId, i.Pacotes, i.Unidades)));
         db.VendasProdutoB.Add(venda);
         await db.SaveChangesAsync();
-        var acabou = await FecharSeAcabouAsync(carga.Id);
+        var acabou = carga != null && await FecharSeAcabouAsync(carga.Id);
         return new VendaCriada(venda.Id, acabou);
+    }
+
+    /// <summary>Produto da saída pelos tipos: só produtosC = PRODUTOC; só produtosB = PRODUTOB; misturado, erro.</summary>
+    private static string ProdutoDosItens(IEnumerable<int> tipoIds, List<TipoProdutoB> tipos)
+    {
+        var produtos = tipoIds.Select(id => tipos.FirstOrDefault(t => t.Id == id)
+                ?? throw new ErroEstoque("Tipo de produtoB não encontrado."))
+            .Select(t => ProdutoPacote.Normalizar(t.Produto)).Distinct().ToList();
+        if (produtos.Count > 1) throw new ErroEstoque("ProdutosC e produtosB saem em saídas separadas.");
+        return produtos[0];
+    }
+
+    /// <summary>Produto de uma saída já gravada: pelo tipo dos itens (a de produtoC não tem carga).</summary>
+    public static string ProdutoDaVenda(VendaProdutoB v, List<TipoProdutoB> tipos) =>
+        v.Itens.Any(i => ProdutoPacote.Normalizar(tipos.FirstOrDefault(t => t.Id == i.TipoProdutoBId)?.Produto) == ProdutoPacote.ProdutoC)
+            ? ProdutoPacote.ProdutoC
+            : ProdutoPacote.ProdutoB;
+
+    // ───────────────────────── ProdutosC (EST-14: só vendas) ─────────────────────────
+
+    /// <summary>
+    /// Corrige uma saída de produtosC. Trocou o cliente: preço e frete passam a ser os
+    /// dele; senão o preço congelado fica (o zerado ganha o do cliente). A que veio
+    /// do controle volta a ser a do controle se ele for lido de novo com outra quantidade.
+    /// </summary>
+    public async Task AlterarVendaProdutoCAsync(int id, VendaProdutoCEdicao dto)
+    {
+        var venda = await db.VendasProdutoB.Include(v => v.Itens).FirstOrDefaultAsync(v => v.Id == id)
+            ?? throw new ErroEstoque("Saída não encontrada.");
+        var tipos = await db.TiposProdutoB.AsNoTracking().ToListAsync();
+        if (ProdutoDaVenda(venda, tipos) != ProdutoPacote.ProdutoC) throw new ErroEstoque("Esta saída não é de produtosC.");
+        if (dto.Pacotes < 0 || dto.Unidades < 0 || dto.Pacotes + dto.Unidades <= 0) throw new ErroEstoque("Informe a quantidade de produtosC.");
+        var cliente = await db.EstoqueClientes.Include(c => c.PrecosProdutoB).FirstOrDefaultAsync(c => c.Id == dto.ClienteId)
+            ?? throw new ErroEstoque("Cliente não encontrado.");
+        var trocouCliente = venda.ClienteId != cliente.Id;
+
+        var item = venda.Itens.First(i => ProdutoPacote.Normalizar(tipos.FirstOrDefault(t => t.Id == i.TipoProdutoBId)?.Produto) == ProdutoPacote.ProdutoC);
+        item.Pacotes = dto.Pacotes;
+        item.Unidades = dto.Unidades;
+        var precoCliente = cliente.PrecosProdutoB.FirstOrDefault(p => p.TipoProdutoBId == item.TipoProdutoBId)?.Preco ?? 0;
+        if (trocouCliente || item.Preco == 0) item.Preco = precoCliente;
+        item.AtualizadoEm = DateTime.UtcNow;
+        if (trocouCliente) venda.FretePacote = cliente.FreteDaProdutoC;
+        venda.ClienteId = cliente.Id;
+        venda.Data = dto.Data;
+        venda.Observacao = string.IsNullOrWhiteSpace(dto.Observacao) ? null : dto.Observacao.Trim();
+        venda.AtualizadoEm = DateTime.UtcNow;
+        await db.SaveChangesAsync();
     }
 
     // ───────────────────────── Controle de carregamento ─────────────────────────
@@ -54,7 +117,12 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
     /// (produtosB numa, produtosC noutra). Saída igual fica como está; diferente é
     /// trocada, menos a que já tem romaneio (avisa). Pode rodar de novo sem duplicar.
     /// </summary>
-    public async Task<List<string>> SincronizarCarregamentoAsync(CarregamentoVolumes c, IReadOnlyList<SaidaDoCarregamento> saidas)
+    /// <param name="soProdutosCQueFaltam">
+    /// Preencher o histórico (EST-14): só cria a saída de produtosC do cliente que ainda
+    /// não tem uma deste carregamento; não mexe em produtosB nem troca/apaga nada.
+    /// </param>
+    public async Task<List<string>> SincronizarCarregamentoAsync(CarregamentoVolumes c, IReadOnlyList<SaidaDoCarregamento> saidas,
+        bool soProdutosCQueFaltam = false)
     {
         var avisos = new List<string>();
         var tipos = await db.TiposProdutoB.AsNoTracking().ToListAsync();
@@ -68,7 +136,7 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
         var cargasMexidas = new HashSet<int>();
         var obs = $"Controle de carregamento {c.Placa} {c.Data.ToString("dd/MM/yyyy", PtBr)}";
 
-        foreach (var s in saidas.Where(s => s.Amarelas > 0 || s.Brancas > 0 || s.ProdutosC > 0))
+        foreach (var s in saidas.Where(s => soProdutosCQueFaltam ? s.ProdutosC > 0 : s.Amarelas > 0 || s.Brancas > 0 || s.ProdutosC > 0))
         {
             var cliente = await EstoqueDoClienteAsync(s.Cliente, tabela, avisos);
             if (cliente == null) continue;
@@ -81,6 +149,7 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
             };
             foreach (var (produto, lista) in grupos)
             {
+                if (soProdutosCQueFaltam && produto != ProdutoPacote.ProdutoC) continue;
                 var itens = lista.Where(i => i.Qtd > 0).ToList();
                 if (itens.Count == 0) continue;
                 if (itens.Any(i => i.Tipo == null))
@@ -94,14 +163,20 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
 
                 // Já existe a saída deste cliente e produto para este carregamento?
                 var atual = existentes.FirstOrDefault(v => !usadas.Contains(v.Id) && v.ClienteId == cliente.Id
-                    && ProdutoPacote.Normalizar(v.Carga?.Produto) == produto);
+                    && ProdutoDaVenda(v, tipos) == produto);
                 if (atual != null)
                 {
                     usadas.Add(atual.Id);
+                    if (soProdutosCQueFaltam) continue;
                     if (MesmosItens(atual, quer))
                     {
                         PreencherPrecosVazios(atual, cliente);
                         if (produto == ProdutoPacote.ProdutoC && brz && atual.CobradaNoRomaneio == null) atual.CobradaNoRomaneio = ProdutosCBrz.TextoCobrada;
+                        continue;
+                    }
+                    if (atual.RecebidoEm != null)
+                    {
+                        avisos.Add($"{cliente.Nome}: a saída de {nome} de {c.Data:dd/MM} já está recebida e ficou como estava; o controle diz outra quantidade. Confira.");
                         continue;
                     }
                     if (atual.Numero != null)
@@ -109,33 +184,40 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
                         avisos.Add($"{cliente.Nome}: a saída de {nome} de {c.Data:dd/MM} já tem romaneio {atual.Numero} e ficou como estava; o controle diz outra quantidade. Confira na tela.");
                         continue;
                     }
-                    cargasMexidas.Add(atual.CargaId);
+                    if (atual.CargaId is { } cargaAntiga) cargasMexidas.Add(cargaAntiga);
                     db.VendasProdutoB.Remove(atual);
                     await db.SaveChangesAsync();
                 }
 
-                var carga = await CargaAbertaAsync(produto, quer.Select(q => q.Id));
-                if (carga == null)
+                // ProdutoC não tem carga (EST-14): sai sem carga e sem custo
+                CargaProdutoB? carga = null;
+                if (produto == ProdutoPacote.ProdutoB)
                 {
-                    avisos.Add($"{cliente.Nome}: sem carga de {nome} aberta, a saída de {Qtd(itens.Sum(i => i.Qtd))} pacotes não foi lançada. Cadastre a carga e leia o carregamento de novo.");
-                    continue;
+                    carga = await CargaAbertaAsync(produto, quer.Select(q => q.Id));
+                    if (carga == null)
+                    {
+                        avisos.Add($"{cliente.Nome}: sem carga de {nome} aberta, a saída de {Qtd(itens.Sum(i => i.Qtd))} pacotes não foi lançada. Cadastre a carga e leia o carregamento de novo.");
+                        continue;
+                    }
+                    cargasMexidas.Add(carga.Id);
                 }
-                var venda = NovaVenda(carga, cliente, c.Data, obs, quer);
+                var venda = NovaVenda(carga, produto, cliente, c.Data, obs, quer);
                 venda.CarregamentoId = c.Id;
                 if (produto == ProdutoPacote.ProdutoC && brz) venda.CobradaNoRomaneio = ProdutosCBrz.TextoCobrada;
                 db.VendasProdutoB.Add(venda);
-                cargasMexidas.Add(carga.Id);
                 foreach (var (tipo, qtd) in itens)
                     if (!cliente.PrecosProdutoB.Any(p => p.TipoProdutoBId == tipo.Id && p.Preco > 0))
                         avisos.Add($"{cliente.Nome}: sem preço de venda de {tipo.Nome.ToLowerInvariant()} no painel de preços; a saída ficou sem valor.");
             }
         }
 
-        // O que o controle não tem mais sai (menos as que já têm romaneio)
-        foreach (var v in existentes.Where(v => !usadas.Contains(v.Id)))
+        // O que o controle não tem mais sai (menos as que já têm romaneio). Preenchendo o
+        // histórico não se apaga nada.
+        foreach (var v in soProdutosCQueFaltam ? [] : existentes.Where(v => !usadas.Contains(v.Id)))
         {
             if (v.Numero != null) { avisos.Add($"Saída de {c.Data:dd/MM} com romaneio {v.Numero} não está mais no controle e ficou. Confira."); continue; }
-            cargasMexidas.Add(v.CargaId);
+            if (v.RecebidoEm != null) { avisos.Add($"Saída de {c.Data:dd/MM} já recebida não está mais no controle e ficou. Confira."); continue; }
+            if (v.CargaId is { } cargaAntiga) cargasMexidas.Add(cargaAntiga);
             db.VendasProdutoB.Remove(v);
         }
         await db.SaveChangesAsync();
@@ -152,6 +234,7 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
         foreach (var v in vendas)
         {
             if (v.Numero != null) { v.CarregamentoId = null; avisos.Add($"A saída com romaneio {v.Numero} ficou (agora como lançada à mão)."); }
+            else if (v.RecebidoEm != null) { v.CarregamentoId = null; avisos.Add($"A saída de {v.Data:dd/MM} já recebida ficou (agora como lançada à mão)."); }
             else db.VendasProdutoB.Remove(v);
         }
         await db.SaveChangesAsync();
@@ -233,7 +316,7 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
                 await db.SaveChangesAsync();
                 return avisos;
             }
-            cargasMexidas.Add(atual.CargaId);
+            if (atual.CargaId is { } cargaAntiga) cargasMexidas.Add(cargaAntiga);
             db.VendasProdutoB.Remove(atual);
         }
         if (quer.Count > 0)
@@ -244,7 +327,7 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
             else
             {
                 // Uso próprio: sem comissão, vale o custo da carga (como as saídas à mão do EMBALADOS)
-                var venda = NovaVenda(carga, cliente, controle.Data, $"Usadas para embalar (controle {controle.Numero})", quer, precoDoCusto: true);
+                var venda = NovaVenda(carga, ProdutoPacote.ProdutoB, cliente, controle.Data, $"Usadas para embalar (controle {controle.Numero})", quer, precoDoCusto: true);
                 venda.VolumesControleId = controle.Id;
                 venda.FretePacote = 0;
                 db.VendasProdutoB.Add(venda);
@@ -268,14 +351,15 @@ public class EstoqueVendasService(AppDbContext db, PrecosClienteService precos)
 
     // ───────────────────────── Peças ─────────────────────────
 
-    private VendaProdutoB NovaVenda(CargaProdutoB carga, EstoqueCliente cliente, DateOnly data, string? obs,
+    // carga nula = produtoC (EST-14): custo zero, não se inventa custo
+    private static VendaProdutoB NovaVenda(CargaProdutoB? carga, string produto, EstoqueCliente cliente, DateOnly data, string? obs,
         IEnumerable<(int Tipo, int Pacotes, int Unidades)> itens, bool precoDoCusto = false)
     {
-        var custoPacote = CustoPacote(carga);
-        var frete = ProdutoPacote.Normalizar(carga.Produto) == ProdutoPacote.ProdutoC ? cliente.FreteDaProdutoC : cliente.FreteProdutoB;
+        var custoPacote = carga == null ? 0 : CustoPacote(carga);
+        var frete = produto == ProdutoPacote.ProdutoC ? cliente.FreteDaProdutoC : cliente.FreteProdutoB;
         return new VendaProdutoB
         {
-            CargaId = carga.Id, ClienteId = cliente.Id, Data = data, CustoPacote = custoPacote, FretePacote = frete, Observacao = obs,
+            CargaId = carga?.Id, ClienteId = cliente.Id, Data = data, CustoPacote = custoPacote, FretePacote = frete, Observacao = obs,
             Itens = itens.Select(i => new VendaProdutoBItem
             {
                 TipoProdutoBId = i.Tipo, Pacotes = i.Pacotes, Unidades = i.Unidades,

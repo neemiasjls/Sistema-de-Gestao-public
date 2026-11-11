@@ -1743,6 +1743,21 @@ static class Ddl
         """
         CREATE INDEX IF NOT EXISTS "IX_StradaContratos_RetornoId" ON "StradaContratos" ("RetornoId") WHERE "RetornoId" IS NOT NULL;
         """,
+        // EST-14: produtoC não tem carga, só vendas. A venda de produtoC fica sem CargaId
+        // (a de produtoB continua exigindo carga no código). Repetir não muda nada.
+        """
+        ALTER TABLE "VendasProdutoB" ALTER COLUMN "CargaId" DROP NOT NULL;
+        """,
+        // EST-08: produtosC a receber, baixadas à mão ou pelo Pix da BRZ
+        """
+        ALTER TABLE "VendasProdutoB" ADD COLUMN IF NOT EXISTS "RecebidoEm" date;
+        """,
+        """
+        ALTER TABLE "VendasProdutoB" ADD COLUMN IF NOT EXISTS "RecebidoPix" text;
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS "IX_VendasProdutoB_RecebidoPix" ON "VendasProdutoB" ("RecebidoPix") WHERE "RecebidoPix" IS NOT NULL;
+        """,
     ];
 
     /// <summary>
@@ -1773,5 +1788,6 @@ static class Ddl
         ("RetornosFrete", "Descarga"), ("RetornosFrete", "Contrato"), ("RetornosFrete", "ValorContrato"),
         ("RetornosFrete", "ContratoLigacao"), ("RetornosFrete", "ContratoAviso"), ("RetornosFrete", "ViagemLigacao"),
         ("StradaContratos", "DataContrato"), ("StradaContratos", "RetornoId"),
+        ("VendasProdutoB", "RecebidoEm"), ("VendasProdutoB", "RecebidoPix"),
     ];
 }

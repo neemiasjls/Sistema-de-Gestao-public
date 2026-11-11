@@ -6,6 +6,7 @@ import ExtratoSicoob from '../components/ExtratoSicoob'
 import ConfigEmissaoBoletos from '../components/ConfigEmissaoBoletos'
 import MontarBoleto from '../components/MontarBoleto'
 import ParaEmitirBoletos from '../components/ParaEmitirBoletos'
+import ProdutosCAReceber from '../components/ProdutosCAReceber'
 import { Abas, PainelAba, Segmentado, useAbas } from '../components/ui/Abas'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
 import Aviso from '../components/ui/Aviso'
@@ -678,6 +679,8 @@ function AReceber() {
 
       {/* A lista antiga (boletos digitados por cliente do cadastro) continua
           aqui até ser trocada de vez pela de cima */}
+      <ProdutosCAReceber />
+
       <div className="bg-white border border-gray-200 rounded-xl">
         <button onClick={() => setAntigosAbertos(a => !a)} aria-expanded={antigosAbertos}
                 className="w-full flex items-center gap-2 px-4 min-h-12 text-left text-sm font-semibold text-gray-800 rounded-xl hover:bg-gray-50">

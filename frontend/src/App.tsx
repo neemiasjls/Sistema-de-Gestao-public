@@ -201,7 +201,7 @@ function Layout() {
             {/* Portal das produtosA (EST-09): o escritório anota com o login dele, dentro do sistema (USU-05) */}
             <Route path="/produtosA" element={<PortalProdutosAPage dentroDoSistema />} />
             <Route path="/estoque/produtosB" element={<EstoqueProdutosBPage key="produtosB" />} />
-            <Route path="/estoque/produtosC" element={<EstoqueProdutosBPage key="produtosC" produto="PRODUTOC" />} />
+            <Route path="/estoque/produtosC" element={<Navigate to="/boletos" replace />} />
             <Route path="/precos" element={<PrecosPage />} />
             <Route path="/estoque/volumes" element={<VolumesEmbaladosPage />} />
             <Route path="/embalados/quebras" element={<EmbaladosQuebrasPage />} />

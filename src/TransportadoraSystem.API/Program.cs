@@ -100,6 +100,7 @@ builder.Services.AddScoped<RomaneiosEmbalarService>();
 builder.Services.AddScoped<ViagensCaminhaoService>();
 builder.Services.AddScoped<FechamentoMensalService>();
 builder.Services.AddScoped<EstoqueVendasService>();
+builder.Services.AddScoped<ProdutosCReceberService>();
 builder.Services.AddScoped<PrecosClienteService>();
 builder.Services.AddScoped<EmbaladosService>();
 builder.Services.AddScoped<ProdutosASaidaService>();

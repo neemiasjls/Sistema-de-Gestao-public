@@ -135,7 +135,9 @@ public class CargaProdutoBItem : BaseEntity
 
 public class VendaProdutoB : BaseEntity
 {
-    public int CargaId { get; set; }
+    // ProdutoB: a carga de onde saiu (custo). ProdutoC não tem carga (EST-14): nula,
+    // e o produto vem do tipo dos itens.
+    public int? CargaId { get; set; }
     public CargaProdutoB? Carga { get; set; }
     public int ClienteId { get; set; }
     public EstoqueCliente? Cliente { get; set; }
@@ -151,6 +153,10 @@ public class VendaProdutoB : BaseEntity
     // Já cobrada noutro documento (produtoC da BRZ no romaneio da nota, NFE-05):
     // nome do romaneio. A saída conta no estoque, mas não se cobra de novo.
     public string? CobradaNoRomaneio { get; set; }
+    // ProdutosC a receber (EST-08): quando o cliente pagou (à mão ou pelo Pix da BRZ) e,
+    // pelo Pix, o EndToEndId (ou o id do lançamento), que impede dar baixa duas vezes no mesmo Pix.
+    public DateOnly? RecebidoEm { get; set; }
+    public string? RecebidoPix { get; set; }
 
     public ICollection<VendaProdutoBItem> Itens { get; set; } = [];
 }
