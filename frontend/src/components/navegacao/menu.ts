@@ -47,7 +47,7 @@ export const secoesMenu: SecaoMenu[] = [
       { to: '/retornos',        label: 'Retornos',             icon: ArrowLeftRight, area: 'retornos' },
       { to: '/romaneios',       label: 'Romaneios',            icon: ClipboardList, area: 'romaneios' },
       { to: '/abastecimentos',  label: 'Abastecimentos',       icon: Fuel, area: 'abastecimentos' },
-      { to: '/emails-clientes', label: 'E-mails aos clientes', icon: Mail, area: 'emails-clientes' },
+      { to: '/emails-clientes', label: 'E-mails', icon: Mail, area: 'emails-clientes' },
     ],
   },
   {

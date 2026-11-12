@@ -333,7 +333,7 @@ public class BoletoMontagemService(AppDbContext db, FretePerfilService? fretePer
                 if (daPlaca.Count > 0) doDia = daPlaca;
             }
             if (doDia.Count == 0)
-                faltando.Add($"Relatório de frete da Girassol de {dataBr} não encontrado — gere no Calcular frete ou suba o .txt em E-mails aos clientes.");
+                faltando.Add($"Relatório de frete da Girassol de {dataBr} não encontrado — gere no Calcular frete ou suba o .txt em E-mails.");
             else
             {
                 var esc = doDia[0];

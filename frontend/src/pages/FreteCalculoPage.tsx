@@ -891,13 +891,14 @@ export default function FreteCalculoPage() {
   // Resumo que aparece com a lista fechada
   const pesoDosItens = itens.reduce((soma, it) => soma + (Number(it.pesoKg) || 0), 0)
   const pesoResumo = pesoDosItens.toLocaleString('pt-BR', { maximumFractionDigits: 2 })
-  const itensComPendencia = itens.filter(it =>
+  const itensPendentes = itens.filter(it =>
     (it.cidadeConflito && (it.cidadesEncontradas?.length ?? 0) > 0) ||
-    (it.pesoIncompleto && (it.produtosSemPeso?.length ?? 0) > 0)).length
+    (it.pesoIncompleto && (it.produtosSemPeso?.length ?? 0) > 0))
+  const itensComPendencia = itensPendentes.length
 
-  // Os campos de peso e de cidade moram na aba NFs. Nota com pendência vira
-  // aviso no Cálculo, perto do botão de calcular (o pedido de peso não pode
-  // passar batido, senão a nota fica fora da conta).
+  // A lista completa mora na aba NFs. Nota com pendência aparece também no Cálculo,
+  // com os campos de peso e de cidade, perto do botão de calcular (o pedido de peso
+  // não pode passar batido, senão a nota fica fora da conta).
   const temNumeroNf = itens.some(it => (it.numeroNF ?? '').trim() !== '')
   const nfsVazias = !temNumeroNf && itens.every(it => !it.emitente && !it.destinatario && !it.pesoKg && !it.cidadeDestino)
   const irParaNfs = () => { setAba('nfs'); document.querySelector('main')?.scrollTo({ top: 0, behavior: 'smooth' }) }
@@ -1003,58 +1004,12 @@ export default function FreteCalculoPage() {
   const campoNfTabela = 'min-h-9 border border-gray-300 rounded-lg px-2 py-1 text-sm bg-white'
 
   // ─────────────────────────────────────────────────────────────
-  return (
-    <div className="space-y-5 w-full">
-      <CabecalhoTela descricao="Importe os XMLs da carga: o sistema agrupa por emitente e destinatário, calcula a líquota e tira os romaneios da mesma viagem." />
-
-      <Abas id={idAbas} valor={aba} onChange={setAba} rotulo="Partes da tela Viagens"
-        opcoes={[['calculo', 'Cálculo do frete', Calculator], ['nfs', `NFs (${totalNfsTela})`, FileText], ['cargas', `Cargas (${salvos.length})`, Truck], ['rotas', `Rotas cadastradas (${rotas.length})`, MapPin]]} />
-      <PainelAba id={idAbas} valor={aba}>
-
-      {/* ── NFs da carga (aba) ── */}
-      {aba === 'nfs' && (nfsVazias && !digitarNfs ? (
-        <div className="rounded-xl border border-gray-200 bg-white">
-          <Vazio compacto icone={FileText} titulo="Nenhuma NF na carga em tela"
-            acao={<div className="flex flex-wrap justify-center gap-2">
-              <Botao variante="primario" icone={FileUp} onClick={() => inputNfRef.current?.click()}
-                     carregando={importandoXml || trazendoXmls} textoCarregando="Lendo as notas...">Importar NF</Botao>
-              <Botao variante="secundario" onClick={() => setDigitarNfs(true)}>Digitar a NF à mão</Botao>
-            </div>}>
-            Importe os XMLs aqui ou na aba Cálculo do frete, ou abra uma carga salva na aba Cargas.
-          </Vazio>
-          <input ref={inputNfRef} type="file" accept=".xml,.pdf" multiple hidden
-                 onChange={e => { const f = [...(e.target.files ?? [])]; e.target.value = ''; if (f.length) importarXmls(f) }} />
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {/* Barra de cima, igual às abas Cargas e Rotas: resumo à esquerda, ações à direita */}
-          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-            <div className="space-y-1 min-w-0">
-              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-600 tabular-nums">
-                <span><span className="font-semibold text-gray-900">{totalNfsTela}</span> {totalNfsTela === 1 ? 'NF' : 'NFs'} · {pesoResumo} kg · linhas agrupadas por emitente e destinatário</span>
-                {itensComPendencia > 0 && (
-                  <span className="bg-amber-100 text-amber-900 border border-amber-300 text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap">
-                    {itensComPendencia} a conferir
-                  </span>
-                )}
-              </p>
-              {/* Trocar uma NF: o ✕ ao lado do número tira; importar soma às que já estão */}
-              <p className="text-sm text-gray-500">O ✕ ao lado da NF tira ela da carga; importar soma as novas às que já estão.</p>
-            </div>
-            <div className="flex flex-wrap gap-2 shrink-0">
-              <Botao variante="secundario" icone={Plus} onClick={adicionarLinha}>Adicionar linha</Botao>
-              <Botao variante="secundario" icone={FileUp} onClick={() => inputNfRef.current?.click()}
-                     carregando={importandoXml || trazendoXmls} textoCarregando="Lendo as notas...">
-                Importar NF
-              </Botao>
-              <input ref={inputNfRef} type="file" accept=".xml,.pdf" multiple hidden
-                     onChange={e => { const f = [...(e.target.files ?? [])]; e.target.value = ''; if (f.length) importarXmls(f) }} />
-            </div>
-          </div>
-
+  // Linhas das NFs (cartões no celular, tabela no computador). A aba NFs mostra todas;
+  // a aba Cálculo mostra só as pendentes, com os mesmos campos (mesmo estado).
+  const listaNfs = (lista: LinhaItem[], comTotal: boolean) => (<>
         {/* Celular e tablet: um cartão por linha, com os mesmos campos da tabela */}
         <ul className="lg:hidden grid sm:grid-cols-2 gap-3">
-          {itens.map(it => {
+          {lista.map(it => {
             const nfs = (it.numeroNF ?? '').split(',').map(n => n.trim()).filter(Boolean)
             const conflito     = it.cidadeConflito && (it.cidadesEncontradas?.length ?? 0) > 0
             const semPesoLinha = it.pesoIncompleto && (it.produtosSemPeso?.length ?? 0) > 0
@@ -1131,7 +1086,7 @@ export default function FreteCalculoPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {itens.map(it => {
+              {lista.map(it => {
                 const nfs = (it.numeroNF ?? '').split(',').map(n => n.trim()).filter(Boolean)
                 const conflito      = it.cidadeConflito && (it.cidadesEncontradas?.length ?? 0) > 0
                 const semPesoLinha  = it.pesoIncompleto && (it.produtosSemPeso?.length ?? 0) > 0
@@ -1246,15 +1201,67 @@ export default function FreteCalculoPage() {
                 )}
               )}
             </tbody>
-            <tfoot className="border-t-2 border-gray-200 bg-gray-50 text-gray-900 font-semibold tabular-nums">
+            {comTotal && <tfoot className="border-t-2 border-gray-200 bg-gray-50 text-gray-900 font-semibold tabular-nums">
               <tr>
                 <td className="pl-4 pr-2 py-2.5 rounded-bl-xl" colSpan={6}>Total · {totalNfsTela} {totalNfsTela === 1 ? 'NF' : 'NFs'}</td>
                 <td className="px-2 py-2.5 text-right whitespace-nowrap">{pesoResumo}</td>
                 <td className="rounded-br-xl" />
               </tr>
-            </tfoot>
+            </tfoot>}
           </table>
         </div>
+  </>)
+
+  return (
+    <div className="space-y-5 w-full">
+      <CabecalhoTela descricao="Importe os XMLs da carga: o sistema agrupa por emitente e destinatário, calcula a líquota e tira os romaneios da mesma viagem." />
+
+      <Abas id={idAbas} valor={aba} onChange={setAba} rotulo="Partes da tela Viagens"
+        opcoes={[['calculo', 'Cálculo do frete', Calculator], ['nfs', `NFs (${totalNfsTela})`, FileText], ['cargas', `Cargas (${salvos.length})`, Truck], ['rotas', `Rotas cadastradas (${rotas.length})`, MapPin]]} />
+      <PainelAba id={idAbas} valor={aba}>
+
+      {/* ── NFs da carga (aba) ── */}
+      {aba === 'nfs' && (nfsVazias && !digitarNfs ? (
+        <div className="rounded-xl border border-gray-200 bg-white">
+          <Vazio compacto icone={FileText} titulo="Nenhuma NF na carga em tela"
+            acao={<div className="flex flex-wrap justify-center gap-2">
+              <Botao variante="primario" icone={FileUp} onClick={() => inputNfRef.current?.click()}
+                     carregando={importandoXml || trazendoXmls} textoCarregando="Lendo as notas...">Importar NF</Botao>
+              <Botao variante="secundario" onClick={() => setDigitarNfs(true)}>Digitar a NF à mão</Botao>
+            </div>}>
+            Importe os XMLs aqui ou na aba Cálculo do frete, ou abra uma carga salva na aba Cargas.
+          </Vazio>
+          <input ref={inputNfRef} type="file" accept=".xml,.pdf" multiple hidden
+                 onChange={e => { const f = [...(e.target.files ?? [])]; e.target.value = ''; if (f.length) importarXmls(f) }} />
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {/* Barra de cima, igual às abas Cargas e Rotas: resumo à esquerda, ações à direita */}
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div className="space-y-1 min-w-0">
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-600 tabular-nums">
+                <span><span className="font-semibold text-gray-900">{totalNfsTela}</span> {totalNfsTela === 1 ? 'NF' : 'NFs'} · {pesoResumo} kg · linhas agrupadas por emitente e destinatário</span>
+                {itensComPendencia > 0 && (
+                  <span className="bg-amber-100 text-amber-900 border border-amber-300 text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap">
+                    {itensComPendencia} a conferir
+                  </span>
+                )}
+              </p>
+              {/* Trocar uma NF: o ✕ ao lado do número tira; importar soma às que já estão */}
+              <p className="text-sm text-gray-500">O ✕ ao lado da NF tira ela da carga; importar soma as novas às que já estão.</p>
+            </div>
+            <div className="flex flex-wrap gap-2 shrink-0">
+              <Botao variante="secundario" icone={Plus} onClick={adicionarLinha}>Adicionar linha</Botao>
+              <Botao variante="secundario" icone={FileUp} onClick={() => inputNfRef.current?.click()}
+                     carregando={importandoXml || trazendoXmls} textoCarregando="Lendo as notas...">
+                Importar NF
+              </Botao>
+              <input ref={inputNfRef} type="file" accept=".xml,.pdf" multiple hidden
+                     onChange={e => { const f = [...(e.target.files ?? [])]; e.target.value = ''; if (f.length) importarXmls(f) }} />
+            </div>
+          </div>
+
+        {listaNfs(itens, true)}
         </div>
       ))}
 
@@ -1463,12 +1470,18 @@ export default function FreteCalculoPage() {
         </Campo>
       </section>
 
-      {/* ── NFs: a lista mora na aba NFs; aqui fica o resumo e o aviso do que falta ── */}
+      {/* ── NFs: a lista completa mora na aba NFs. Nota com pendência (peso que falta, cidade que
+          não bate) aparece aqui mesmo, com os campos, como sempre foi (Admin, 12/11/2026) ── */}
       {itensComPendencia > 0 && (
-        <Aviso tipo="atencao" titulo={`${itensComPendencia} ${itensComPendencia === 1 ? 'linha das NFs' : 'linhas das NFs'} a conferir`}>
-          Falta peso ou a cidade não bateu. Confira antes de calcular.{' '}
-          <button type="button" onClick={irParaNfs} className="font-medium text-tinta-700 hover:underline">Conferir na aba NFs</button>
-        </Aviso>
+        <section aria-label="NFs a conferir" className="space-y-3">
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+            <span className="font-semibold text-gray-900">NFs</span>
+            <span className="bg-amber-100 text-amber-900 border border-amber-300 text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap">
+              {itensComPendencia} a conferir
+            </span>
+          </p>
+          {listaNfs(itensPendentes, false)}
+        </section>
       )}
       <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-600 tabular-nums">
         <span><span className="font-semibold text-gray-900">{totalNfsTela}</span> {totalNfsTela === 1 ? 'NF' : 'NFs'} · {pesoResumo} kg</span>

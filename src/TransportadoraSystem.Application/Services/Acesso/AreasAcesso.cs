@@ -42,7 +42,7 @@ public static class AreasAcesso
         new("retornos", "Retornos", "Dia a dia", "/retornos"),
         new("romaneios", "Romaneios", "Dia a dia", "/romaneios"),
         new("abastecimentos", "Abastecimentos", "Dia a dia", "/abastecimentos"),
-        new("emails-clientes", "E-mails aos clientes", "Dia a dia", "/emails-clientes"),
+        new("emails-clientes", "E-mails", "Dia a dia", "/emails-clientes"),
         new("volumes-embalados", "Controle embalados", "Embalados", "/estoque/volumes"),
         new("embalados-quebras", "Quebras", "Embalados", "/embalados/quebras"),
         new("embalados-despesas", "Despesas embalados", "Embalados", "/embalados/despesas"),

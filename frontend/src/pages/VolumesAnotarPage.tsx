@@ -91,12 +91,9 @@ const VENDA_COLUNA: Record<Tipo, Partial<Record<FormaVenda, ColunaVenda>>> = {
     fazenda:   { chave: 'av',      porCaixa: 12, fazenda: true },
   },
 }
-const FORMAS_VENDA: { id: FormaVenda; nome: string; nota: string }[] = [
-  { id: 'embalado', nome: 'Embalado',  nota: 'caixa de 12' },
-  { id: 'pvc',      nome: 'PVC',       nota: 'caixa de 10' },
-  { id: 'pvc20',    nome: 'PVC de 20', nota: 'caixa de 10' },
-  { id: 'fazenda',   nome: 'Fazenda',    nota: 'sem produtoB' },
-]
+// Na anotação só se vende fazenda, em produtosC de 1 em 1 (VOLUME-22). As outras
+// formas ficam no mapa acima só para ler e manter venda antiga já gravada;
+// embalado e PVC se lançam pela aba Saídas.
 const NOME_FORMA: Record<FormaVenda, string> = { embalado: 'embalado', pvc: 'PVC', pvc20: 'PVC de 20', fazenda: 'fazenda' }
 
 type Venda = {
@@ -335,7 +332,12 @@ export default function VolumesAnotarPage() {
     const f = { ...FORM_VAZIO, ...e.form }
     setTipo(f.tipo); setForma(f.forma); setOrigem(f.origem); setQtd(f.qtd)
     setGrupo(f.grupo); setCru(f.cru); setCruCx(f.cruCx); setBand(f.band)
-    setVTipo(f.vTipo); setVForma(f.vForma); setVCx(f.vCx); setVBand(f.vBand); setVNome(f.vNome); setVData(f.vData)
+    // Rascunho antigo podia ter forma embalado/PVC e caixas digitadas: vira fazenda em produtosC
+    // A caixa vale o que valia na forma em que foi digitada (PVC = 10 produtosC, as outras = 12)
+    const porCaixaRasc = (f.vTipo && f.vForma && VENDA_COLUNA[f.vTipo][f.vForma]?.porCaixa) || PRODUTOSC_CAIXA
+    const vBandRasc = Math.round(lerNum(f.vCx)) * porCaixaRasc + lerNum(f.vBand)
+    setVTipo(f.vTipo); setVForma(f.vTipo ? 'fazenda' : null); setVCx('')
+    setVBand(vBandRasc ? paraTexto(vBandRasc) : ''); setVNome(f.vNome); setVData(f.vData)
   }
 
   useEffect(() => {
@@ -572,11 +574,12 @@ export default function VolumesAnotarPage() {
 
   const escolherTipoVenda = (t: Tipo) => {
     setVTipo(t)
-    setVForma(f => (f && VENDA_COLUNA[t][f] ? f : null))
+    // Venda antiga de embalado/PVC em correção mantém a forma; o resto é fazenda
+    setVForma(f => (corrigindoVenda != null && f && f !== 'fazenda' && VENDA_COLUNA[t][f] ? f : 'fazenda'))
   }
 
   const limparVenda = () => {
-    setVForma(null); setVCx(''); setVBand(''); setVNome(''); setVData(null); setCorrigindoVenda(null)
+    setVForma(vTipo ? 'fazenda' : null); setVCx(''); setVBand(''); setVNome(''); setVData(null); setCorrigindoVenda(null)
   }
 
   // Monta a venda do formulário; null (e foca o campo) se falta algo.
@@ -607,7 +610,9 @@ export default function VolumesAnotarPage() {
 
   const corrigirVenda = (v: Venda) => {
     const porCaixa = VENDA_COLUNA[v.tipo][v.forma]!.porCaixa
-    const cx = Math.floor(v.produtosC / porCaixa)
+    // Fazenda: tudo em produtosC (sem campo de caixas). Venda antiga de
+    // embalado/PVC: caixas + produtosC, como foi anotada.
+    const cx = v.forma === 'fazenda' ? 0 : Math.floor(v.produtosC / porCaixa)
     setVTipo(v.tipo)
     setVForma(v.forma)
     setVCx(cx ? String(cx) : '')
@@ -787,7 +792,8 @@ export default function VolumesAnotarPage() {
   )
 
   const formasValidas = tipo ? (Object.keys(COMBINACOES[tipo]) as Forma[]) : []
-  const formasVenda = vTipo ? FORMAS_VENDA.filter(f => VENDA_COLUNA[vTipo][f.id]) : []
+  // Venda antiga de embalado/PVC em correção: mostra as caixas e diz a forma
+  const vendaAntiga = vForma != null && vForma !== 'fazenda'
   const embalados = ORDEM.filter(c => !INFO[c].pvc && (itens[c] ?? 0) > 0)
   const pvcs = ORDEM.filter(c => INFO[c].pvc && (itens[c] ?? 0) > 0)
   const listaCrus = (['sobra', 'quebra'] as Grupo[]).flatMap(g =>
@@ -1076,33 +1082,30 @@ export default function VolumesAnotarPage() {
             </div>
           </div>
 
-          {vTipo && (
-            <div className="animate-entrada">
-              <Rotulo texto="Forma" />
-              <div className={`grid gap-2 ${formasVenda.length === 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>
-                {formasVenda.map(f => (
-                  <Opcao key={f.id} ativo={vForma === f.id} onClick={() => setVForma(f.id)} baixo>
-                    <span className="text-base font-semibold leading-tight">{f.nome}</span>
-                    <span className="text-xs text-gray-600">{f.nota}</span>
-                  </Opcao>
-                ))}
-              </div>
-            </div>
+          {vendaAntiga && (
+            <p className="text-sm text-gray-600 -mt-1">
+              Venda de {NOME_FORMA[vForma!]} anotada antes. A correção mantém a forma.
+            </p>
           )}
 
           <div className="space-y-2">
-            <CampoQtd rotulo="Caixas">
-              <Contador valor={vCx} onChange={setVCx} inputRef={vCxRef} passo={1}
-                        onEnter={() => vBandRef.current?.focus()} rotulo="Caixas da venda" />
-            </CampoQtd>
+            {vendaAntiga && (
+              <CampoQtd rotulo="Caixas">
+                <Contador valor={vCx} onChange={setVCx} inputRef={vCxRef} passo={1}
+                          onEnter={() => vBandRef.current?.focus()} rotulo="Caixas da venda" />
+              </CampoQtd>
+            )}
             <CampoQtd rotulo="ProdutosC">
-              <Contador valor={vBand} onChange={setVBand} inputRef={vBandRef} passo={0.5} decimal
+              <Contador valor={vBand} onChange={setVBand} inputRef={vBandRef} passo={1} decimal
                         onEnter={() => vNomeRef.current?.focus()} rotulo="ProdutosC da venda" />
             </CampoQtd>
-            {vTotal > 0 && lerNum(vCx) > 0 && (
+            {vTotal >= PRODUTOSC_CAIXA && !vendaAntiga && (
+              <p className="text-sm text-gray-600">= {caixasEProdutosC(vTotal)}</p>
+            )}
+            {vTotal > 0 && vendaAntiga && lerNum(vCx) > 0 && (
               <p className="text-sm text-gray-600">
                 = {produtosCTxt(vTotal)}
-                {colVenda && !colVenda.fazenda && colVenda.porCaixa !== PRODUTOSC_CAIXA && <> (caixa de PVC com {colVenda.porCaixa})</>}
+                {colVenda && colVenda.porCaixa !== PRODUTOSC_CAIXA && <> (caixa de PVC com {colVenda.porCaixa})</>}
               </p>
             )}
           </div>
@@ -1133,7 +1136,8 @@ export default function VolumesAnotarPage() {
             </Botao>
           </div>
           <p className="text-sm text-gray-600 -mt-1">
-            Vira uma saída do controle. As saídas para clientes com placa continuam na aba Saídas.
+            Volume de fazenda, em produtosC. Ao salvar, aparece também na aba Saídas como venda da anotação.
+            Embalado e PVC se lançam pela aba Saídas.
           </p>
         </div>
       </section>
