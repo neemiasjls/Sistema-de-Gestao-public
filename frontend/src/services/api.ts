@@ -501,6 +501,7 @@ export const authApi = {
     api.post<{ token: string; usuario: UsuarioResumo }>('/api/auth/trocar-senha', { senhaAtual, novaSenha }),
   atualizarPerfil: (data: { nome: string; email: string; senhaAtual: string }) =>
     api.put<{ token: string; usuario: UsuarioResumo }>('/api/auth/perfil', data),
+  esqueciSenha: (email: string) => api.post<{ mensagem: string }>('/api/auth/esqueci-senha', { email }),
 }
 
 export const usuariosApi = {

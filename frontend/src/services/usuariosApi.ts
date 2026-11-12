@@ -38,7 +38,11 @@ export interface Pessoa {
   cnhValidade: string | null
   anotacoes: number
   avisos: string[]
+  /** Situação do e-mail do motorista; null/ausente = não se aplica (ou servidor ainda sem o campo). */
+  emailSituacao?: EmailSituacao | null
 }
+
+export type EmailSituacao = 'sem' | 'repetido' | 'confirmado' | 'aguardando' | 'pendente'
 
 export interface SenhaProvisoria {
   erro?: string | null
@@ -87,7 +91,12 @@ export const usuariosApi = {
   darUsuario: (motoristaId: number, email: string, total: boolean, areas: string[]) =>
     api.post<{ usuarioId: number; senha: SenhaProvisoria; juncao: Juncao }>(
       `/api/usuario/motorista/${motoristaId}/usuario`, { email, total, areas }).then(r => r.data),
-  /** Tira "Usuário": desativa o login de escritório e o cadastro volta a ter login próprio de motorista. */
+  /** Manda ao motorista o e-mail de acesso com a senha provisória (a senha de hoje continua valendo). */
+  acessoEmail: (motoristaId: number) =>
+    api.post<{ senha: SenhaProvisoria }>(`/api/usuario/motorista/${motoristaId}/acesso-email`).then(r => r.data),
+  /** Tira "Usuário": desativa o login de escritório e o cadastro volta a ter login próprio de motorista.
+   *  `senha` = acesso mandado pelo e-mail do cadastro (com a provisória se o e-mail não saiu); `aviso` = o que não deu. */
   tirarUsuario: (id: number) =>
-    api.delete<{ motoristaId: number; loginMotorista: number | null }>(`/api/usuario/${id}/usuario`).then(r => r.data),
+    api.delete<{ motoristaId: number; loginMotorista: number | null; senha?: SenhaProvisoria | null; aviso?: string | null }>(
+      `/api/usuario/${id}/usuario`).then(r => r.data),
 }

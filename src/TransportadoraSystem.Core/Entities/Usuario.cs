@@ -22,4 +22,11 @@ public class Usuario : BaseEntity
     // Áreas liberadas (USU-11): chaves do catálogo AreasAcesso separadas por vírgula,
     // "*" = acesso total, null = ainda não definido = sem acesso. Só entra pelas rotas próprias.
     public string? Permissoes { get; set; }
+
+    // Senha provisória paralela (motorista pelo e-mail): fica ao lado da senha atual,
+    // que só muda quando a pessoa cria a dela. Só o hash; vale até SenhaProvisoriaExpiraEm.
+    public string?   SenhaProvisoriaHash     { get; set; }
+    public DateTime? SenhaProvisoriaExpiraEm { get; set; }
+    public DateTime? SenhaProvisoriaEm       { get; set; }
+    public DateTime? SenhaAlteradaEm         { get; set; }
 }

@@ -7,7 +7,7 @@ namespace TransportadoraSystem.API.Controllers;
 
 [ApiController]
 [Route("api/auth")]
-public class AuthController(AuthService auth, ILogger<AuthController> logger) : ControllerBase
+public class AuthController(AuthService auth, ILogger<AuthController> logger, IServiceScopeFactory scopes) : ControllerBase
 {
     // POST /api/auth/login
     [HttpPost("login")]
@@ -45,6 +45,9 @@ public class AuthController(AuthService auth, ILogger<AuthController> logger) : 
         if (UsuarioId(User) is not { } id) return Unauthorized();
         var u = await auth.ObterAsync(id);
         if (u == null || !u.Ativo) return Unauthorized();
+        // Entrou pela senha provisória: a marca está só no token (o banco segue com
+        // TrocarSenha falso). Sem somar a claim, a tela não pede a senha nova ao recarregar.
+        if (User.HasClaim(AuthService.ClaimTrocarSenha, "true")) u.TrocarSenha = true;
         return Ok(u);
     }
 
@@ -111,11 +114,38 @@ public class AuthController(AuthService auth, ILogger<AuthController> logger) : 
     [HttpPost("produtosA/esqueci-senha")]
     [AllowAnonymous]
     [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("esqueci-senha")]
-    public async Task<IActionResult> EsqueciSenhaProdutosA([FromBody] EsqueciSenhaDto dto)
+    public IActionResult EsqueciSenhaProdutosA([FromBody] EsqueciSenhaDto dto)
     {
-        try { await auth.EsqueciSenhaProdutosAAsync(dto.Email, Ip()); }
-        catch (Exception ex) { logger.LogError(ex, "Erro no esqueci a senha do portal das produtosA"); }
+        // Mesmo caminho da tela de login (o motorista que usa o portal também consegue pedir por aqui)
+        EsqueciSenhaDepois(dto?.Email);
         return Ok(new { mensagem = "Se o e-mail estiver cadastrado, a senha nova chega nele." });
+    }
+
+    // POST /api/auth/esqueci-senha — tela de login (motorista e portal das produtosA). Responde na
+    // hora e sempre o mesmo; o envio roda depois, para o tempo de resposta não revelar quem tem conta.
+    [HttpPost("esqueci-senha")]
+    [AllowAnonymous]
+    [Microsoft.AspNetCore.RateLimiting.EnableRateLimiting("esqueci-senha-login")]
+    public IActionResult EsqueciSenha([FromBody] EsqueciSenhaDto dto)
+    {
+        EsqueciSenhaDepois(dto?.Email);
+        return Ok(new { mensagem = "Se o e-mail estiver cadastrado, a senha temporária chega nele em alguns minutos." });
+    }
+
+    // Roda o "esqueci a senha" em outro escopo, depois da resposta. Erro só vai para o log, sem o e-mail.
+    private void EsqueciSenhaDepois(string? emailInformado)
+    {
+        var ip = Ip();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var escopo = scopes.CreateScope();
+                var servico = escopo.ServiceProvider.GetRequiredService<AuthService>();
+                await servico.EsqueciSenhaAsync(emailInformado, ip);
+            }
+            catch (Exception ex) { logger.LogError(ex, "Erro no esqueci a senha (envio em segundo plano)"); }
+        });
     }
 
     private string? Ip() => HttpContext.Connection.RemoteIpAddress?.ToString();

@@ -10,7 +10,7 @@ import Campo from '../ui/Campo'
 import { classeCampo } from '../EstoquePecas'
 import { Selo } from '../viagens/ViagensPecas'
 import { SeloValidade } from '../MotoristasSecao'
-import { usuariosApi, type Classificacao, type Pessoa } from '../../services/usuariosApi'
+import { usuariosApi, type Classificacao, type EmailSituacao, type Pessoa } from '../../services/usuariosApi'
 
 // Lista única da tela "Usuários" (USU-11, Parte 9): cada pessoa uma vez, com as classificações
 // (Usuário, Motorista, Portal das produtosA), os logins, a situação e o que acessa. Só o administrador.
@@ -38,16 +38,37 @@ function SelosClassificacao({ p }: { p: Pessoa }) {
   return <>{p.classificacoes.map(c => <Selo key={c} tom="info">{NOME_CLASSIFICACAO[c] ?? c}</Selo>)}</>
 }
 
+/** Selo da situação do e-mail do motorista; `confirmado` (e servidor sem o campo) não leva selo. */
+const SELO_EMAIL: Partial<Record<EmailSituacao, string>> = {
+  aguardando: 'aguardando criar a senha',
+  pendente: 'e-mail ainda não enviado',
+  repetido: 'e-mail repetido',
+  sem: 'sem e-mail',
+}
+
+export function SeloEmail({ situacao }: { situacao?: EmailSituacao | null }) {
+  const texto = situacao ? SELO_EMAIL[situacao] : undefined
+  return texto ? <Selo tom="atencao">{texto}</Selo> : null
+}
+
 function Logins({ p }: { p: Pessoa }) {
   if (p.logins.length === 0) return <Selo tom="atencao">Sem login</Selo>
+  // Motorista com e-mail entra pelo e-mail; o nome de usuário fica como "login antigo".
+  // E-mail repetido não serve para entrar (o servidor só acha com um cadastro): continua o nome de usuário.
+  const temEmail = !!p.email && (p.emailSituacao === 'confirmado' || p.emailSituacao === 'aguardando' || p.emailSituacao === 'pendente')
   return (
     <span className="flex flex-col gap-0.5">
-      {p.logins.map(l => (
-        <span key={l.usuarioId} className={`break-all ${l.ativo ? 'text-gray-800' : 'text-gray-500 line-through'}`}>
-          {l.login}
-          {l.trocarSenha && <span className="text-xs text-amber-800"> · senha provisória</span>}
-        </span>
-      ))}
+      {p.logins.map(l => {
+        const pelaEmail = temEmail && l.perfil === 'motorista'
+        return (
+          <span key={l.usuarioId} className={`break-all ${l.ativo ? 'text-gray-800' : 'text-gray-500 line-through'}`}>
+            {pelaEmail ? p.email : l.login}
+            {l.trocarSenha && <span className="text-xs text-amber-800"> · senha provisória</span>}
+            {pelaEmail && <span className="block text-xs text-gray-600">login antigo: {l.login}</span>}
+          </span>
+        )
+      })}
+      {p.emailSituacao && <span className="flex flex-wrap gap-1"><SeloEmail situacao={p.emailSituacao} /></span>}
     </span>
   )
 }

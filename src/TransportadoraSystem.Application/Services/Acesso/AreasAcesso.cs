@@ -91,9 +91,11 @@ public static class AreasAcesso
         new("/health", [Anonimo], [Anonimo]),
         new("/api/auth/login", [Anonimo], [Anonimo]),
         new("/api/auth/produtosA", [Anonimo], [Anonimo]),
+        new("/api/auth/esqueci-senha", [Anonimo], [Anonimo]),
         new("/api/auth/me", [Todos], [Todos]),
         new("/api/auth/perfil", [Escritorio], [Escritorio]),
-        new("/api/auth/trocar-senha", [Escritorio], [Escritorio]),
+        // Todos: o motorista que entrou pela senha provisória precisa criar a dele aqui
+        new("/api/auth/trocar-senha", [Todos], [Todos]),
         new("/api/usuario", SoAdmin, SoAdmin),
         new("/api/painel", L("inicio"), L("inicio")),
         new("/api/busca", L("inicio"), L("inicio")),

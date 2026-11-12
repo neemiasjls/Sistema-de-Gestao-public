@@ -17,7 +17,7 @@ export function CriarSenhaPage() {
         </p>
         <FormTrocarSenha provisoria />
       </div>
-      <button onClick={logout} className="text-sm text-tinta-300 hover:text-white mt-6">
+      <button onClick={logout} className="min-h-11 px-4 text-sm text-tinta-300 hover:text-white mt-4">
         Sair
       </button>
     </div>

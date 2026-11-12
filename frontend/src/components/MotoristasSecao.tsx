@@ -10,6 +10,7 @@ import { classeCampo } from './EstoquePecas'
 import { Selo, CampoNumero } from './viagens/ViagensPecas'
 import { dataBr, num } from '../utils/formato'
 import ImportarCnhModal from './ImportarCnhModal'
+import SenhaPendente, { entregaDaSenha, type Pendente } from './usuarios/SenhaPendente'
 import { erroDaApi } from '../services/semPararApi'
 import {
   viagensApi,
@@ -82,7 +83,7 @@ export default function MotoristasSecao({ comTitulo = false }: { comTitulo?: boo
         <div className="min-w-0">
           {comTitulo && <h2 id="motoristas-cadastro" className="text-lg font-semibold text-gray-900">Motoristas</h2>}
           <p className="text-sm text-gray-600 max-w-prose mt-0.5">
-            Cada motorista entra no celular com o usuário dele e a senha padrão (o usuário seguido de 123), ou a que você definir, e vê só a folha da viagem.
+            Motorista com e-mail entra pelo e-mail e cria a própria senha pelo acesso que chega nele. Sem e-mail, entra com o usuário dele e a senha padrão (o usuário seguido de 123), ou a que você definir. No celular, vê só a folha da viagem.
           </p>
         </div>
         <div className="flex flex-wrap gap-2 shrink-0">
@@ -188,6 +189,7 @@ export function MotoristaModal({ m, base, onClose, onSalvou }: {
   const [email, setEmail] = useState(m?.email ?? '')
   const [ativo, setAtivo] = useState(m?.ativo ?? true)
   const [salvando, setSalvando] = useState(false)
+  const [pendente, setPendente] = useState<Pendente | null>(null)
   const [loginMexido, setLoginMexido] = useState(!!m || !!base)
   const loginOriginal = m?.login ?? base?.login ?? null
 
@@ -202,19 +204,23 @@ export function MotoristaModal({ m, base, onClose, onSalvou }: {
       })
       if (r.aviso) toast.error(r.aviso, { duration: 8000 })
       else toast.success(base ? 'Cadastro completo.' : 'Motorista salvo.')
-      onSalvou()
+      // E-mail novo ou trocado: o servidor manda a senha provisória; se o e-mail não saiu, mostra a senha uma vez
+      const p = entregaDaSenha(r.senha, nome.trim(), email.trim().toLowerCase())
+      if (p) setPendente(p)
+      else onSalvou()
     } catch (e) { toast.error(await erroDaApi(e, 'Não consegui salvar.')) }
     finally { setSalvando(false) }
   }
 
   const titulo = m ? 'Editar motorista' : base ? `Completar cadastro de ${base.login}` : 'Novo motorista'
+  if (pendente) return <SenhaPendente p={pendente} onFechar={() => { setPendente(null); onSalvou() }} />
   return (
     <Modal titulo={titulo} onClose={onClose} confirmarAoFechar>
       <Campo rotulo="Nome completo">
         <input value={nome} onChange={e => { setNome(e.target.value); if (!loginMexido) setLogin(loginSugerido(e.target.value)) }} className={classeCampo} />
       </Campo>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Campo rotulo="Usuário para entrar" dica="Minúsculo, sem acento. Nome parecido leva o sobrenome (joseferraz).">
+        <Campo rotulo="Nome de usuário (login antigo)" dica="Minúsculo, sem acento. Nome parecido leva o sobrenome (joseferraz).">
           <input value={login} onChange={e => { setLogin(e.target.value.toLowerCase().replace(/[^a-z0-9]/g, '')); setLoginMexido(true) }}
                  className={classeCampo} autoCapitalize="none" autoComplete="off" />
         </Campo>
@@ -232,7 +238,7 @@ export function MotoristaModal({ m, base, onClose, onSalvou }: {
           <Campo rotulo="Validade">{data('cnhValidade')}</Campo>
           <Campo rotulo="Pai">{texto('pai')}</Campo>
           <Campo rotulo="Mãe">{texto('mae')}</Campo>
-          <Campo rotulo="E-mail" dica="Opcional. Vai ser o login do motorista quando o acesso por e-mail entrar.">
+          <Campo rotulo="E-mail" dica="Ao salvar, o motorista recebe neste e-mail uma senha provisória para criar a dele. O usuário e a senha de hoje continuam valendo até lá.">
             <input type="email" value={email} className={classeCampo} autoCapitalize="none" autoComplete="off"
                    onChange={e => setEmail(e.target.value)} />
           </Campo>
@@ -242,10 +248,16 @@ export function MotoristaModal({ m, base, onClose, onSalvou }: {
         <input value={apelidos} onChange={e => setApelidos(e.target.value.toUpperCase())} className={classeCampo} />
       </Campo>
       <label className="inline-flex items-center gap-2 min-h-11 text-sm"><input type="checkbox" checked={ativo} onChange={e => setAtivo(e.target.checked)} className="w-5 h-5" /> Ativo (pode entrar e lançar viagens)</label>
-      {!m && !base && login && <Aviso tipo="info">Ele entra com o usuário <b>{login}</b> e a senha <b>{login}123</b>.</Aviso>}
+      {!m && !base && login && (email.trim()
+        ? <Aviso tipo="info">Ele recebe em <b>{email.trim()}</b> uma senha provisória para criar a dele e entra pelo e-mail.</Aviso>
+        : <Aviso tipo="info">Ele entra com o usuário <b>{login}</b> e a senha <b>{login}123</b>.</Aviso>)}
       {base && login === base.login && <Aviso tipo="info">Ele continua entrando com o usuário <b>{login}</b> e a senha que já tem.</Aviso>}
       {loginOriginal && login !== loginOriginal && login && (
-        <Aviso tipo="atencao">Mudando o usuário, ele passa a entrar com <b>{login}</b> e a senha volta para a padrão (<b>{login}123</b>).</Aviso>
+        <Aviso tipo="atencao">
+          {email.trim()
+            ? <>Mudando o usuário, o login antigo passa a ser <b>{login}</b>. Ele continua entrando pelo e-mail.</>
+            : <>Mudando o usuário, ele passa a entrar com <b>{login}</b>. Se ainda usa a senha padrão, ela passa a ser <b>{login}123</b>; outra senha que ele já tem continua valendo.</>}
+        </Aviso>
       )}
       <BotoesModal salvando={salvando} onSalvar={salvar} onClose={onClose} />
     </Modal>
@@ -287,9 +299,9 @@ export function SenhaModal({ m, onClose, onSalvou }: { m: MotoristaFrota; onClos
                autoCapitalize="none" spellCheck={false} />
       </Campo>
       <BotoesModal salvando={salvando} onSalvar={salvar} onClose={onClose} rotulo="Trocar a senha" />
-      <div className="border-t border-gray-200 pt-3">
+      {!m.email && <div className="border-t border-gray-200 pt-3">
         <Botao variante="fantasma" tamanho="sm" icone={KeyRound} onClick={voltarPadrao}>Voltar para a padrão ({m.login}123)</Botao>
-      </div>
+      </div>}
     </Modal>
   )
 }

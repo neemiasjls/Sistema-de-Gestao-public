@@ -26,7 +26,12 @@ public class PessoasService(AppDbContext db, AuthService auth, ILogger<PessoasSe
         string Chave, string Nome, List<string> Classificacoes, List<LoginPessoa> Logins, bool Ativo,
         bool Administrador, bool AcessoTotal, List<string> Areas, bool ControleViagens, bool ControleProdutosA,
         int? UsuarioId, int? MotoristaId, bool? MotoristaAtivo, string? Email, DateOnly? CnhValidade,
-        int Anotacoes, List<string> Avisos);
+        int Anotacoes, List<string> Avisos, string? EmailSituacao = null);
+
+    // Situação do e-mail do motorista com login próprio (null = não se aplica)
+    public const string EmailSem = "sem", EmailRepetido = "repetido", EmailConfirmado = "confirmado",
+        EmailAguardando = "aguardando", EmailPendente = "pendente";
+    public const string AvisoEmailRepetido = "E-mail repetido com outro login: o motorista não entra por ele.";
 
     public sealed record Resultado(string? Erro, object? Dados = null);
 
@@ -54,12 +59,31 @@ public class PessoasService(AppDbContext db, AuthService auth, ILogger<PessoasSe
         var usados = new HashSet<int>();
         var r = new List<Pessoa>();
 
+        // Repetição do e-mail calculada em memória com as listas já carregadas
+        var loginsPorEmail = usuarios.GroupBy(u => u.Email.Trim().ToLower()).ToDictionary(g => g.Key, g => g.Select(u => u.Id).ToList());
+        var cadastrosPorEmail = cadastros.Where(c => !string.IsNullOrWhiteSpace(c.Email))
+            .GroupBy(c => c.Email!.Trim().ToLower()).ToDictionary(g => g.Key, g => g.Select(c => c.Id).ToList());
+        var agora = DateTime.UtcNow;
+
         foreach (var m in cadastros)
         {
             Usuario? u = m.UsuarioId is { } uid && porId.TryGetValue(uid, out var achado) ? achado : null;
             if (u != null && u.Perfil == AuthService.PerfilProdutosA) u = null; // ligação estranha: não junta
             if (u != null) usados.Add(u.Id);
-            r.Add(Montar(u, m, anotacoes, hoje));
+            string? situacao = null;
+            if (u != null && u.Perfil == AuthService.PerfilMotorista)
+            {
+                var e = (m.Email ?? "").Trim().ToLower();
+                situacao = e.Length == 0 ? EmailSem
+                    : (loginsPorEmail.TryGetValue(e, out var ls) && ls.Any(id => id != u.Id))
+                      || (cadastrosPorEmail.TryGetValue(e, out var cs) && cs.Any(id => id != m.Id)) ? EmailRepetido
+                    : m.EmailConfirmadoEm != null ? EmailConfirmado
+                    : u.SenhaProvisoriaHash != null && u.SenhaProvisoriaExpiraEm > agora ? EmailAguardando
+                    : EmailPendente;
+            }
+            var p = Montar(u, m, anotacoes, hoje) with { EmailSituacao = situacao };
+            if (situacao == EmailRepetido) p.Avisos.Add(AvisoEmailRepetido);
+            r.Add(p);
         }
         foreach (var u in usuarios.Where(u => !usados.Contains(u.Id)))
             r.Add(Montar(u, null, anotacoes, hoje));
@@ -271,7 +295,7 @@ public class PessoasService(AppDbContext db, AuthService auth, ILogger<PessoasSe
         // Login novo + junção numa transação só: a junção falhou = nenhum login novo sobra. A senha só
         // vai por e-mail depois de tudo gravado. Banco em memória (sem transação): apaga o login criado.
         await using var tx = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync() : null;
-        var (u, senha, erro) = await auth.CriarLoginAsync(m.Nome, email ?? "", v.Valor == "" ? [] : v.Valor.Split(','));
+        var (u, senha, erro) = await auth.CriarLoginAsync(m.Nome, email ?? "", v.Valor == "" ? [] : v.Valor.Split(','), m.Id);
         if (erro != null) return Falha(erro);
 
         Resultado junta;
@@ -328,6 +352,7 @@ public class PessoasService(AppDbContext db, AuthService auth, ILogger<PessoasSe
             repassadas = await RepassarReferenciasAsync(antigo.Id, escritorio.Id);
             await db.SaveChangesAsync();
             db.Usuarios.Remove(antigo);
+            m.EmailConfirmadoEm = null; // passa a entrar pelo login do escritório
         }
         m.UsuarioId = escritorio.Id;
         m.AtualizadoEm = DateTime.UtcNow;
@@ -362,9 +387,14 @@ public class PessoasService(AppDbContext db, AuthService auth, ILogger<PessoasSe
 
         await using var tx = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync() : null;
         m.UsuarioId = null;
+        // O login novo nasce de um cadastro sem confirmação: zera antes de garantir (senha padrão/forte pela regra de hoje)
+        var confirmadoAntes = m.EmailConfirmadoEm;
+        m.EmailConfirmadoEm = null;
+        var emailLivre = await auth.EmailLivreParaLoginNovoAsync(m);
         if (await auth.GarantirUsuarioMotoristaAsync(m) is { } erro)
         {
             m.UsuarioId = id;
+            m.EmailConfirmadoEm = confirmadoAntes;
             return Falha(erro);
         }
         u.Ativo = false;
@@ -373,7 +403,24 @@ public class PessoasService(AppDbContext db, AuthService auth, ILogger<PessoasSe
         if (tx != null) await tx.CommitAsync();
         logger.LogInformation("Classificação: usuário {Quem} tirou Usuário de {Alvo}; cadastro {Cadastro} voltou ao login {Novo}",
             quemFez, id, m.Id, m.UsuarioId);
-        return new(null, new { motoristaId = m.Id, loginMotorista = m.UsuarioId });
+
+        // E-mail do cadastro livre: o login novo nasceu sem senha padrão e o acesso vai por e-mail.
+        // Repetido (em geral, o do login de escritório que acabou de ser desativado): senha padrão e aviso.
+        SenhaProvisoriaResult? senha = null;
+        string? aviso = null;
+        if (emailLivre)
+        {
+            senha = await auth.MandarAcessoMotoristaAsync(m);
+            // Envio recusado (ex.: cadastro desativado): a tela avisa, nunca fica muda
+            if (senha.Erro != null)
+            {
+                aviso = $"O acesso por e-mail não foi mandado: {senha.Erro} O motorista ainda não tem senha; resolva e use \"Mandar e-mail de acesso\".";
+                senha = null;
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(m.Email))
+            aviso = "O e-mail do cadastro é o mesmo de outro login (ou não é válido): o motorista entra com o usuário e a senha padrão. Troque o e-mail do cadastro para ele entrar pelo e-mail.";
+        return new(null, new { motoristaId = m.Id, loginMotorista = m.UsuarioId, senha, aviso });
     }
 
     /// <summary>Tira "Motorista" de quem é Usuário: desativa o cadastro (nunca apaga); a ligação fica.</summary>

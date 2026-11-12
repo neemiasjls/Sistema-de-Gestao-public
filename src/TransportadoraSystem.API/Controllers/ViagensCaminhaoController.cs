@@ -262,6 +262,23 @@ public class ViagensCaminhaoController(ViagensCaminhaoService svc, AuthService a
             m.UsuarioId = uid;
         }
 
+        // E-mail único (plano login-motorista-email, Parte 3): só confere quando é novo ou mudou, para
+        // salvar outros campos de um cadastro antigo não travar.
+        var emailMudou = (m.Email ?? "").Trim().ToLowerInvariant() != email;
+        // Administrador conferido no banco (USU-12), nunca pela claim do token
+        int? quem = HttpContext?.User is { } usuarioAtual ? AuthController.UsuarioId(usuarioAtual) : null;
+        var ehAdmin = quem is { } q && await auth.EhDonoAsync(q);
+        // E-mail confirmado é o caminho de entrada do motorista: trocar ou apagar só o administrador, senão
+        // quem tem só a área Motoristas trocaria pelo próprio e-mail e pediria "esqueci a senha"
+        if (id != null && emailMudou && m.EmailConfirmadoEm != null && !ehAdmin)
+            return StatusCode(StatusCodes.Status403Forbidden, new { erro = MensagemEmailConfirmadoSoAdmin });
+        if (emailMudou && email.Length > 0 && await auth.EmailDeMotoristaLivreAsync(email, id ?? 0) is { } repetido)
+            return BadRequest(new { erro = repetido });
+
+        // Cadastro, acesso e confirmação gravam juntos: nunca fica um estado no meio em que o motorista perde a senha
+        var antes = id != null ? db.Entry(m).CurrentValues.Clone() : null;
+        await using var tx = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync() : null;
+
         m.Nome = nome;
         m.Apelidos = string.IsNullOrWhiteSpace(dto.Apelidos) ? null : dto.Apelidos.Trim().ToUpperInvariant();
         m.Login = login;
@@ -282,10 +299,71 @@ public class ViagensCaminhaoController(ViagensCaminhaoService svc, AuthService a
         m.Email = email.Length == 0 ? null : email;
         m.Ativo = dto.Ativo ?? true;
         m.AtualizadoEm = DateTime.UtcNow;
-        await db.SaveChangesAsync();
+        string? erroAcesso;
+        try
+        {
+            await db.SaveChangesAsync();
 
-        var erroAcesso = await auth.GarantirUsuarioMotoristaAsync(m);
-        return Ok(new { id = m.Id, aviso = erroAcesso });
+            // O acesso é garantido ainda com a confirmação de antes: login trocado junto com o e-mail não volta
+            // a senha de quem já confirmou para a padrão (Parte 5, item 3).
+            erroAcesso = await auth.GarantirUsuarioMotoristaAsync(m);
+            if (emailMudou && erroAcesso != null && antes != null)
+            {
+                // E-mail trocado e acesso que não deu (login de outro): nada fica gravado pela metade
+                // (nem e-mail novo com a confirmação do antigo). Os outros casos seguem com aviso, como antes.
+                if (tx != null) await tx.RollbackAsync();
+                db.Entry(m).CurrentValues.SetValues(antes);
+                if (tx == null) await db.SaveChangesAsync();
+                return BadRequest(new { erro = erroAcesso });
+            }
+            if (emailMudou && erroAcesso == null)
+            {
+                // Só com o acesso garantido: o e-mail novo (ou apagado) deixa de estar confirmado e a provisória
+                // pendente (mandada ao e-mail antigo) cai. A senha de hoje não muda.
+                m.EmailConfirmadoEm = null;
+                if (m.UsuarioId is { } loginId && await db.Usuarios.FindAsync(loginId) is { } proprio
+                    && proprio.Perfil == AuthService.PerfilMotorista)
+                {
+                    proprio.SenhaProvisoriaHash = null;
+                    proprio.SenhaProvisoriaExpiraEm = null;
+                }
+                await db.SaveChangesAsync();
+            }
+            if (tx != null) await tx.CommitAsync();
+        }
+        catch (DbUpdateException e) when (ErroDeUnicidade(e) is { } msg)
+        {
+            // Dois salvando ao mesmo tempo passam pela conferência; o índice único do banco segura (Postgres 23505)
+            return BadRequest(new { erro = msg });
+        }
+
+        // Parte 4: e-mail novo ou trocado, salvo por administrador (conferido no banco, USU-12) → manda o
+        // acesso. Só depois de gravado; erro do envio vira aviso, nunca falha o salvar. Quem não é
+        // administrador só grava o e-mail (fica pendente).
+        SenhaProvisoriaResult? senha = null;
+        if (erroAcesso == null && emailMudou && m.Email != null && ehAdmin)
+        {
+            var r = await auth.MandarAcessoMotoristaAsync(m);
+            if (r.Erro != null) erroAcesso = r.Erro;
+            else senha = r;
+            logger.LogInformation("Acesso por e-mail do motorista {MotoristaId} mandado pelo usuário {Quem}: {Situacao}",
+                m.Id, quem, r.Erro != null ? "recusado" : r.EmailEnviado ? "e-mail saiu" : "e-mail não saiu");
+        }
+        return Ok(new { id = m.Id, aviso = erroAcesso, senha });
+    }
+
+    public const string MensagemEmailConfirmadoSoAdmin =
+        "Este motorista já confirmou o e-mail: só um administrador pode trocar ou apagar o e-mail dele.";
+
+    /// <summary>Violação de índice único (Postgres 23505) em qualquer nível da exceção → mensagem para a tela; outra → null.</summary>
+    public static string? ErroDeUnicidade(DbUpdateException e)
+    {
+        for (Exception? x = e; x != null; x = x.InnerException)
+            if (x is System.Data.Common.DbException { SqlState: "23505" } d)
+                return d.Message.Contains("MotoristasFrota_Email", StringComparison.OrdinalIgnoreCase)
+                    ? "Esse e-mail já está em outro cadastro."
+                    : "Esse login ou e-mail já é de outro cadastro.";
+        return null;
     }
 
     // Ativar/desativar: desativado não entra (o usuário dele fica inativo junto). Pessoa com um login

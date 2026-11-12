@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Download, KeyRound, Pencil, UserCheck } from 'lucide-react'
+import { Download, KeyRound, Mail, Pencil, UserCheck } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { Modal, Campo } from '../ModalBase'
 import Botao from '../ui/Botao'
@@ -10,7 +10,7 @@ import { Selo, CampoNumero } from '../viagens/ViagensPecas'
 import { MotoristaModal, SenhaModal, SeloValidade } from '../MotoristasSecao'
 import SenhaPendente, { entregaDaSenha, type Pendente } from './SenhaPendente'
 import { useAuth } from '../../contexts/AuthContext'
-import { usuariosApi, type Pessoa } from '../../services/usuariosApi'
+import { usuariosApi, type EmailSituacao, type Pessoa } from '../../services/usuariosApi'
 import { usuariosApi as contasApi } from '../../services/api'
 import { viagensApi, type MotoristaFrota } from '../../services/viagensCaminhaoApi'
 import { erroDaApi } from '../../services/semPararApi'
@@ -31,6 +31,15 @@ export function tipoDaPessoa(p: Pessoa): Tipo {
 }
 
 const emailValido = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.trim())
+
+/** Situação do e-mail do motorista por extenso (bloco "Dados do motorista"). */
+const SITUACAO_EMAIL: Record<EmailSituacao, string> = {
+  sem: 'Sem e-mail',
+  repetido: 'E-mail repetido: igual ao de outro login ou cadastro. Troque para mandar o acesso.',
+  confirmado: 'Confirmado: entra pelo e-mail com a senha que criou.',
+  aguardando: 'Acesso enviado, aguardando criar a senha.',
+  pendente: 'E-mail ainda não enviado.',
+}
 
 function Bloco({ titulo, children }: { titulo: string; children: ReactNode }) {
   return (
@@ -81,6 +90,8 @@ export default function EditorPessoa({ p, onClose, onMudou }: { p: Pessoa; onClo
   const [erro, setErro] = useState<string | null>(null)
   const [ocupado, setOcupado] = useState(false)
   const [pendente, setPendente] = useState<Pendente | null>(null)
+  // O que o servidor avisou depois de uma ação que deu certo (fica até fechar)
+  const [avisoAcao, setAvisoAcao] = useState<string | null>(null)
   const [editarMotorista, setEditarMotorista] = useState(false)
   const [senhaMotorista, setSenhaMotorista] = useState(false)
 
@@ -107,7 +118,7 @@ export default function EditorPessoa({ p, onClose, onMudou }: { p: Pessoa; onClo
   const cadastro = motoristas?.find(m => m.id === p.motoristaId) ?? null
 
   const executar = async (fn: () => Promise<void>, ok?: string) => {
-    setErro(null); setOcupado(true)
+    setErro(null); setAvisoAcao(null); setOcupado(true)
     try { await fn(); if (ok) toast.success(ok); onMudou(); carregarMotoristas() }
     catch (e) { setErro(await erroDaApi(e, 'Não consegui gravar. Tente de novo.')) }
     finally { setOcupado(false) }
@@ -152,6 +163,21 @@ export default function EditorPessoa({ p, onClose, onMudou }: { p: Pessoa; onClo
     executar(async () => {
       const r = await contasApi.novaSenha(p.usuarioId!)
       setPendente(entregaDaSenha(r.data, p.nome, emailOriginal))
+    })
+  }
+
+  // Login do motorista por e-mail: manda a senha provisória (a de hoje continua valendo até ele criar a nova)
+  const mandarAcessoEmail = async (para: string) => {
+    if (p.motoristaId == null) return
+    const temporaria = p.emailSituacao === 'confirmado'
+    if (!await confirmar({
+      titulo: temporaria ? `Mandar senha temporária para ${p.nome}?` : `Mandar o e-mail de acesso para ${p.nome}?`,
+      texto: `Vai uma senha provisória para ${para}. A senha de hoje continua valendo até ${p.nome} criar a nova.`,
+      confirmar: temporaria ? 'Mandar senha temporária' : 'Mandar e-mail', perigo: false,
+    })) return
+    executar(async () => {
+      const r = await usuariosApi.acessoEmail(p.motoristaId!)
+      setPendente(entregaDaSenha(r?.senha, p.nome, para))
     })
   }
 
@@ -241,7 +267,12 @@ export default function EditorPessoa({ p, onClose, onMudou }: { p: Pessoa; onClo
       })) return
       executar(async () => {
         await usuariosApi.admin(p.usuarioId!, false)
-        if (comMotorista) await usuariosApi.tirarUsuario(p.usuarioId!)
+        if (comMotorista) {
+          // O login novo de motorista recebe o acesso pelo e-mail do cadastro: senha que não saiu ou aviso aparecem aqui
+          const r = await usuariosApi.tirarUsuario(p.usuarioId!)
+          setAvisoAcao(r?.aviso ?? null)
+          setPendente(entregaDaSenha(r?.senha, p.nome, cadastro?.email ?? 'o e-mail do cadastro'))
+        }
         else await usuariosApi.permissoes(p.usuarioId!, false, [])
       }, 'Acesso total tirado.')
       return
@@ -280,6 +311,7 @@ export default function EditorPessoa({ p, onClose, onMudou }: { p: Pessoa; onClo
     <Modal titulo={p.nome || 'Pessoa'} onClose={onClose} sujo={dadosMudaram} largura="lg"
            descricao={login ? <>Entra com <b>{login.login}</b></> : 'Sem login de acesso'}>
       {erro && <Aviso tipo="erro" onFechar={() => setErro(null)}>{erro}</Aviso>}
+      {avisoAcao && <Aviso tipo="atencao" onFechar={() => setAvisoAcao(null)}>{avisoAcao}</Aviso>}
       {pendente && <SenhaPendente p={pendente} onFechar={() => setPendente(null)} />}
       {p.avisos.length > 0 && <Aviso tipo="atencao" itens={p.avisos} />}
 
@@ -310,7 +342,7 @@ export default function EditorPessoa({ p, onClose, onMudou }: { p: Pessoa; onClo
           {editaDados && p.ativo && !souEu && (
             <Botao variante="secundario" tamanho="sm" icone={KeyRound} disabled={ocupado} onClick={mandarSenhaNova}>Mandar senha nova</Botao>
           )}
-          {tipo === 'motorista' && cadastro && (
+          {tipo === 'motorista' && cadastro && p.emailSituacao !== 'confirmado' && (
             <Botao variante="secundario" tamanho="sm" icone={KeyRound} onClick={() => setSenhaMotorista(true)}>Trocar a senha do painel</Botao>
           )}
         </div>
@@ -381,13 +413,27 @@ export default function EditorPessoa({ p, onClose, onMudou }: { p: Pessoa; onClo
           ) : (
             <>
               <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1.5 text-sm">
-                <dt className="text-gray-600">Usuário</dt><dd className="break-all">{cadastro.login}</dd>
+                <dt className="text-gray-600">Login antigo (nome de usuário)</dt><dd className="break-all">{cadastro.login}</dd>
                 <dt className="text-gray-600">Comissão</dt><dd>{num(cadastro.porcentagemComissao, cadastro.porcentagemComissao % 1 ? 2 : 0)}%</dd>
                 <dt className="text-gray-600">CNH</dt><dd><SeloValidade validade={cadastro.cnhValidade} /></dd>
-                <dt className="text-gray-600">E-mail</dt><dd className="break-all">{cadastro.email || <span className="text-amber-800">Sem e-mail</span>}</dd>
+                <dt className="text-gray-600">E-mail</dt>
+                <dd className="break-all">
+                  {cadastro.email || <span className="text-amber-800">Sem e-mail</span>}
+                  {cadastro.email && p.emailSituacao && (
+                    <span className={`block text-xs ${p.emailSituacao === 'confirmado' ? 'text-gray-600' : 'text-amber-800'}`}>
+                      {SITUACAO_EMAIL[p.emailSituacao]}
+                    </span>
+                  )}
+                </dd>
               </dl>
               <div className="flex flex-wrap gap-2">
                 <Botao variante="secundario" icone={Pencil} onClick={() => setEditarMotorista(true)}>Editar dados do motorista</Botao>
+                {cadastro.email && (p.emailSituacao === 'pendente' || p.emailSituacao === 'aguardando' || p.emailSituacao === 'confirmado') && (
+                  <Botao variante="secundario" icone={Mail} disabled={ocupado} onClick={() => mandarAcessoEmail(cadastro.email!)}>
+                    {p.emailSituacao === 'confirmado' ? 'Mandar senha temporária'
+                      : p.emailSituacao === 'aguardando' ? 'Mandar de novo' : 'Mandar e-mail de acesso'}
+                  </Botao>
+                )}
                 {cadastro.temCnhPdf && (
                   <Botao variante="secundario" icone={Download}
                          onClick={() => viagensApi.baixarCnh(cadastro.id, cadastro.nome).catch(async e => toast.error(await erroDaApi(e, 'Não consegui baixar.')))}>

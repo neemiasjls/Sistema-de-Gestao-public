@@ -44,6 +44,8 @@ builder.Services.AddRateLimiter(opt =>
     PorIp(opt, "produtosA-codigo", 30, TimeSpan.FromMinutes(1));
     PorIp(opt, "cadastro", 10, TimeSpan.FromMinutes(15));
     PorIp(opt, "esqueci-senha", 5, TimeSpan.FromMinutes(15));
+    // "Esqueci a senha" da tela de login (motorista e portal), cota própria: 5 a cada 15 min.
+    PorIp(opt, "esqueci-senha-login", 5, TimeSpan.FromMinutes(15));
 
     opt.OnRejected = async (ctx, _) =>
     {
@@ -53,7 +55,7 @@ builder.Services.AddRateLimiter(opt =>
         {
             "/api/auth/produtosA/codigo" => "Muitas tentativas. Aguarde um minuto e tente de novo.",
             "/api/auth/produtosA/cadastro" => "Muitas contas criadas daqui. Aguarde 15 minutos e tente de novo.",
-            "/api/auth/produtosA/esqueci-senha" => "Muitos pedidos de senha nova. Aguarde 15 minutos e tente de novo.",
+            "/api/auth/produtosA/esqueci-senha" or "/api/auth/esqueci-senha" => "Muitos pedidos de senha nova. Aguarde 15 minutos e tente de novo.",
             _ => "Muitas tentativas de login. Aguarde um minuto e tente de novo.",
         };
         await ctx.HttpContext.Response.WriteAsJsonAsync(new { erro });

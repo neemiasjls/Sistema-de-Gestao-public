@@ -1,8 +1,66 @@
 import { useState, FormEvent } from 'react'
+import axios from 'axios'
 import { Eye, EyeOff } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
+import { authApi } from '../services/api'
 import Botao from '../components/ui/Botao'
+import Aviso from '../components/ui/Aviso'
 import ServidorAcordando from '../components/ui/ServidorAcordando'
+
+function erroDa(err: unknown, padrao: string) {
+  if (axios.isAxiosError(err)) {
+    if (!err.response) return 'Sem conexão. Confira a internet e tente de novo.'
+    return (err.response.data as { erro?: string } | undefined)?.erro ?? padrao
+  }
+  return padrao
+}
+
+function EsqueciSenha({ emailInicial, onVoltar }: { emailInicial: string; onVoltar: () => void }) {
+  const [email, setEmail] = useState(emailInicial)
+  const [enviando, setEnviando] = useState(false)
+  const [pronto, setPronto] = useState<string | null>(null)
+  const [erro, setErro] = useState<string | null>(null)
+
+  async function enviar(e: FormEvent) {
+    e.preventDefault()
+    if (!email.trim()) { setErro('Informe o e-mail do seu cadastro.'); return }
+    setEnviando(true); setErro(null)
+    try {
+      const r = await authApi.esqueciSenha(email.trim())
+      setPronto(r.data.mensagem)
+    } catch (err) {
+      setErro(erroDa(err, 'Não deu para pedir agora. Tente de novo.'))
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  return (
+    <form onSubmit={enviar} noValidate className="space-y-4">
+      <h2 className="font-display text-xl font-semibold text-gray-900">Esqueci a senha</h2>
+      <p className="text-sm text-gray-700">
+        Digite o e-mail do seu cadastro. Chega nele uma senha temporária; ao entrar com ela, você cria a sua senha nova.
+      </p>
+      <div>
+        <label htmlFor="esqueci-email" className="block text-sm font-medium text-gray-700 mb-1">E-mail</label>
+        <input id="esqueci-email" type="email" inputMode="email" autoCapitalize="none" autoCorrect="off"
+               spellCheck={false} autoComplete="username" value={email} onChange={e => setEmail(e.target.value)}
+               className="w-full min-h-12 rounded-lg border border-gray-300 bg-white px-3 text-base text-gray-900 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-tinta-500 focus:border-transparent" />
+      </div>
+      {pronto && <Aviso tipo="info">{pronto}</Aviso>}
+      {erro && <Aviso tipo="erro">{erro}</Aviso>}
+      {!pronto && (
+        <Botao type="submit" variante="primario" bloco carregando={enviando} textoCarregando="Pedindo..." className="min-h-12">
+          Mandar senha temporária
+        </Botao>
+      )}
+      <p className="text-xs text-center text-gray-500">
+        Ainda entra com nome de usuário ou é do escritório? Peça a senha ao responsável pelo sistema.
+      </p>
+      <Botao bloco onClick={onVoltar} className="min-h-12">Voltar para entrar</Botao>
+    </form>
+  )
+}
 
 export default function LoginPage() {
   const { login } = useAuth()
@@ -11,6 +69,7 @@ export default function LoginPage() {
   const [verSenha, setVerSenha] = useState(false)
   const [erro, setErro]         = useState<string | null>(null)
   const [loading, setLoading]   = useState(false)
+  const [esqueci, setEsqueci]   = useState(false)
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -37,6 +96,9 @@ export default function LoginPage() {
       </div>
 
       <div className="bg-white rounded-2xl shadow-xl shadow-tinta-950/30 w-full max-w-sm p-7">
+        {esqueci ? (
+          <EsqueciSenha emailInicial={email.includes('@') ? email.trim() : ''} onVoltar={() => setEsqueci(false)} />
+        ) : (
         <form onSubmit={handleSubmit} noValidate className="space-y-4">
           <div>
             <label htmlFor="login-email" className="block text-sm font-medium text-gray-700 mb-1">
@@ -98,10 +160,12 @@ export default function LoginPage() {
             Entrar
           </Botao>
 
-          <p className="text-xs text-center text-gray-500">
-            Esqueceu a senha? Peça uma nova ao responsável pelo sistema.
-          </p>
+          <button type="button" onClick={() => setEsqueci(true)}
+                  className="w-full min-h-11 text-sm font-medium text-tinta-700 hover:text-tinta-900 underline underline-offset-2">
+            Esqueci a senha
+          </button>
         </form>
+        )}
 
       </div>
 

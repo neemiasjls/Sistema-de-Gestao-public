@@ -42,9 +42,11 @@ public static class PermissoesMiddleware
             var db = ctx.RequestServices.GetRequiredService<AppDbContext>();
             var u = id <= 0 ? null : await db.Usuarios.AsNoTracking()
                 .Where(x => x.Id == id)
-                .Select(x => new { x.Ativo, x.Dono, x.Perfil, x.Permissoes })
+                .Select(x => new { x.Ativo, x.Dono, x.Perfil, x.Permissoes, x.SenhaAlteradaEm })
                 .FirstOrDefaultAsync();
-            usuario = u == null || !u.Ativo ? null
+            // Token emitido antes da última troca de senha: sessão encerrada (USU-12)
+            var iat = long.TryParse(ctx.User.FindFirst("iat")?.Value, out var s) ? s : (long?)null;
+            usuario = u == null || !u.Ativo || !AuthService.TokenVale(u.SenhaAlteradaEm, iat) ? null
                 : new AreasAcesso.UsuarioAcesso(u.Perfil, u.Dono, u.Permissoes,
                     await db.MotoristasFrota.AsNoTracking().AnyAsync(m => m.UsuarioId == id && m.Ativo));
         }

@@ -62,20 +62,79 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
     public async Task<LoginResult> LoginAsync(string login, string senha)
     {
         var alvo = login.Trim().ToLower();
-        var usuario = await db.Usuarios
-            .FirstOrDefaultAsync(u => u.Email.ToLower() == alvo && u.Ativo);
+        var usuario = await AcharLoginAsync(alvo);
 
-        // Motorista entra com o usuário (joseferraz), sem @
+        // Motorista entra com o usuário (joseferraz), sem @, ou com o e-mail do cadastro
         var erro = alvo.Contains('@') ? "E-mail ou senha incorretos." : "Usuário ou senha incorretos.";
+        // Sempre duas conferências de hash (senha e provisória), contra o hash falso quando falta uma:
+        // o tempo da resposta não revela se o login existe nem se há provisória pendente
         if (usuario == null)
+        {
+            ConferirFalso(senha);
+            ConferirFalso(senha);
             return new LoginResult { Erro = erro };
+        }
 
-        var result = _hasher.VerifyHashedPassword(usuario, usuario.SenhaHash, senha);
-        if (result == PasswordVerificationResult.Failed)
-            return new LoginResult { Erro = erro };
+        var senhaOk = string.IsNullOrEmpty(usuario.SenhaHash) ? ConferirFalso(senha) : SenhaConfere(usuario, usuario.SenhaHash, senha);
+        var temProvisoria = usuario.SenhaProvisoriaExpiraEm is { } expira && expira > DateTime.UtcNow
+                            && !string.IsNullOrEmpty(usuario.SenhaProvisoriaHash);
+        var provisoriaOk = temProvisoria ? ProvisoriaConfere(usuario, senha) : ConferirFalso(senha);
 
-        return new LoginResult { Token = GerarToken(usuario), Usuario = await ToDtoAsync(usuario) };
+        if (senhaOk)
+            return new LoginResult { Token = GerarToken(usuario), Usuario = await ToDtoAsync(usuario) };
+
+        // Senha provisória paralela (a senha atual continua valendo): entra só para criar a senha
+        if (provisoriaOk)
+        {
+            var dto = await ToDtoAsync(usuario);
+            dto.TrocarSenha = true;
+            return new LoginResult { Token = GerarToken(usuario, forcarTroca: true), Usuario = dto };
+        }
+
+        return new LoginResult { Erro = erro };
     }
+
+    // Achar o login (plano login-motorista-email, "Modelo"): (1) Usuarios.Email igual ao
+    // digitado e ativo, como sempre; (2) senão, com "@", o e-mail do cadastro de motorista,
+    // só se for exatamente UM cadastro com esse e-mail e o login dele for de perfil motorista e ativo.
+    // Login do escritório nunca é achado pelo e-mail do cadastro.
+    public async Task<Usuario?> AcharLoginAsync(string alvo)
+    {
+        alvo = alvo.Trim().ToLower();
+        if (alvo.Length == 0) return null;
+
+        var usuario = await db.Usuarios.FirstOrDefaultAsync(u => u.Email.ToLower() == alvo && u.Ativo);
+        if (usuario != null || !alvo.Contains('@')) return usuario;
+
+        var cadastros = await db.MotoristasFrota
+            .Where(m => m.Email != null && m.Email.ToLower() == alvo)
+            .Select(m => m.UsuarioId)
+            .Take(2)
+            .ToListAsync();
+        if (cadastros.Count != 1 || cadastros[0] is not { } usuarioId) return null;
+
+        return await db.Usuarios.FirstOrDefaultAsync(u =>
+            u.Id == usuarioId && u.Ativo && u.Perfil == PerfilMotorista && !u.Dono);
+    }
+
+    private static readonly Usuario UsuarioFalso = new();
+    private static readonly string  HashFalso =
+        new PasswordHasher<Usuario>().HashPassword(UsuarioFalso, Guid.NewGuid().ToString());
+
+    /// <summary>Gasta o tempo de uma conferência de senha; sempre false.</summary>
+    private bool ConferirFalso(string senha)
+    {
+        _hasher.VerifyHashedPassword(UsuarioFalso, HashFalso, senha);
+        return false;
+    }
+
+    private bool SenhaConfere(Usuario usuario, string? hash, string senha) =>
+        !string.IsNullOrEmpty(hash)
+        && _hasher.VerifyHashedPassword(usuario, hash, senha) != PasswordVerificationResult.Failed;
+
+    private bool ProvisoriaConfere(Usuario usuario, string senha) =>
+        usuario.SenhaProvisoriaExpiraEm is { } expira && expira > DateTime.UtcNow
+        && SenhaConfere(usuario, usuario.SenhaProvisoriaHash, senha);
 
     public async Task<UsuarioDto?> ObterAsync(int id)
     {
@@ -87,7 +146,9 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         await db.Usuarios.AnyAsync(u => u.Id == id && u.Dono && u.Ativo);
 
     // ── Gerar token JWT ────────────────────────────────────────────
-    private string GerarToken(Usuario usuario)
+    // forcarTroca: entrou pela senha provisória; o token sai com trocar_senha mesmo
+    // com Usuario.TrocarSenha falso, e a API só atende /me e /trocar-senha.
+    private string GerarToken(Usuario usuario, bool forcarTroca = false)
     {
         var secret = config["JWT:Secret"]
             ?? throw new InvalidOperationException("JWT:Secret não configurado.");
@@ -101,9 +162,12 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
             new(JwtRegisteredClaimNames.Email, usuario.Email),
             new(ClaimTypes.Name,               usuario.Nome),
             new(JwtRegisteredClaimNames.Jti,   Guid.NewGuid().ToString()),
+            // Emitido em (segundos Unix, UTC): o PermissoesMiddleware derruba token anterior à troca de senha
+            new(JwtRegisteredClaimNames.Iat,   DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(),
+                ClaimValueTypes.Integer64),
         };
         if (usuario.Dono)        claims.Add(new(ClaimDono, "true"));
-        if (usuario.TrocarSenha) claims.Add(new(ClaimTrocarSenha, "true"));
+        if (usuario.TrocarSenha || forcarTroca) claims.Add(new(ClaimTrocarSenha, "true"));
         if (!string.IsNullOrEmpty(usuario.Perfil)) claims.Add(new(ClaimPerfil, usuario.Perfil));
 
         var token = new JwtSecurityToken(
@@ -113,6 +177,34 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
             signingCredentials: creds);
 
         return new JwtSecurityTokenHandler().WriteToken(token);
+    }
+
+    // ── Sessão antiga cai quando a senha muda ─────────────────────
+    // A troca grava a hora cortada no segundo (o iat do token só tem segundos) e ANTES do token novo,
+    // então o token devolvido pela própria troca nunca "nasce antes" dela.
+    public static DateTime AgoraNoSegundo()
+    {
+        var t = DateTime.UtcNow;
+        return new DateTime(t.Ticks - t.Ticks % TimeSpan.TicksPerSecond, DateTimeKind.Utc);
+    }
+
+    // Quem troca a SenhaHash de um login que já existe chama isto (provisória paralela não: a senha não mudou).
+    private static void MarcarSenhaAlterada(Usuario usuario) => usuario.SenhaAlteradaEm = AgoraNoSegundo();
+
+    // Senha nunca trocada: vale sempre (com ou sem iat; ninguém cai na subida).
+    // Depois de uma troca: só vale token com iat no mesmo segundo da troca ou depois; sem iat, não vale.
+    public static bool TokenVale(DateTime? senhaAlteradaEm, long? iat)
+    {
+        if (senhaAlteradaEm is not { } alterada) return true;
+        if (iat is not { } emitido) return false;
+        var utc = alterada.Kind switch
+        {
+            DateTimeKind.Local       => alterada.ToUniversalTime(),
+            DateTimeKind.Unspecified => DateTime.SpecifyKind(alterada, DateTimeKind.Utc),
+            _                        => alterada,
+        };
+        // ToUnixTimeSeconds corta a fração: comparação no segundo, igual ao iat
+        return emitido >= new DateTimeOffset(utc).ToUnixTimeSeconds();
     }
 
     // ── Senha ──────────────────────────────────────────────────────
@@ -168,15 +260,31 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         var usuario = await db.Usuarios.FindAsync(id);
         if (usuario == null || !usuario.Ativo) return new LoginResult { Erro = "Usuário não encontrado." };
 
-        if (_hasher.VerifyHashedPassword(usuario, usuario.SenhaHash, senhaAtual) == PasswordVerificationResult.Failed)
+        // Vale a senha atual OU a provisória ainda válida (motorista criando a senha pelo e-mail)
+        var pelaAtual = SenhaConfere(usuario, usuario.SenhaHash, senhaAtual);
+        var pelaProvisoria = !pelaAtual && ProvisoriaConfere(usuario, senhaAtual);
+        if (!pelaAtual && !pelaProvisoria)
             return new LoginResult { Erro = "A senha atual não confere." };
 
         if (ValidarSenhaNova(novaSenha) is { } problema) return new LoginResult { Erro = problema };
         if (novaSenha == senhaAtual) return new LoginResult { Erro = "A senha nova precisa ser diferente da atual." };
 
+        var agora = DateTime.UtcNow;
         usuario.SenhaHash   = _hasher.HashPassword(usuario, novaSenha);
         usuario.TrocarSenha = false;
-        usuario.AtualizadoEm = DateTime.UtcNow;
+        usuario.SenhaProvisoriaHash     = null;
+        usuario.SenhaProvisoriaExpiraEm = null;
+        MarcarSenhaAlterada(usuario);
+        usuario.AtualizadoEm = agora;
+
+        // Criou a senha com a provisória mandada ao e-mail do cadastro: e-mail confirmado.
+        // Troca feita com a senha atual não confirma nada.
+        if (pelaProvisoria && usuario.Perfil == PerfilMotorista)
+        {
+            var cadastro = await db.MotoristasFrota.FirstOrDefaultAsync(m =>
+                m.UsuarioId == usuario.Id && m.Email != null && m.Email != "");
+            if (cadastro != null) cadastro.EmailConfirmadoEm = agora;
+        }
         await db.SaveChangesAsync();
 
         // Token novo, já sem a marca de senha provisória
@@ -198,6 +306,8 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         if (nome.Length == 0)        return new LoginResult { Erro = "Informe o nome." };
         if (!EmailValido(emailNorm)) return new LoginResult { Erro = "Esse e-mail não parece válido." };
         if (await db.Usuarios.AnyAsync(u => u.Id != id && u.Email.ToLower() == emailNorm))
+            return new LoginResult { Erro = "Este e-mail já é de outro usuário." };
+        if (emailNorm != usuario.Email.ToLower() && await EmailEmCadastroDeOutroAsync(emailNorm, id, null))
             return new LoginResult { Erro = "Este e-mail já é de outro usuário." };
 
         usuario.Nome  = nome;
@@ -235,8 +345,10 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
     /// Só grava o login (sem e-mail). Quem chama dentro de uma transação manda a senha com
     /// EntregarSenhaPrimeiroAcessoAsync depois de confirmar tudo (PessoasService.DarUsuarioAsync).
     /// </summary>
+    /// <remarks>motoristaIdDaPessoa: cadastro de motorista da mesma pessoa (DarUsuarioAsync), que pode
+    /// ter no login do escritório o e-mail do próprio cadastro.</remarks>
     internal async Task<(Usuario? Usuario, string? Senha, string? Erro)> CriarLoginAsync(
-        string nome, string emailInformado, IEnumerable<string>? areas)
+        string nome, string emailInformado, IEnumerable<string>? areas, int? motoristaIdDaPessoa = null)
     {
         var emailNorm = emailInformado.Trim().ToLower();
         nome = nome.Trim();
@@ -245,7 +357,8 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         if (!EmailValido(emailNorm))   return (null, null, "Esse e-mail não parece válido.");
         var permissoes = AreasAcesso.Validar(areas);
         if (!permissoes.Ok)            return (null, null, permissoes.Erro);
-        if (await db.Usuarios.AnyAsync(u => u.Email.ToLower() == emailNorm))
+        if (await db.Usuarios.AnyAsync(u => u.Email.ToLower() == emailNorm)
+            || await EmailEmCadastroDeOutroAsync(emailNorm, null, motoristaIdDaPessoa))
             return (null, null, "Este e-mail já está cadastrado.");
 
         var senha = GerarSenhaForte();
@@ -274,6 +387,7 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         var senha = GerarSenhaForte();
         usuario.SenhaHash   = _hasher.HashPassword(usuario, senha);
         usuario.TrocarSenha = true;
+        MarcarSenhaAlterada(usuario);
         usuario.AtualizadoEm = DateTime.UtcNow;
         await db.SaveChangesAsync();
 
@@ -298,6 +412,8 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         if (nome.Length == 0)        return "Informe o nome.";
         if (!EmailValido(emailNorm)) return "Esse e-mail não parece válido.";
         if (await db.Usuarios.AnyAsync(u => u.Id != id && u.Email.ToLower() == emailNorm))
+            return "Este e-mail já é de outro usuário.";
+        if (emailNorm != usuario.Email.ToLower() && await EmailEmCadastroDeOutroAsync(emailNorm, id, null))
             return "Este e-mail já é de outro usuário.";
 
         usuario.Nome  = nome;
@@ -352,7 +468,8 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         if (nome.Length < 2 || nome.Length > 80) return new(400, "Informe o seu nome (de 2 a 80 letras).", null);
         if (emailNorm.Length > 254 || !EmailValido(emailNorm)) return new(400, "Esse e-mail não parece válido.", null);
         if (ValidarSenhaNova(senha) is { } erroSenha) return new(400, erroSenha, null);
-        if (await db.Usuarios.AnyAsync(u => u.Email.ToLower() == emailNorm))
+        if (await db.Usuarios.AnyAsync(u => u.Email.ToLower() == emailNorm)
+            || await EmailEmCadastroDeOutroAsync(emailNorm, null, null))
             return new(400, "Não deu para criar a conta com este e-mail. Fale com o Admin.", null);
 
         var usuario = new Usuario
@@ -371,6 +488,64 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         return new(201, null, new LoginResult { Token = GerarToken(usuario), Usuario = await ToDtoAsync(usuario) });
     }
 
+    /// <summary>Intervalo mínimo entre dois e-mails de "esqueci a senha" para a mesma conta.</summary>
+    public static readonly TimeSpan IntervaloEsqueciSenha = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// "Esqueci a senha" da tela de login (Parte 6): motorista pelo e-mail do cadastro (provisória
+    /// paralela de 2 h; a senha de hoje continua) ou, se não for motorista, conta do portal das produtosA.
+    /// Login do escritório nunca é tocado (pede ao administrador). Quem chama responde sempre o mesmo.
+    /// </summary>
+    public async Task EsqueciSenhaAsync(string? emailInformado, string? ip)
+    {
+        var emailNorm = (emailInformado ?? "").Trim().ToLower();
+        if (emailNorm.Length == 0 || emailNorm.Length > 254) return;
+
+        var motoristas = await db.MotoristasFrota
+            .Where(m => m.Email != null && m.Email.ToLower() == emailNorm)
+            .Take(2).ToListAsync();
+        if (motoristas.Count > 0)
+        {
+            // E-mail de cadastro de motorista: só esse caminho (nunca cai no portal nem no escritório)
+            if (motoristas.Count != 1) return;
+            var m = motoristas[0];
+            if (!m.Ativo || m.UsuarioId is not { } uid) return;
+            var usuario = await db.Usuarios.FindAsync(uid);
+            if (usuario == null || !usuario.Ativo || usuario.Perfil != PerfilMotorista || usuario.Dono) return;
+            if (!await ReservarEsqueciAsync(usuario, DateTime.UtcNow)) return;
+            await MandarAcessoMotoristaAsync(m, pedidoDoProprio: true);
+            return;
+        }
+
+        await EsqueciSenhaProdutosAAsync(emailNorm, ip);
+    }
+
+    /// <summary>
+    /// Reserva o intervalo do "esqueci a senha" (SenhaProvisoriaEm) ANTES de gerar ou mandar: no banco é um
+    /// UPDATE condicional, então de dois pedidos ao mesmo tempo só um afeta a linha e segue. Banco em memória
+    /// (testes) não tem ExecuteUpdate: confere e grava em sequência.
+    /// </summary>
+    private async Task<bool> ReservarEsqueciAsync(Usuario usuario, DateTime agora)
+    {
+        var limite = agora - IntervaloEsqueciSenha;
+        if (db.Database.IsRelational())
+        {
+            var afetadas = await db.Usuarios
+                .Where(u => u.Id == usuario.Id && (u.SenhaProvisoriaEm == null || u.SenhaProvisoriaEm <= limite))
+                .ExecuteUpdateAsync(s => s.SetProperty(u => u.SenhaProvisoriaEm, agora));
+            if (afetadas != 1) return false;
+            // A entidade já carregada passa a ter o valor do banco, sem ficar marcada como mudada
+            var prop = db.Entry(usuario).Property(u => u.SenhaProvisoriaEm);
+            prop.CurrentValue = agora;
+            prop.OriginalValue = agora;
+            return true;
+        }
+        if (usuario.SenhaProvisoriaEm is { } ultimo && ultimo > limite) return false;
+        usuario.SenhaProvisoriaEm = agora;
+        await db.SaveChangesAsync();
+        return true;
+    }
+
     /// <summary>
     /// "Esqueci a senha" do portal: só conta ativa de perfil produtosA. Sorteia a provisória e manda
     /// pelo mesmo e-mail do GerarNovaSenhaAsync. Quem chama responde sempre a mesma coisa, achando
@@ -385,6 +560,10 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
             u.Email.ToLower() == emailNorm && u.Ativo && u.Perfil == PerfilProdutosA);
         if (usuario == null || !EmailValido(usuario.Email)) return;
 
+        // Um e-mail a cada 15 min por conta (SenhaProvisoriaEm marca o último envio)
+        var agora = DateTime.UtcNow;
+        if (!await ReservarEsqueciAsync(usuario, agora)) return;
+
         // Manda antes de gravar: se o e-mail falhar, a senha atual continua valendo (a pessoa não fica
         // trancada do lado de fora). A falha fica no log (o EmailService registra) e no histórico.
         var senha = GerarSenhaForte();
@@ -393,6 +572,7 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         {
             usuario.SenhaHash    = _hasher.HashPassword(usuario, senha);
             usuario.TrocarSenha  = true;
+            MarcarSenhaAlterada(usuario);
             usuario.AtualizadoEm = DateTime.UtcNow;
         }
         historico.Adicionar(usuario.Id, usuario.Nome, PortalProdutosAHistoricoService.SenhaEsquecida,
@@ -494,6 +674,10 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
             return redefinirSenha ? MensagemLoginDoSistema : null;
         }
 
+        // E-mail confirmado (Parte 5): a senha nova só vai pelo e-mail; nada volta para a padrão
+        var confirmado = m.EmailConfirmadoEm != null;
+        if (redefinirSenha && confirmado) return MensagemSenhaPorEmail;
+
         var login = m.Login.Trim().ToLowerInvariant();
         if (!LoginMotoristaValido(login)) return $"Login \"{m.Login}\" inválido: só letras minúsculas e números, sem espaço.";
 
@@ -525,17 +709,35 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
                 Nome = m.Nome, Email = login, Ativo = m.Ativo, Perfil = PerfilMotorista,
                 Permissoes = AreasAcesso.PainelMotorista,
             };
-            usuario.SenhaHash = _hasher.HashPassword(usuario, SenhaPadraoMotorista(login));
+            // Cadastro com e-mail válido e livre: nasce sem senha utilizável (a de entrada vai pelo e-mail)
+            var inicial = await EmailLivreParaLoginNovoAsync(m) ? GerarSenhaForte() : SenhaPadraoMotorista(login);
+            usuario.SenhaHash = _hasher.HashPassword(usuario, inicial);
             db.Usuarios.Add(usuario);
         }
         else
         {
-            var loginMudou = usuario.Email != login;
+            var loginAntigo = usuario.Email;
+            var loginMudou = loginAntigo != login;
+            // Login trocado: a senha padrão só acompanha o login novo se a senha atual AINDA for a padrão do
+            // antigo; a que a pessoa criou (ou a forte de quem nasceu com e-mail) fica, confirmado ou não.
+            var acompanhaLogin = loginMudou && !redefinirSenha && !string.IsNullOrEmpty(usuario.SenhaHash)
+                && _hasher.VerifyHashedPassword(usuario, usuario.SenhaHash, SenhaPadraoMotorista(loginAntigo))
+                   != PasswordVerificationResult.Failed;
             usuario.Nome = m.Nome;
             usuario.Email = login;
             usuario.Ativo = m.Ativo;
             usuario.TrocarSenha = false;
-            if (redefinirSenha || loginMudou) usuario.SenhaHash = _hasher.HashPassword(usuario, SenhaPadraoMotorista(login));
+            if (redefinirSenha || acompanhaLogin)
+            {
+                usuario.SenhaHash = _hasher.HashPassword(usuario, SenhaPadraoMotorista(login));
+                MarcarSenhaAlterada(usuario);
+            }
+            if (redefinirSenha)
+            {
+                // Volta à padrão pelo administrador: a provisória antiga deixa de valer (como na troca de senha)
+                usuario.SenhaProvisoriaHash = null;
+                usuario.SenhaProvisoriaExpiraEm = null;
+            }
             usuario.AtualizadoEm = DateTime.UtcNow;
         }
         await db.SaveChangesAsync();
@@ -548,6 +750,96 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
     }
 
     public const string MensagemLoginDoSistema = "Esta pessoa entra com o login do sistema; a senha se troca no perfil dela.";
+    public const string MensagemEmailRepetido  = "Este e-mail já é de outro login ou de outro motorista.";
+    public const string MensagemSenhaPorEmail  = "Este motorista entra pelo e-mail: a senha nova vai por e-mail.";
+
+    /// <summary>
+    /// Para o login que está para NASCER do cadastro: e-mail válido e que não é de nenhum login (nem
+    /// desativado, como o de escritório que acabou de ser tirado) nem de outro cadastro.
+    /// </summary>
+    public async Task<bool> EmailLivreParaLoginNovoAsync(MotoristaFrota m)
+    {
+        var e = (m.Email ?? "").Trim().ToLower();
+        if (e.Length == 0 || e.Length > 254 || !EmailValido(e)) return false;
+        if (await db.Usuarios.AnyAsync(u => u.Email.ToLower() == e)) return false;
+        return !await db.MotoristasFrota.AnyAsync(x => x.Id != m.Id && x.Email != null && x.Email.ToLower() == e);
+    }
+
+    // ── E-mail único entre logins e cadastros (plano login-motorista-email, Parte 3) ──
+    // O e-mail do cadastro de motorista vira caminho de entrada: não pode repetir o de nenhum login
+    // (ativo ou não) nem o de outro cadastro. Exceção: o login para o qual o próprio cadastro aponta
+    // (pessoa com as duas classificações: o e-mail do cadastro é só contato).
+
+    /// <summary>Erro (MensagemEmailRepetido) ou null quando o e-mail pode ficar no cadastro motoristaId (0 = novo).</summary>
+    public async Task<string?> EmailDeMotoristaLivreAsync(string email, int motoristaId)
+    {
+        var e = email.Trim().ToLower();
+        if (e.Length == 0) return null;
+        int? proprioLogin = motoristaId == 0 ? null
+            : await db.MotoristasFrota.Where(x => x.Id == motoristaId).Select(x => x.UsuarioId).FirstOrDefaultAsync();
+        if (await db.Usuarios.AnyAsync(u => u.Email.ToLower() == e && (proprioLogin == null || u.Id != proprioLogin)))
+            return MensagemEmailRepetido;
+        if (await db.MotoristasFrota.AnyAsync(x => x.Id != motoristaId && x.Email != null && x.Email.ToLower() == e))
+            return MensagemEmailRepetido;
+        return null;
+    }
+
+    /// <summary>Existe cadastro de motorista com esse e-mail que não é o motoristaId nem aponta para usuarioId.</summary>
+    public async Task<bool> EmailEmCadastroDeOutroAsync(string email, int? usuarioId, int? motoristaId)
+    {
+        var e = email.Trim().ToLower();
+        if (e.Length == 0) return false;
+        return await db.MotoristasFrota.AnyAsync(x => x.Email != null && x.Email.ToLower() == e
+            && (motoristaId == null || x.Id != motoristaId)
+            && (usuarioId == null || x.UsuarioId == null || x.UsuarioId != usuarioId));
+    }
+
+    // ── Mandar o acesso por e-mail (Parte 4) ──
+    // Senha provisória PARALELA: a senha de hoje (SenhaHash) não muda; a provisória entra exigindo
+    // troca e vale 7 dias no primeiro acesso (motorista na estrada) ou 2 horas depois de confirmado.
+
+    public async Task<SenhaProvisoriaResult> MandarAcessoMotoristaAsync(int motoristaId) =>
+        await db.MotoristasFrota.FindAsync(motoristaId) is { } m
+            ? await MandarAcessoMotoristaAsync(m)
+            : new() { Erro = "Motorista não encontrado." };
+
+    public async Task<SenhaProvisoriaResult> MandarAcessoMotoristaAsync(MotoristaFrota m, bool pedidoDoProprio = false)
+    {
+        // Tudo conferido antes de gravar qualquer coisa
+        if (await LoginEscritorioDoCadastroAsync(m) != null) return new() { Erro = MensagemLoginDoSistema };
+        if (!m.Ativo) return new() { Erro = "Este motorista está desativado; ative o cadastro antes de mandar o acesso." };
+        var destino = (m.Email ?? "").Trim().ToLower();
+        if (destino.Length == 0 || destino.Length > 254 || !EmailValido(destino))
+            return new() { Erro = "Cadastre um e-mail válido para este motorista antes de mandar o acesso." };
+        if (await EmailDeMotoristaLivreAsync(destino, m.Id) is { } repetido) return new() { Erro = repetido };
+
+        if (await GarantirUsuarioMotoristaAsync(m) is { } erro) return new() { Erro = erro };
+        var usuario = m.UsuarioId is { } uid ? await db.Usuarios.FindAsync(uid) : null;
+        if (usuario == null || usuario.Perfil != PerfilMotorista)
+            return new() { Erro = "Não consegui criar o acesso do motorista." };
+        if (!usuario.Ativo) return new() { Erro = "O acesso deste motorista está desativado." };
+
+        var primeiroAcesso = m.EmailConfirmadoEm == null;
+        var agora = DateTime.UtcNow;
+        var senha = GerarSenhaForte();
+        usuario.SenhaProvisoriaHash = _hasher.HashPassword(usuario, senha);
+        usuario.SenhaProvisoriaEm = agora;
+        usuario.SenhaProvisoriaExpiraEm = primeiroAcesso && !pedidoDoProprio ? agora.AddDays(7) : agora.AddHours(2);
+        await db.SaveChangesAsync();
+
+        // O e-mail só sai depois de gravado
+        var falha = await email.EnviarSenhaProvisoriaAsync(m.Nome, destino, senha, primeiroAcesso);
+        if (falha == null) return new() { EmailEnviado = true };
+        if (pedidoDoProprio)
+        {
+            // "Esqueci a senha": quem pediu não vê a senha; a provisória que não chegou não fica valendo
+            usuario.SenhaProvisoriaHash = null;
+            usuario.SenhaProvisoriaExpiraEm = null;
+            await db.SaveChangesAsync();
+            return new() { EmailEnviado = false, AvisoEmail = falha };
+        }
+        return new() { EmailEnviado = false, AvisoEmail = falha, SenhaProvisoria = senha };
+    }
 
     /// <summary>Login de escritório (perfil vazio) para o qual o cadastro aponta, ou null.</summary>
     public async Task<Usuario?> LoginEscritorioDoCadastroAsync(MotoristaFrota m)
@@ -574,6 +866,7 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
     public async Task<string?> DefinirSenhaMotoristaAsync(MotoristaFrota m, string senha)
     {
         if (await LoginEscritorioDoCadastroAsync(m) != null) return MensagemLoginDoSistema;
+        if (m.EmailConfirmadoEm != null) return MensagemSenhaPorEmail;
         if (ValidarSenhaNova(senha) is { } problema) return problema;
         Usuario? usuario = m.UsuarioId is { } uid ? await db.Usuarios.FindAsync(uid) : null;
         if (usuario == null || usuario.Perfil != PerfilMotorista)
@@ -584,6 +877,10 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         }
         usuario.SenhaHash = _hasher.HashPassword(usuario, senha);
         usuario.TrocarSenha = false;
+        // A provisória antiga deixa de valer (como na troca de senha)
+        usuario.SenhaProvisoriaHash = null;
+        usuario.SenhaProvisoriaExpiraEm = null;
+        MarcarSenhaAlterada(usuario);
         usuario.AtualizadoEm = DateTime.UtcNow;
         await db.SaveChangesAsync();
         return null;

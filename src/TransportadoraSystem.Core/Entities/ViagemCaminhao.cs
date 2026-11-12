@@ -42,6 +42,8 @@ public class MotoristaFrota
     public int? UsuarioId { get; set; }
     // E-mail do motorista (USU-11); pode ficar vazio. O login dele ainda não usa.
     public string? Email { get; set; }
+    // Quando o motorista criou a senha usando a provisória mandada para esse e-mail
+    public DateTime? EmailConfirmadoEm { get; set; }
     public DateTime CriadoEm { get; set; } = DateTime.UtcNow;
     public DateTime AtualizadoEm { get; set; } = DateTime.UtcNow;
 }

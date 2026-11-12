@@ -308,7 +308,11 @@ export const viagensApi = {
   motoristas: () => api.get('/api/viagens-caminhao/motoristas').then(r => comoLista<MotoristaFrota>(r.data, 'motoristas')),
   salvarMotorista: (id: number | null, m: MotoristaEntrada) =>
     (id ? api.put(`/api/viagens-caminhao/motoristas/${id}`, m) : api.post('/api/viagens-caminhao/motoristas', m))
-      .then(r => r.data as { id: number; aviso: string | null }),
+      .then(r => r.data as {
+        id: number; aviso: string | null
+        /** E-mail de acesso mandado ao salvar (e-mail novo ou trocado); null quando nada foi mandado. */
+        senha?: { erro?: string | null; emailEnviado: boolean; avisoEmail?: string | null; senhaProvisoria?: string | null } | null
+      }),
   senhaPadrao: (id: number) => api.post(`/api/viagens-caminhao/motoristas/${id}/senha-padrao`),
   senhaMotorista: (id: number, senha: string) => api.put(`/api/viagens-caminhao/motoristas/${id}/senha`, { senha }),
   ativoMotorista: (id: number, ativo: boolean) =>

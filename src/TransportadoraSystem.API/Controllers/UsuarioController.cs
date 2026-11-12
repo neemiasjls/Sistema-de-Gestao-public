@@ -106,6 +106,23 @@ public class UsuarioController(AuthService auth, PessoasService pessoas, ILogger
     public async Task<IActionResult> DarUsuario(int motoristaId, [FromBody] DarUsuarioDto dto) =>
         Responder(await pessoas.DarUsuarioAsync(motoristaId, dto.Email, dto.Total == true, dto.Areas, Eu));
 
+    // Primeiro acesso / senha temporária do motorista pelo e-mail do cadastro (plano login-motorista-email,
+    // Parte 4). O filtro acima já exige administrador conferido no banco (USU-12). A senha só volta
+    // quando o e-mail não saiu; nunca vai para o log.
+    [HttpPost("motorista/{motoristaId:int}/acesso-email")]
+    public async Task<IActionResult> AcessoEmail(int motoristaId)
+    {
+        try
+        {
+            var r = await auth.MandarAcessoMotoristaAsync(motoristaId);
+            logger.LogInformation("Acesso por e-mail do motorista {MotoristaId} mandado pelo usuário {Quem}: {Situacao}",
+                motoristaId, Eu, r.Erro != null ? "recusado" : r.EmailEnviado ? "e-mail saiu" : "e-mail não saiu");
+            if (r.Erro != null) return BadRequest(new { erro = r.Erro });
+            return Ok(new { senha = r });
+        }
+        catch (Exception ex) { logger.LogError(ex, "Erro ao mandar o acesso do motorista"); return StatusCode(500, new { erro = "Erro ao mandar o acesso." }); }
+    }
+
     [HttpDelete("{id:int}/usuario")]
     public async Task<IActionResult> TirarUsuario(int id) => Responder(await pessoas.TirarUsuarioAsync(id, Eu));
 }
