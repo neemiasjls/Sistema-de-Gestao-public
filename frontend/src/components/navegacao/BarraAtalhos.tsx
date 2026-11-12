@@ -36,7 +36,7 @@ const caixaIcone = 'h-8 w-14 rounded-full flex items-center justify-center trans
 function Conteudo({ icone: Icone, label, ativo }: { icone: LucideIcon; label: ReactNode; ativo: boolean }) {
   return (
     <>
-      <span className={`${caixaIcone} ${ativo ? 'bg-gema-400 text-tinta-950' : 'text-tinta-200 group-hover:text-white'}`}>
+      <span className={`${caixaIcone} ${ativo ? 'bg-gema-400 text-sobre-gema' : 'text-tinta-200 group-hover:text-white'}`}>
         <Icone size={21} strokeWidth={ativo ? 2.1 : 1.75} aria-hidden />
       </span>
       <span className={`font-display text-xs min-[380px]:text-[13px] leading-none tracking-tight whitespace-nowrap ${ativo ? 'text-white font-semibold' : 'text-tinta-200 font-medium'}`}>

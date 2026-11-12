@@ -1,4 +1,4 @@
-import { useId, useRef, type KeyboardEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 
 // Abas (D-22): visual de pílulas, com a marcação que o leitor de tela entende
@@ -12,6 +12,43 @@ export type OpcaoAba<T extends string> = readonly [T, string, LucideIcon?]
 
 export const useAbas = (nome: string) => `${nome}-${useId().replace(/:/g, '')}`
 
+// Faixa que passa da largura (celular, M-01): rola de lado dentro dela mesma,
+// esmaece a borda do lado em que há mais e traz a opção marcada para a vista.
+const FOLGA = 24
+function useFaixa(marcada: number) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [mais, setMais] = useState({ esq: false, dir: false })
+  const medir = useCallback(() => {
+    const el = ref.current
+    if (!el) return
+    const esq = el.scrollLeft > 1
+    const dir = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+    setMais(m => (m.esq === esq && m.dir === dir ? m : { esq, dir }))
+  }, [])
+  useEffect(() => {
+    const el = ref.current
+    const alvo = el?.children[marcada] as HTMLElement | undefined
+    if (el && alvo && el.scrollWidth > el.clientWidth) {
+      const ini = alvo.offsetLeft - FOLGA
+      const fim = alvo.offsetLeft + alvo.offsetWidth + FOLGA - el.clientWidth
+      if (el.scrollLeft > ini) el.scrollLeft = Math.max(0, ini)
+      else if (el.scrollLeft < fim) el.scrollLeft = fim
+    }
+    medir()
+  }, [marcada, medir])
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(medir)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [medir])
+  const mascara = mais.esq || mais.dir
+    ? `linear-gradient(to right, ${mais.esq ? 'transparent' : '#000'}, #000 ${FOLGA}px, #000 calc(100% - ${FOLGA}px), ${mais.dir ? 'transparent' : '#000'})`
+    : undefined
+  return { ref, onScroll: medir, style: { maskImage: mascara, WebkitMaskImage: mascara } }
+}
+
 export function Abas<T extends string>({ id, valor, opcoes, onChange, rotulo }: {
   id: string
   valor: T
@@ -21,6 +58,7 @@ export function Abas<T extends string>({ id, valor, opcoes, onChange, rotulo }: 
   rotulo?: string
 }) {
   const botoes = useRef<(HTMLButtonElement | null)[]>([])
+  const faixa = useFaixa(opcoes.findIndex(([v]) => v === valor))
   const tecla = (e: KeyboardEvent, i: number) => {
     const ir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
     if (!ir && e.key !== 'Home' && e.key !== 'End') return
@@ -31,7 +69,8 @@ export function Abas<T extends string>({ id, valor, opcoes, onChange, rotulo }: 
     botoes.current[alvo]?.focus()
   }
   return (
-    <div role="tablist" aria-label={rotulo} className="inline-flex max-w-full overflow-x-auto bg-gray-100 border border-gray-200 rounded-lg p-1 gap-1">
+    <div className="inline-flex max-w-full bg-gray-100 border border-gray-200 rounded-lg">
+    <div role="tablist" aria-label={rotulo} {...faixa} className="relative flex min-w-0 overflow-x-auto p-1 gap-1">
       {opcoes.map(([v, texto, Icone], i) => {
         const marcada = v === valor
         return (
@@ -54,6 +93,7 @@ export function Abas<T extends string>({ id, valor, opcoes, onChange, rotulo }: 
         )
       })}
     </div>
+    </div>
   )
 }
 
@@ -72,8 +112,10 @@ export function Segmentado<T extends string>({ valor, opcoes, onChange, rotulo }
   onChange: (v: T) => void
   rotulo?: string
 }) {
+  const faixa = useFaixa(opcoes.findIndex(([v]) => v === valor))
   return (
-    <div role="group" aria-label={rotulo} className="inline-flex max-w-full overflow-x-auto bg-gray-100 rounded-lg p-0.5 gap-0.5">
+    <div className="inline-flex max-w-full bg-gray-100 rounded-lg">
+    <div role="group" aria-label={rotulo} {...faixa} className="relative flex min-w-0 overflow-x-auto p-0.5 gap-0.5">
       {opcoes.map(([v, r]) => (
         <button key={v} type="button" onClick={() => onChange(v)} aria-pressed={valor === v}
                 className={`px-3 min-h-10 sm:min-h-8 text-sm rounded-md whitespace-nowrap transition-colors
@@ -81,6 +123,7 @@ export function Segmentado<T extends string>({ valor, opcoes, onChange, rotulo }
           {r}
         </button>
       ))}
+    </div>
     </div>
   )
 }

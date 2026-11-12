@@ -162,7 +162,12 @@ export default {
         // Menu lateral: tinta no claro e no azul; acompanha o preto nos pretos
         menu: 'rgb(var(--bg-menu) / <alpha-value>)',
       },
-      textColor: utilitarios.text,
+      textColor: {
+        ...utilitarios.text,
+        // Texto sobre o amarelo cheio (gema 400): o gema não muda no escuro, então
+        // a letra fica escura em todos os temas (tinta-950 viraria clara: 1,5:1)
+        'sobre-gema': tinta[950],
+      },
       borderColor: utilitarios.border,
       keyframes: {
         entrada: { from: { opacity: '0', transform: 'translateY(6px)' }, to: { opacity: '1', transform: 'none' } },

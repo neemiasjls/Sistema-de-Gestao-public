@@ -1802,6 +1802,28 @@ static class Ddl
         """
         UPDATE "Usuarios" SET "Permissoes" = 'portal-produtosA' WHERE "Permissoes" IS NULL AND "Perfil" = 'produtosA';
         """,
+        // Login do motorista por e-mail (11/11/2026): senha provisória paralela à atual (só hash),
+        // validade, quando foi mandada, quando a senha mudou e quando o motorista confirmou o e-mail.
+        // Colunas vazias primeiro; o código que as usa sobe depois (INF-08).
+        """
+        ALTER TABLE "Usuarios" ADD COLUMN IF NOT EXISTS "SenhaProvisoriaHash" text;
+        """,
+        """
+        ALTER TABLE "Usuarios" ADD COLUMN IF NOT EXISTS "SenhaProvisoriaExpiraEm" timestamp with time zone;
+        """,
+        """
+        ALTER TABLE "Usuarios" ADD COLUMN IF NOT EXISTS "SenhaProvisoriaEm" timestamp with time zone;
+        """,
+        """
+        ALTER TABLE "Usuarios" ADD COLUMN IF NOT EXISTS "SenhaAlteradaEm" timestamp with time zone;
+        """,
+        """
+        ALTER TABLE "MotoristasFrota" ADD COLUMN IF NOT EXISTS "EmailConfirmadoEm" timestamp with time zone;
+        """,
+        // E-mail repetido entre cadastros hoje: o índice não nasce (o Ddl só registra); quem barra é o código.
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS "UX_MotoristasFrota_Email" ON "MotoristasFrota" (lower("Email")) WHERE "Email" IS NOT NULL;
+        """,
     ];
 
     /// <summary>
@@ -1834,5 +1856,7 @@ static class Ddl
         ("StradaContratos", "DataContrato"), ("StradaContratos", "RetornoId"),
         ("VendasProdutoB", "RecebidoEm"), ("VendasProdutoB", "RecebidoPix"),
         ("Usuarios", "Permissoes"), ("MotoristasFrota", "Email"), ("FretePerfilAjustes", "HouveQueda"),
+        ("Usuarios", "SenhaProvisoriaHash"), ("Usuarios", "SenhaProvisoriaExpiraEm"), ("Usuarios", "SenhaProvisoriaEm"),
+        ("Usuarios", "SenhaAlteradaEm"), ("MotoristasFrota", "EmailConfirmadoEm"),
     ];
 }

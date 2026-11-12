@@ -14,7 +14,7 @@ import { secoesMenu } from './menu'
 // A gema é o único ponto quente do sistema: marca onde você está.
 // No celular o item é mais alto (dedo, 44 px); no computador, compacto.
 const itemBase = 'flex items-center gap-3 px-3 min-h-11 lg:min-h-0 lg:py-[5px] lg:leading-5 rounded-lg text-[15px] transition-colors'
-const itemAtivo = 'bg-gema-400 text-tinta-950 font-semibold'
+const itemAtivo = 'bg-gema-400 text-sobre-gema font-semibold'
 const itemInativo = 'text-tinta-200 hover:bg-[rgb(255_255_255/0.06)] hover:text-white'
 
 const FOCAVEIS = 'a[href], button:not([disabled])'
