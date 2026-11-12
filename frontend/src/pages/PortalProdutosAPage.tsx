@@ -72,7 +72,11 @@ const apagarRascunho = (chave: string) => { try { localStorage.removeItem(chave)
 const novo = (): Rascunho => ({ editandoId: null, data: diasAtras(0), clienteId: null, clienteNome: '', pesos: [], digitando: '' })
 
 // ── Página ──────────────────────────────────────────────────────────────
-export default function PortalProdutosAPage({ dentroDoSistema = false }: { dentroDoSistema?: boolean }) {
+// voltar: quem tem os dois painéis volta à tela dos dois botões (USU-11). sairPara:
+// com os dois painéis o sair vai para o login, não para a entrada do QR.
+export default function PortalProdutosAPage({ dentroDoSistema = false, voltar, sairPara = '/produtosA' }: {
+  dentroDoSistema?: boolean; voltar?: { to: string; rotulo: string }; sairPara?: string
+}) {
   const { usuario, logout } = useAuth()
   const navigate = useNavigate()
   const chave = chaveRascunho(usuario?.id ?? 0)
@@ -84,7 +88,7 @@ export default function PortalProdutosAPage({ dentroDoSistema = false }: { dentr
   })
 
   function sair() {
-    navigate('/produtosA', { replace: true })
+    navigate(sairPara, { replace: true })
     logout()
   }
 
@@ -93,6 +97,13 @@ export default function PortalProdutosAPage({ dentroDoSistema = false }: { dentr
       {!dentroDoSistema && (
         <header className="sticky top-0 z-20 bg-menu text-white">
           <div className="max-w-lg mx-auto flex items-center gap-3 px-4 min-h-14">
+            {voltar && !rascunho && (
+              <Link to={voltar.to} title={voltar.rotulo}
+                    className="-ml-2 w-11 h-11 rounded-lg flex items-center justify-center shrink-0 text-tinta-100 hover:bg-white/10 hover:text-white">
+                <ArrowLeft size={22} aria-hidden />
+                <span className="sr-only">{voltar.rotulo}</span>
+              </Link>
+            )}
             <div className="min-w-0 flex-1">
               <p className="font-display text-xl font-semibold leading-tight">ProdutosA</p>
               <p className="text-sm text-tinta-200 truncate">{usuario?.nome}</p>

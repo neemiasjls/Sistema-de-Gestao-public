@@ -61,7 +61,7 @@ public static class AreasAcesso
         new("agrotrade-tip", "Agrotrade / TIP Bank", "Financeiro", "/agrotrade-tip"),
         new("seguro", "Seguro", "Fechamento do mês", "/cte-export"),
         new("semparar", "Sem Parar", "Fechamento do mês", "/semparar"),
-        new("motoristas", "Motoristas", "Cadastros", "/cadastros/motoristas"),
+        new("motoristas", "Motoristas", "Cadastros", "/cadastros/usuarios"),
         new("placas", "Placas", "Cadastros", "/cadastros/placas"),
         new("clientes", "Clientes", "Cadastros e arquivos", "/precos"),
         new("tipos-volume", "Tipos de volumes", "Cadastros e arquivos", "/tipos-volume"),
@@ -239,15 +239,21 @@ public static class AreasAcesso
     static bool EhEscritorio(string? perfil) => string.IsNullOrEmpty(perfil);
 
     /// <summary>
-    /// Áreas que o usuário tem de fato. Motorista: só o painel. Portal: só a página das produtosA
-    /// (a coluna não alarga perfil restrito). Escritório: administrador = tudo, senão a coluna;
+    /// Áreas que o usuário tem de fato. Motorista: o painel, mais o portal das produtosA se a coluna
+    /// traz essa chave (a única aceita para esse perfil; ex.: o Caio, com os dois painéis). Portal:
+    /// só a página das produtosA (a coluna não alarga). Escritório: administrador = tudo, senão a coluna;
     /// mais o painel do motorista se o login tem cadastro de motorista ativo. O "*" nunca dá o painel.
     /// Perfil desconhecido = nada.
     /// </summary>
     public static HashSet<string> Efetivas(string? perfil, bool dono, string? permissoes, bool temCadastroMotoristaAtivo)
     {
         var r = new HashSet<string>(StringComparer.Ordinal);
-        if (perfil == AuthService.PerfilMotorista) { r.Add(PainelMotorista); return r; }
+        if (perfil == AuthService.PerfilMotorista)
+        {
+            r.Add(PainelMotorista);
+            if (Partes(permissoes).Contains(PortalProdutosA)) r.Add(PortalProdutosA);
+            return r;
+        }
         if (perfil == AuthService.PerfilProdutosA) { r.Add(PortalProdutosA); return r; }
         if (!EhEscritorio(perfil)) return r;
 
@@ -269,11 +275,23 @@ public static class AreasAcesso
     /// <summary>
     /// Confere as chaves que a tela manda gravar: só chaves do catálogo (ou "*"), nunca pseudoárea
     /// nem o painel do motorista. Devolve as chaves arrumadas ("*" sozinho, ou as chaves sem repetir)
-    /// ou o erro.
+    /// ou o erro. Perfil motorista aceita só o portal das produtosA (o painel vem do perfil; o valor
+    /// guardado mantém "painel-motorista" na frente, como nasce); perfil produtosA não se alarga
+    /// (só "portal-produtosA"); perfil desconhecido não aceita nada. Escritório: o catálogo.
     /// </summary>
-    public static (bool Ok, string? Erro, string Valor) Validar(IEnumerable<string>? chaves)
+    public static (bool Ok, string? Erro, string Valor) Validar(IEnumerable<string>? chaves, string? perfil = "")
     {
         var lista = (chaves ?? []).Select(c => (c ?? "").Trim().ToLowerInvariant()).Where(c => c != "").Distinct().ToList();
+        if (!EhEscritorio(perfil))
+        {
+            var restrito = perfil == AuthService.PerfilMotorista || perfil == AuthService.PerfilProdutosA;
+            var foraDoPerfil = lista.Where(c => c != PortalProdutosA).ToList();
+            if (!restrito) return (false, "Perfil sem áreas editáveis.", "");
+            if (foraDoPerfil.Count > 0)
+                return (false, $"Área não permitida para este perfil: {string.Join(", ", foraDoPerfil)}.", "");
+            if (perfil == AuthService.PerfilProdutosA) return (true, null, PortalProdutosA);
+            return (true, null, lista.Contains(PortalProdutosA) ? $"{PainelMotorista},{PortalProdutosA}" : PainelMotorista);
+        }
         var ruins = lista.Where(c => c != AcessoTotal && (c == PainelMotorista || !PorChave.ContainsKey(c))).ToList();
         if (ruins.Count > 0) return (false, $"Área desconhecida: {string.Join(", ", ruins)}.", "");
         if (lista.Contains(AcessoTotal)) return (true, null, AcessoTotal);
@@ -299,7 +317,9 @@ public static class AreasAcesso
         if (lista != null)
         {
             if (lista.Contains(Todos)) return Decisao.Liberado;
-            if (lista.Contains(Escritorio) && (escritorio || perfil == AuthService.PerfilProdutosA)) return Decisao.Liberado;
+            // #escritorio (perfil e troca de senha): escritório e quem tem o portal das produtosA
+            // (perfil produtosA ou motorista com a chave portal-produtosA).
+            if (lista.Contains(Escritorio) && (escritorio || efetivas.Contains(PortalProdutosA))) return Decisao.Liberado;
             if (lista.Contains(Admin) && dono) return Decisao.Liberado;
             if (lista.Any(efetivas.Contains)) return Decisao.Liberado;
         }

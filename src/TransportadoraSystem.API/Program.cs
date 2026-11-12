@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using TransportadoraSystem.Application.Services;
 using TransportadoraSystem.Infrastructure.Data;
+using TransportadoraSystem.API.Acesso;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -67,6 +68,7 @@ builder.Services.AddDbContext<AppDbContext>(opt =>
 
 // ── Serviços ───────────────────────────────────────────────────────
 builder.Services.AddScoped<AuthService>();
+builder.Services.AddScoped<TransportadoraSystem.Application.Services.Acesso.PessoasService>();
 builder.Services.AddScoped<PortalProdutosAHistoricoService>();
 builder.Services.AddScoped<StradaService>();
 builder.Services.AddHttpClient<EmailService>();
@@ -341,60 +343,10 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
-// Perfis restritos: cada um só chama a sua lista; o resto da API responde 403 — a tela também
-// esconde, mas quem garante é aqui. Fechado por padrão: perfil que não está na lista (inventado,
-// digitado errado) só chega ao "quem sou eu". Escritório ("") não passa por aqui.
-//   motorista: o painel dele (a folha da viagem);
-//   produtosA:   o portal das produtosA (EST-09) e a troca da própria senha.
-var acessoPorPerfil = new Dictionary<string, (string[] Exatas, string[] Prefixos, string Erro)>
-{
-    [AuthService.PerfilMotorista] = (["/api/auth/me"], ["/api/motorista-painel/"], "Acesso só ao painel do motorista."),
-    [AuthService.PerfilProdutosA]   = (["/api/auth/me", "/api/auth/trocar-senha"], ["/api/produtosA-portal/"], "Acesso só ao portal das produtosA."),
-};
-app.Use(async (ctx, next) =>
-{
-    var perfil = ctx.User.FindFirst(AuthService.ClaimPerfil)?.Value ?? "";
-    var path = ctx.Request.Path.Value?.ToLowerInvariant() ?? "";
-    if (perfil.Length == 0 || !path.StartsWith("/api/", StringComparison.Ordinal)) { await next(); return; }
-
-    if (!acessoPorPerfil.TryGetValue(perfil, out var acesso))
-    {
-        if (path != "/api/auth/me")
-        {
-            ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
-            await ctx.Response.WriteAsJsonAsync(new { erro = "Acesso não liberado para este perfil." });
-            return;
-        }
-        await next();
-        return;
-    }
-
-    if (!acesso.Exatas.Contains(path, StringComparer.Ordinal) && !acesso.Prefixos.Any(p => path.StartsWith(p, StringComparison.Ordinal)))
-    {
-        ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
-        if (perfil == AuthService.PerfilMotorista)
-            await ctx.Response.WriteAsJsonAsync(new { erro = acesso.Erro, motorista = true });
-        else
-            await ctx.Response.WriteAsJsonAsync(new { erro = acesso.Erro, produtosA = true });
-        return;
-    }
-
-    // Portal das produtosA: o token vale 30 dias, então a cada pedido confere no banco se a conta
-    // segue ativa e do perfil produtosA. Desativar corta na hora.
-    if (perfil == AuthService.PerfilProdutosA)
-    {
-        var id = TransportadoraSystem.API.Controllers.AuthController.UsuarioId(ctx.User) ?? 0;
-        var db = ctx.RequestServices.GetRequiredService<AppDbContext>();
-        var ativa = id > 0 && await db.Usuarios.AnyAsync(u => u.Id == id && u.Ativo && u.Perfil == AuthService.PerfilProdutosA);
-        if (!ativa)
-        {
-            ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            await ctx.Response.WriteAsJsonAsync(new { erro = "Sua conta foi desativada ou a sessão terminou. Entre de novo.", sessaoEncerrada = true });
-            return;
-        }
-    }
-    await next();
-});
+// Permissão por área (USU-11): a cada pedido autenticado para /api/, confere no banco o usuário
+// do token e decide pela regra de AreasAcesso (perfis restritos, caixinhas, administrador).
+// A tela também esconde, mas quem garante é aqui.
+app.UsarPermissoes();
 
 if (app.Environment.IsDevelopment())
 {

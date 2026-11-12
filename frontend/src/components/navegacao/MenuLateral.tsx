@@ -38,7 +38,7 @@ export function Marca() {
 }
 
 export default function MenuLateral({ aberto, onFechar }: { aberto: boolean; onFechar: () => void }) {
-  const { usuario, logout } = useAuth()
+  const { usuario, logout, pode } = useAuth()
   const caixa = useRef<HTMLElement>(null)
   const botaoFechar = useRef<HTMLButtonElement>(null)
   const fechar = useRef(onFechar)
@@ -112,6 +112,9 @@ export default function MenuLateral({ aberto, onFechar }: { aberto: boolean; onF
         <nav aria-label="Telas" className="flex-1 px-3 pt-1 pb-4 lg:pb-2 space-y-5 lg:space-y-3 overflow-y-auto overscroll-contain scrollbar-thin">
           {secoesMenu.map((secao, i) => {
             const idTitulo = `menu-secao-${i}`
+            // Só o que a pessoa pode abrir (USU-11); grupo vazio some inteiro
+            const itens = secao.itens.filter(item => pode(item.area))
+            if (!itens.length) return null
             return (
               <div key={secao.titulo ?? i} role={secao.titulo ? 'group' : undefined} aria-labelledby={secao.titulo ? idTitulo : undefined}>
                 {secao.titulo && (
@@ -120,7 +123,7 @@ export default function MenuLateral({ aberto, onFechar }: { aberto: boolean; onF
                   </p>
                 )}
                 <ul className="space-y-0.5">
-                  {secao.itens.map(item => {
+                  {itens.map(item => {
                     const Icone = item.icon
                     return (
                       <li key={item.to}>

@@ -10,8 +10,6 @@ import { authApi } from '../services/api'
 import { useAuth } from '../contexts/AuthContext'
 import EscolhaTema from '../components/EscolhaTema'
 import FormTrocarSenha from '../components/FormTrocarSenha'
-import UsuariosSecao from '../components/UsuariosSecao'
-import PortalProdutosASecao from '../components/PortalProdutosASecao'
 import SecaoRecolhivel from '../components/SecaoRecolhivel'
 
 const emailReal = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)
@@ -110,11 +108,6 @@ export default function PerfilPage() {
         </div>
       </SecaoRecolhivel>
 
-      {usuario?.dono && <UsuariosSecao />}
-
-      {usuario?.dono && <PortalProdutosASecao />}
-
-      {/* Cadastro dos motoristas, logo abaixo dos usuários: escritório e dono */}
     </div>
   )
 }

@@ -33,8 +33,12 @@ public class ProdutosAPortalController(AppDbContext db, ProdutosASaidaService sa
     {
         var id = AuthController.UsuarioId(User);
         var u = id == null ? null : await db.Usuarios.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id);
-        // Perfil produtosA ou o escritório (perfil vazio: Admin e Bento anotam com o login deles, USU-05)
-        if (u == null || (u.Perfil != AuthService.PerfilProdutosA && u.Perfil != ""))
+        // Perfil produtosA, o escritório (perfil vazio: Admin e Bento anotam com o login deles, USU-05)
+        // ou o motorista que também tem o Controle de produtosA marcado (USU-11)
+        var motoristaComPortal = u != null && u.Perfil == AuthService.PerfilMotorista
+            && Application.Services.Acesso.AreasAcesso.Efetivas(u.Perfil, false, u.Permissoes, false)
+                .Contains(Application.Services.Acesso.AreasAcesso.PortalProdutosA);
+        if (u == null || (u.Perfil != AuthService.PerfilProdutosA && u.Perfil != "" && !motoristaComPortal))
         {
             ctx.Result = StatusCode(403, new { erro = "Acesso só ao portal das produtosA." });
             return;

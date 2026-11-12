@@ -11,6 +11,41 @@ interface AuthContextData {
   // senha provisória; é por aqui que ele entra no lugar do antigo.
   aplicarSessao: (token: string, usuario: UsuarioResumo) => void
   logout: () => void
+  /** Administrador ou "*": o sistema inteiro (USU-11). Os outros só veem os painéis. */
+  acessoTotal: boolean
+  /** A área está liberada? "*" abre tudo menos o painel do motorista, que precisa vir escrito. */
+  pode: (area: string) => boolean
+}
+
+// Áreas especiais do site (não são chaves do catálogo do servidor)
+export const AREA_ADMIN = 'admin'   // só o administrador (Dono)
+export const AREA_LIVRE = 'livre'   // qualquer um logado (o próprio perfil)
+export const PAINEL_MOTORISTA = 'painel-motorista'
+export const PORTAL_PRODUTOSA = 'portal-produtosA'
+
+/** Áreas do usuário. Sem a lista (API antiga), cai no que o perfil dava antes. */
+export function areasDo(u: UsuarioResumo | null): string[] {
+  if (!u) return []
+  if (Array.isArray(u.areas)) return u.areas
+  if (u.perfil === 'motorista') return [PAINEL_MOTORISTA]
+  if (u.perfil === 'produtosA') return [PORTAL_PRODUTOSA]
+  return ['*']
+}
+
+export function temAcessoTotal(u: UsuarioResumo | null): boolean {
+  if (!u) return false
+  const perfil = u.perfil ?? ''
+  if (perfil !== '') return false
+  return u.dono || areasDo(u).includes('*')
+}
+
+export function podeArea(u: UsuarioResumo | null, area: string): boolean {
+  if (!u) return false
+  if (area === AREA_LIVRE) return true
+  if (area === AREA_ADMIN) return !!u.dono && (u.perfil ?? '') === ''
+  const areas = areasDo(u)
+  if (area === PAINEL_MOTORISTA) return areas.includes(PAINEL_MOTORISTA)
+  return areas.includes(area) || ((u.dono || areas.includes('*')) && (u.perfil ?? '') === '')
 }
 
 const AuthContext = createContext<AuthContextData>({} as AuthContextData)
@@ -81,7 +116,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ usuario, token, loading, login, aplicarSessao, logout }}>
+    <AuthContext.Provider value={{
+      usuario, token, loading, login, aplicarSessao, logout,
+      acessoTotal: temAcessoTotal(usuario),
+      pode: (area: string) => podeArea(usuario, area),
+    }}>
       {children}
     </AuthContext.Provider>
   )

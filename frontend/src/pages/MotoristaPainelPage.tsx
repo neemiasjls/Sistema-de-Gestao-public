@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { CheckCircle2, Fuel, LogOut, Minus, Package, Plus, Send, Trash2, Truck, Wallet, PencilLine, Receipt, NotebookPen } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ArrowLeft, CheckCircle2, Fuel, LogOut, Minus, Package, Plus, Send, Trash2, Truck, Wallet, PencilLine, Receipt, NotebookPen } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '../contexts/AuthContext'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
@@ -129,7 +130,9 @@ function problemas(f: Form, placas: PlacasPainel): string[] {
   return p
 }
 
-export default function MotoristaPainelPage() {
+// voltar: quem tem os dois painéis volta à tela dos dois botões; quem tem acesso
+// total volta ao sistema (USU-11). Sem ele, só o sair, como sempre.
+export default function MotoristaPainelPage({ voltar }: { voltar?: { to: string; rotulo: string } } = {}) {
   const { usuario, logout } = useAuth()
   const [ini, setIni] = useState<InicioMotorista | null>(null)
   const [placas, setPlacas] = useState<PlacasPainel>({ cavalos: [], carretas: [] })
@@ -299,9 +302,17 @@ export default function MotoristaPainelPage() {
     <div className="min-h-tela bg-gray-50 text-gray-900 text-[17px]">
       <header className="bg-menu text-white">
         <div className="max-w-xl mx-auto px-4 h-16 flex items-center gap-3">
-          <span className="w-9 h-9 rounded-full bg-[#fff] flex items-center justify-center shrink-0" aria-hidden>
-            <span className="w-[18px] h-[18px] rounded-full bg-gema-400" />
-          </span>
+          {voltar ? (
+            <Link to={voltar.to} title={voltar.rotulo}
+                  className="-ml-2 w-11 h-11 rounded-lg flex items-center justify-center shrink-0 text-tinta-100 hover:bg-white/10 hover:text-white">
+              <ArrowLeft size={22} aria-hidden />
+              <span className="sr-only">{voltar.rotulo}</span>
+            </Link>
+          ) : (
+            <span className="w-9 h-9 rounded-full bg-[#fff] flex items-center justify-center shrink-0" aria-hidden>
+              <span className="w-[18px] h-[18px] rounded-full bg-gema-400" />
+            </span>
+          )}
           <div className="flex-1 min-w-0">
             <p className="font-display text-lg font-semibold leading-tight truncate">Relatório de viagem</p>
             <p className="text-sm text-tinta-200 truncate">{ini ? ini.nome : 'TRX Transportes'}</p>

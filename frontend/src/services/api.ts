@@ -1,4 +1,5 @@
 import axios, { type InternalAxiosRequestConfig } from 'axios'
+import toast from 'react-hot-toast'
 import { comDados, comoLista, comoObjeto } from '../utils/resposta'
 import { fimRequisicao, inicioRequisicao } from './servidor'
 import { RespostaInesperada } from '../utils/resposta'
@@ -46,6 +47,10 @@ api.interceptors.response.use(
     const noPortal = window.location.pathname.startsWith('/produtosA')
     if (err.response?.status === 403 && err.response?.data?.trocarSenha) {
       window.location.href = noPortal ? '/produtosA' : '/'
+    } else if (err.response?.status === 403 && err.response?.data?.semPermissao) {
+      // Sem permissão para a área (USU-11): só avisa, sem sair da tela nem do login.
+      // Id fixo: várias chamadas barradas juntas mostram um aviso só.
+      toast.error('Você não tem acesso a esta parte do sistema.', { id: 'sem-permissao' })
     } else if (err.response?.status === 401 && !url.includes('/api/auth/login') && !url.includes('/api/auth/produtosA/')) {
       localStorage.removeItem(TOKEN_KEY)
       delete axios.defaults.headers.common['Authorization']

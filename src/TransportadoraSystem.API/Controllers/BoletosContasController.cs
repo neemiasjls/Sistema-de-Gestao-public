@@ -330,8 +330,7 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
     }
 
     // ── Cálculo do frete da Girassol e queda do volume (BOL-17) ──
-    // Ver: qualquer login do escritório (motorista e portal das produtosA já são barrados de /api/boletos-contas
-    // pelo filtro de perfil do Program.cs). Lançar a queda: só Admin e Bento (PodeLancarQueda).
+    // Ver: quem tem a área Boletos (o controle de permissão, Acesso/PermissoesMiddleware, barra o resto). Lançar a queda: só administrador ativo, conferido no banco (PodeLancarQueda).
 
     public record QuedaTipo(string? Tipo, decimal? QuedaPorCaixa);
     public record QuedaPedido(DateOnly? Data, string? Placa, List<QuedaTipo>? Descontos);
@@ -339,20 +338,21 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
     private const int MaxTiposQueda = 50;
 
     /// <summary>
-    /// Admin (o dono) ou o Bento, conferido no banco a cada pedido: login do escritório (sem perfil), ativo,
-    /// e dono ou com o primeiro nome "Bento" (Admin, 11/11/2026: só os dois lançam a queda).
+    /// Administrador (Usuarios.Dono), conferido no banco a cada pedido: login do escritório (sem perfil), ativo
+    /// e dono (Admin, 11/11/2026: só Admin e Bento, os dois administradores, lançam a queda).
+    /// Nada pelo nome: o nome o próprio usuário edita no perfil.
     /// </summary>
     private async Task<bool> PodeLancarQueda()
     {
         if (!string.IsNullOrEmpty(User.FindFirst(AuthService.ClaimPerfil)?.Value)) return false;
         if (AuthController.UsuarioId(User) is not { } id) return false;
-        var u = await db.Usuarios.AsNoTracking().Where(x => x.Id == id && x.Ativo)
-            .Select(x => new { x.Dono, x.Nome, x.Perfil }).FirstOrDefaultAsync();
-        if (u == null || !string.IsNullOrEmpty(u.Perfil)) return false;
-        if (u.Dono) return true;
-        var primeiro = (u.Nome ?? "").Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
-        return primeiro.Equals("Bento", StringComparison.OrdinalIgnoreCase);
+        return await db.Usuarios.AsNoTracking()
+            .AnyAsync(x => x.Id == id && x.Ativo && x.Dono && (x.Perfil == null || x.Perfil == ""));
     }
+
+    /// <summary>Dono conferido no banco a cada pedido (o token pode ser de antes de a pessoa deixar de ser).</summary>
+    private async Task<bool> EhDonoNoBancoAsync() =>
+        AuthController.UsuarioId(User) is { } id && await db.Usuarios.AsNoTracking().AnyAsync(u => u.Id == id && u.Dono && u.Ativo);
 
     private static object CalculoDto(FretePerfilService.CalculoCarga c, bool podeLancar)
     {
@@ -465,14 +465,14 @@ public class BoletosContasController(AppDbContext db, ILogger<BoletosContasContr
             var (regras, aviso) = await montagem.Regras(c);
             lista.Add(new { config = Dto(regras), aviso });
         }
-        return Ok(new { clientes = lista, podeSalvar = User.FindFirst(AuthService.ClaimDono)?.Value == "true" });
+        return Ok(new { clientes = lista, podeSalvar = await EhDonoNoBancoAsync() });
     }
 
     /// <summary>Grava a configuração de um cliente (só o dono). Valida tudo antes; nada vai ao Sicoob.</summary>
     [HttpPut("receber/config-emissao")]
     public async Task<IActionResult> GravarConfigEmissao([FromBody] ConfigEmissaoDto req, [FromServices] BoletoMontagemService montagem)
     {
-        if (User.FindFirst(AuthService.ClaimDono)?.Value != "true")
+        if (!await EhDonoNoBancoAsync())
             return StatusCode(StatusCodes.Status403Forbidden, new { erro = "Só o dono pode mudar a configuração da emissão." });
         var c = (req.Cliente ?? "").Trim().ToUpperInvariant();
         if (!BoletoReceberLeitor.Clientes.Contains(c)) return BadRequest(new { erro = "Escolha o cliente: CD ou Girassol." });

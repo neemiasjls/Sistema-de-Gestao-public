@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { Menu, type LucideIcon } from 'lucide-react'
 import { atalhos, casa } from './menu'
 import { ID_MENU } from './MenuLateral'
+import { useAuth } from '../../contexts/AuthContext'
 
 // Barra de atalhos embaixo, só no celular (F-04, UI-16). Fica no fluxo da página
 // (não é fixed): a área de conteúdo encolhe para caber, então nada da tela fica
@@ -50,15 +51,18 @@ const alvo = 'group w-full min-h-14 flex flex-col items-center justify-center ga
 export default function BarraAtalhos({ menuAberto, onAbrirMenu }: { menuAberto: boolean; onAbrirMenu: () => void }) {
     const { pathname } = useLocation()
     const digitando = useDigitando()
-    const emAtalho = atalhos.some(a => casa(pathname, a.to, a.exact))
+    const { pode } = useAuth()
+    // Só os atalhos que a pessoa pode abrir (USU-11); o Menu fica sempre, no fim
+    const meus = atalhos.filter(a => pode(a.area))
+    const emAtalho = meus.some(a => casa(pathname, a.to, a.exact))
 
     return (
       <nav
         aria-label="Atalhos"
         className={`lg:hidden flex-shrink-0 bg-menu border-t border-white/[0.06] pb-[env(safe-area-inset-bottom)] ${digitando ? 'hidden' : ''}`}
       >
-        <ul className="grid grid-cols-5">
-          {atalhos.map(a => (
+        <ul className="grid" style={{ gridTemplateColumns: `repeat(${meus.length + 1}, minmax(0, 1fr))` }}>
+          {meus.map(a => (
             <li key={a.to} className="min-w-0">
               <NavLink to={a.to} end={a.exact} className={alvo}>
                 {({ isActive }) => <Conteudo icone={a.icon} label={a.label} ativo={isActive} />}

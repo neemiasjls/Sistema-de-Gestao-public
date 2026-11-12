@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using TransportadoraSystem.Application.Services;
+using TransportadoraSystem.Application.Services.Acesso;
 
 namespace TransportadoraSystem.API.Controllers;
 
@@ -10,7 +11,7 @@ namespace TransportadoraSystem.API.Controllers;
 [ApiController]
 [Route("api/usuario")]
 [Authorize]
-public class UsuarioController(AuthService auth, ILogger<UsuarioController> logger) : ControllerBase, IAsyncActionFilter
+public class UsuarioController(AuthService auth, PessoasService pessoas, ILogger<UsuarioController> logger) : ControllerBase, IAsyncActionFilter
 {
     [NonAction]
     public async Task OnActionExecutionAsync(ActionExecutingContext ctx, ActionExecutionDelegate next)
@@ -32,7 +33,9 @@ public class UsuarioController(AuthService auth, ILogger<UsuarioController> logg
     {
         try
         {
-            var r = await auth.CriarAsync(dto.Nome ?? "", dto.Email ?? "");
+            var v = PessoasService.ValidarEntrada(dto.Total == true, dto.Areas, "");
+            if (!v.Ok) return BadRequest(new { erro = v.Erro });
+            var r = await auth.CriarAsync(dto.Nome ?? "", dto.Email ?? "", v.Valor == "" ? [] : v.Valor.Split(','));
             if (r.Erro != null) return BadRequest(new { erro = r.Erro });
             return Ok(r);
         }
@@ -61,7 +64,7 @@ public class UsuarioController(AuthService auth, ILogger<UsuarioController> logg
     [HttpDelete("{id:int}")]
     public async Task<IActionResult> Desativar(int id)
     {
-        var erro = await auth.DefinirAtivoAsync(id, false);
+        var erro = await pessoas.DesativarAsync(id, Eu);
         return erro == null ? Ok(new { mensagem = "Usuário desativado." }) : BadRequest(new { erro });
     }
 
@@ -71,6 +74,44 @@ public class UsuarioController(AuthService auth, ILogger<UsuarioController> logg
         var erro = await auth.DefinirAtivoAsync(id, true);
         return erro == null ? Ok(new { mensagem = "Usuário reativado." }) : BadRequest(new { erro });
     }
+    int Eu => AuthController.UsuarioId(User)!.Value;
+
+    IActionResult Responder(PessoasService.Resultado r) =>
+        r.Erro == null ? Ok(r.Dados ?? new { }) : BadRequest(new { erro = r.Erro });
+
+    // ── Tela única "Usuários" (USU-11, Parte 6) ───────────────────────────
+    [HttpGet("areas")]
+    public IActionResult Areas() => Ok(PessoasService.Catalogo());
+
+    [HttpGet("pessoas")]
+    public async Task<IActionResult> Pessoas() => Ok(await pessoas.ListarAsync());
+
+    [HttpPut("{id:int}/permissoes")]
+    public async Task<IActionResult> Permissoes(int id, [FromBody] PermissoesDto dto) =>
+        Responder(await pessoas.DefinirPermissoesAsync(id, dto.Total == true, dto.Areas, Eu));
+
+    [HttpPut("{id:int}/admin")]
+    public async Task<IActionResult> Admin(int id, [FromBody] AdminDto dto) =>
+        Responder(await pessoas.DefinirAdminAsync(id, dto.Admin == true, Eu));
+
+    [HttpPost("{id:int}/motorista")]
+    public async Task<IActionResult> DarMotorista(int id, [FromBody] DarMotoristaDto dto) =>
+        Responder(await pessoas.DarMotoristaAsync(id, dto.MotoristaId,
+            new PessoasService.NovoCadastro(dto.Nome, dto.Login, dto.PorcentagemComissao), Eu));
+
+    [HttpDelete("{id:int}/motorista")]
+    public async Task<IActionResult> TirarMotorista(int id) => Responder(await pessoas.TirarMotoristaAsync(id, Eu));
+
+    [HttpPost("motorista/{motoristaId:int}/usuario")]
+    public async Task<IActionResult> DarUsuario(int motoristaId, [FromBody] DarUsuarioDto dto) =>
+        Responder(await pessoas.DarUsuarioAsync(motoristaId, dto.Email, dto.Total == true, dto.Areas, Eu));
+
+    [HttpDelete("{id:int}/usuario")]
+    public async Task<IActionResult> TirarUsuario(int id) => Responder(await pessoas.TirarUsuarioAsync(id, Eu));
 }
 
-public record CriarUsuarioDto(string? Nome, string? Email);
+public record CriarUsuarioDto(string? Nome, string? Email, bool? Total = null, List<string>? Areas = null);
+public record PermissoesDto(bool? Total, List<string>? Areas);
+public record AdminDto(bool? Admin);
+public record DarMotoristaDto(int? MotoristaId, string? Nome, string? Login, decimal? PorcentagemComissao);
+public record DarUsuarioDto(string? Email, bool? Total, List<string>? Areas);

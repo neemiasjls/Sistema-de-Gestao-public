@@ -22,6 +22,10 @@ public class SicoobController(AppDbContext db, SicoobService sicoob) : Controlle
     // O dia no Brasil: o servidor roda em UTC e à noite já seria amanhã
     private static DateOnly Hoje() => DateOnly.FromDateTime(DateTime.UtcNow.AddHours(-3));
 
+    // Dono conferido no banco a cada pedido (o token pode ser de antes de a pessoa deixar de ser)
+    private async Task<bool> EhDonoNoBancoAsync() =>
+        AuthController.UsuarioId(User) is { } id && await db.Usuarios.AsNoTracking().AnyAsync(u => u.Id == id && u.Dono && u.Ativo);
+
     private static DateOnly? Data(string? s) =>
         DateOnly.TryParseExact(s?.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? d : null;
 
@@ -169,7 +173,7 @@ public class SicoobController(AppDbContext db, SicoobService sicoob) : Controlle
     [HttpPost("boletos/{id:int}/baixar-e-excluir")]
     public async Task<IActionResult> BaixarEExcluir(int id, [FromBody] CancelarBoletoPedido req, CancellationToken ct)
     {
-        if (User.FindFirst(AuthService.ClaimDono)?.Value != "true")
+        if (!await EhDonoNoBancoAsync())
             return StatusCode(StatusCodes.Status403Forbidden, new { erro = "Só o Admin pode dar baixa de boleto no banco." });
         if (!req.Confirmado) return BadRequest(new { erro = "Confirme a baixa e a exclusão do boleto." });
         if (sicoob.FaltaConfigurar() is { } falta) return BadRequest(new { erro = falta });
@@ -199,7 +203,7 @@ public class SicoobController(AppDbContext db, SicoobService sicoob) : Controlle
     public async Task<IActionResult> BaixarPix([FromBody] BaixaPixPedido req, CancellationToken ct)
     {
         // Baixa no banco é ação real: só o dono (Admin), sempre com a confirmação dele (BOL-14)
-        if (User.FindFirst(AuthService.ClaimDono)?.Value != "true")
+        if (!await EhDonoNoBancoAsync())
             return StatusCode(StatusCodes.Status403Forbidden, new { erro = "Só o Admin pode dar baixa de boleto no banco." });
         if (!req.Confirmado) return BadRequest(new { erro = "Confirme a baixa dos boletos no banco." });
         var dataPix = Data(req.DataPix);

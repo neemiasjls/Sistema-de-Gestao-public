@@ -165,7 +165,7 @@ export default function MotoristasSecao({ comTitulo = false }: { comTitulo?: boo
 const loginSugerido = (nome: string) =>
   nome.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().split(/\s+/)[0]?.replace(/[^a-z0-9]/g, '') ?? ''
 
-function MotoristaModal({ m, base, onClose, onSalvou }: {
+export function MotoristaModal({ m, base, onClose, onSalvou }: {
   m: MotoristaFrota | null; base?: UsuarioMotoristaSemCadastro; onClose: () => void; onSalvou: () => void
 }) {
   const [nome, setNome] = useState(m?.nome ?? base?.nome.toUpperCase() ?? '')
@@ -253,7 +253,7 @@ function MotoristaModal({ m, base, onClose, onSalvou }: {
 }
 
 // O dono/escritório digita a senha nova do motorista (ou volta para a padrão)
-function SenhaModal({ m, onClose, onSalvou }: { m: MotoristaFrota; onClose: () => void; onSalvou: () => void }) {
+export function SenhaModal({ m, onClose, onSalvou }: { m: MotoristaFrota; onClose: () => void; onSalvou: () => void }) {
   const [senha, setSenha] = useState('')
   const [salvando, setSalvando] = useState(false)
   const [tentou, setTentou] = useState(false)

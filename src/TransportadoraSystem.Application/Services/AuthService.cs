@@ -226,15 +226,27 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
     // Usuário novo de escritório nasce só com as áreas marcadas (USU-11); sem nenhuma = sem acesso.
     public async Task<SenhaProvisoriaResult> CriarAsync(string nome, string emailInformado, IEnumerable<string>? areas = null)
     {
+        var (usuario, senha, erro) = await CriarLoginAsync(nome, emailInformado, areas);
+        if (erro != null) return new() { Erro = erro };
+        return await EntregarSenhaAsync(usuario!, senha!, primeiroAcesso: true);
+    }
+
+    /// <summary>
+    /// Só grava o login (sem e-mail). Quem chama dentro de uma transação manda a senha com
+    /// EntregarSenhaPrimeiroAcessoAsync depois de confirmar tudo (PessoasService.DarUsuarioAsync).
+    /// </summary>
+    internal async Task<(Usuario? Usuario, string? Senha, string? Erro)> CriarLoginAsync(
+        string nome, string emailInformado, IEnumerable<string>? areas)
+    {
         var emailNorm = emailInformado.Trim().ToLower();
         nome = nome.Trim();
 
-        if (nome.Length == 0)          return new() { Erro = "Informe o nome." };
-        if (!EmailValido(emailNorm))   return new() { Erro = "Esse e-mail não parece válido." };
+        if (nome.Length == 0)          return (null, null, "Informe o nome.");
+        if (!EmailValido(emailNorm))   return (null, null, "Esse e-mail não parece válido.");
         var permissoes = AreasAcesso.Validar(areas);
-        if (!permissoes.Ok)            return new() { Erro = permissoes.Erro };
+        if (!permissoes.Ok)            return (null, null, permissoes.Erro);
         if (await db.Usuarios.AnyAsync(u => u.Email.ToLower() == emailNorm))
-            return new() { Erro = "Este e-mail já está cadastrado." };
+            return (null, null, "Este e-mail já está cadastrado.");
 
         var senha = GerarSenhaForte();
         var usuario = new Usuario
@@ -244,9 +256,11 @@ public class AuthService(AppDbContext db, IConfiguration config, EmailService em
         usuario.SenhaHash = _hasher.HashPassword(usuario, senha);
         db.Usuarios.Add(usuario);
         await db.SaveChangesAsync();
-
-        return await EntregarSenhaAsync(usuario, senha, primeiroAcesso: true);
+        return (usuario, senha, null);
     }
+
+    internal Task<SenhaProvisoriaResult> EntregarSenhaPrimeiroAcessoAsync(Usuario usuario, string senha) =>
+        EntregarSenhaAsync(usuario, senha, primeiroAcesso: true);
 
     // Senha esquecida, ou usuário antigo que ganhou e-mail agora: sorteia outra
     // provisória e manda de novo. A senha anterior deixa de valer.
