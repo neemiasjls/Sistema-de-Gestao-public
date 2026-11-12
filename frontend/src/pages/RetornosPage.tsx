@@ -239,8 +239,11 @@ export default function RetornosPage() {
                   <thead className="bg-gray-50 text-gray-600 text-left">
                     <tr>
                       <th className="px-3 py-2 font-medium">Data</th>
+                      <th className="px-3 py-2 font-medium">Origem</th>
                       <th className="px-3 py-2 font-medium">Destino</th>
                       <th className="px-3 py-2 font-medium">Transportadora</th>
+                      <th className="px-3 py-2 font-medium">Placa</th>
+                      <th className="px-3 py-2 font-medium">Motorista</th>
                       <th className="px-3 py-2 font-medium text-right">Frete contratado</th>
                       <th className="px-3 py-2 font-medium text-right">Pedágio</th>
                       <th className="px-3 py-2 font-medium text-right">Descarga</th>
@@ -250,9 +253,6 @@ export default function RetornosPage() {
                       <th className="px-3 py-2 font-medium text-right">Valor do contrato</th>
                       <th className="px-3 py-2 font-medium text-right">Adiantamento</th>
                       <th className="px-3 py-2 font-medium text-right">Falta receber no TIP</th>
-                      <th className="px-3 py-2 font-medium">Motorista</th>
-                      <th className="px-3 py-2 font-medium">Placa</th>
-                      <th className="px-3 py-2 font-medium">Origem</th>
                       <th className="px-3 py-2 font-medium">Viagem</th>
                       <th className="px-3 py-2"><span className="sr-only">Ações</span></th>
                     </tr>
@@ -261,8 +261,11 @@ export default function RetornosPage() {
                     {lista.map(({ retorno: r, viagem, anotacao }) => (
                       <tr key={r.id} className={!r.conferido ? 'bg-amber-50/60' : r.foraDoControle ? 'text-gray-500' : ''}>
                         <td className="px-3 py-2 whitespace-nowrap tabular-nums">{dataBr(r.data)}</td>
+                        <td className="px-3 py-2">{r.observacoes}</td>
                         <td className="px-3 py-2">{r.destino}</td>
                         <td className="px-3 py-2">{r.transportadora}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{r.placa}</td>
+                        <td className="px-3 py-2">{r.motorista}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{num(r.valorFrete)}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{r.pedagio ? num(r.pedagio) : ''}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{r.adicional ? num(r.adicional) : ''}</td>
@@ -272,9 +275,6 @@ export default function RetornosPage() {
                         <td className="px-3 py-2 text-right whitespace-nowrap"><ValorOuAviso valor={r.valorContrato} aviso={r.contratoAviso ?? 'Sem contrato ligado'} /></td>
                         <td className="px-3 py-2 text-right whitespace-nowrap"><ValorOuAviso valor={r.adiantamentoDescarga} aviso={r.contratoAviso ?? 'Sem contrato ligado'} /></td>
                         <td className="px-3 py-2 text-right whitespace-nowrap"><ValorOuAviso valor={r.reembolsoDescarga} aviso={r.contratoAviso ?? 'Sem contrato ou descarga'} /></td>
-                        <td className="px-3 py-2">{r.motorista}</td>
-                        <td className="px-3 py-2 whitespace-nowrap">{r.placa}</td>
-                        <td className="px-3 py-2">{r.observacoes}</td>
                         <td className="px-3 py-2 whitespace-nowrap">
                           <div className="flex flex-col items-start gap-0.5">
                             {viagem ? <Link to={`/viagens-caminhoes/${viagem.id}`} className="font-medium text-tinta-700 underline underline-offset-2">{viagem.dataSaida ? dataBr(viagem.dataSaida) : 'Abrir'}</Link>
@@ -295,9 +295,9 @@ export default function RetornosPage() {
                   {filtro === 'todos' && (
                     <tfoot className="bg-gray-50 font-semibold">
                       <tr>
-                        <td className="px-3 py-2" colSpan={8}>Valor total de retornos</td>
+                        <td className="px-3 py-2" colSpan={11}>Valor total de retornos</td>
                         <td className="px-3 py-2 text-right tabular-nums">{num(dados.total)}</td>
-                        <td colSpan={8} />
+                        <td colSpan={5} />
                       </tr>
                     </tfoot>
                   )}
