@@ -5,16 +5,14 @@ import Aviso, { toastConfira } from '../components/ui/Aviso'
 import Botao, { BotaoIcone } from '../components/ui/Botao'
 import AreaSoltar from '../components/ui/AreaSoltar'
 import { Link } from 'react-router-dom'
-import { Vazio } from '../components/ui/Estados'
 import { Abas, PainelAba, useAbas } from '../components/ui/Abas'
 import { Fragment, useCallback, useEffect, useState, useRef } from 'react'
 import ProdutoECampo from '../components/ProdutoECampo'
 import ProdutosCBrzCampo, { produtosCSemResposta, faltaProdutosC, type ProdutosCBrz } from '../components/ProdutosCBrzCampo'
 import ConflitosTipoVolume from '../components/ConflitosTipoVolume'
 import ProdutosSemTipo, { type ProdutoSemTipo } from '../components/ProdutosSemTipo'
-import { ArrowRight, ArrowUp, Calculator, Check, ChevronDown, ChevronRight, Copy, Download, FileSpreadsheet, FileText, FileUp, MapPin, Pencil, Plus, Save, Trash2, Truck, X } from 'lucide-react'
+import { ArrowRight, ArrowUp, Calculator, Check, ChevronDown, Copy, Download, FileSpreadsheet, FileText, FileUp, MapPin, Plus, Save, Truck, X } from 'lucide-react'
 import toast from 'react-hot-toast'
-import CityAutocomplete from '../components/CityAutocomplete'
 import api, { ctesApi, calculosFreteApi, downloadBlob, formatBRL, guardarArquivosNFe, nomeDoArquivo, type FreteCalculoResult, type ItemFreteCalculo, type NfDetalhe, type CalculoFreteSalvoResumo, type PlanilhaDaCarga, type ConflitoTipo, type CorrecaoTipo } from '../services/api'
 import ClienteBadge from '../components/ClienteBadge'
 import { recalcularRotasFrete } from '../services/freteRotas'
@@ -22,6 +20,9 @@ import CalculoFretePerfil from '../components/CalculoFretePerfil'
 import { boletosContasApi } from '../services/boletosContasApi'
 import { dataBr } from '../utils/formato'
 import { calculoPerfilDoNome, linkBoletosPerfil } from '../utils/calculoPerfil'
+import { Vazio } from '../components/ui/Estados'
+import RotasCadastradas from '../components/frete/RotasCadastradas'
+import CargasSalvas from '../components/frete/CargasSalvas'
 
 // Cálculo do frete Perfil (BOL-17): o .txt "dd-MM-aaaa PLACA.txt" fica guardado na carga, não baixa.
 const ehTxt = (nome: string) => /\.txt$/i.test(nome)
@@ -152,10 +153,15 @@ export default function FreteCalculoPage() {
   const [valorPedagio, setValorPedagio] = useState('')
   const [itens, setItens]               = useState<LinhaItem[]>([linhaVazia()])
   const [resultado, setResultado]       = useState<FreteCalculoResult | null>(null)
+  // Últimos valores, para quem espera o envio dos PDFs (salvar) não gravar a versão antiga
+  const itensRef     = useRef(itens);     itensRef.current = itens
+  const resultadoRef = useRef(resultado); resultadoRef.current = resultado
+  const envioPdfs    = useRef<Promise<void> | null>(null)
   const [calculando, setCalculando]     = useState(false)
   const [importandoXml, setImportandoXml] = useState(false)
   const [copiadoIdx, setCopiadoIdx]     = useState<number | null>(null)
-  const [mostrarItens, setMostrarItens] = useState(false)
+  // Sem NF na tela, a aba NFs mostra o vazio; 'Digitar a NF à mão' abre a lista mesmo assim
+  const [digitarNfs, setDigitarNfs]     = useState(false)
 
   // ── Planilhas de romaneio, geradas dos mesmos XMLs ────────────
   // Os arquivos ficam guardados aqui porque o XML não volta do servidor: é
@@ -182,8 +188,12 @@ export default function FreteCalculoPage() {
 
   // ── Cargas salvas ─────────────────────────────────────────────
   const [salvos, setSalvos]             = useState<CalculoFreteSalvoResumo[]>([])
-  const [aba, setAba] = useState<'calculo' | 'rotas' | 'cargas'>('calculo')
+  const [aba, setAba] = useState<'calculo' | 'nfs' | 'rotas' | 'cargas'>('calculo')
   const idAbas = useAbas('viagens')
+  // Filtros das abas Rotas e Cargas: ficam aqui para não sumirem ao abrir uma carga e voltar
+  const [buscaCarga, setBuscaCarga] = useState('')
+  const [mesCarga, setMesCarga]     = useState('')
+  const [buscaRota, setBuscaRota]   = useState('')
   const [salvandoCalc, setSalvandoCalc] = useState(false)
 
   // Copia o valor do pedágio de um CT-e (grupo de NFs) sem cifrão, no formato BR
@@ -263,8 +273,11 @@ export default function FreteCalculoPage() {
     if (!placa.trim()) { toast.error('Informe a placa para salvar o cálculo.'); return }
     setSalvandoCalc(true)
     try {
+      // PDFs ainda subindo: espera, para a carga sair com a marca "tem PDF" certa
+      if (envioPdfs.current) await envioPdfs.current
       const payloadJson = JSON.stringify({ placa, motorista,
-        placaNotas: placaDasNotas.current, motoristaNotas: motoristaDasNotas.current, valorCarga, valorPedagio, itens, resultado })
+        placaNotas: placaDasNotas.current, motoristaNotas: motoristaDasNotas.current, valorCarga, valorPedagio,
+        itens: itensRef.current, resultado: resultadoRef.current ?? resultado })
       const carga   = parseFloat(valorCarga.replace(',', '.')) || 0
       const pedagio = parseFloat(valorPedagio.replace(',', '.')) || 0
       const editar = cargaAbertaId != null && !comoNova
@@ -337,7 +350,8 @@ export default function FreteCalculoPage() {
       xmlRef.current = []
 
       setAba('calculo')
-      window.scrollTo({ top: 0, behavior: 'smooth' })
+      // Quem rola é o <main> (a janela não rola): sem isto, abrir uma carga do fim da lista caía no meio do cálculo
+      document.querySelector('main')?.scrollTo({ top: 0, behavior: 'smooth' })
       toast.success(`Carga de ${data.placa} aberta.`)
       // Restaura toda a carga antes de esperar pela consulta das rotas.
       if (salvo && salvo.rotasNaoCadastradas.length > 0)
@@ -463,14 +477,46 @@ export default function FreteCalculoPage() {
   // nota dele pelo número do arquivo.
   const guardarPdfs = async (pdfs: File[]) => {
     if (!pdfs.length) return
-    try {
-      const r = await guardarArquivosNFe(pdfs)
-      if (!r) return
-      if (r.pdfs > 0) toast.success(`${r.pdfs} PDF(s) guardado(s) em Notas Fiscais.`)
-      if (r.avisos.length) setAvisos(v => [...v, ...r.avisos])
-    } catch {
-      toast.error('Não consegui guardar os PDFs.')
+    // Salvar a carga espera este envio terminar, para gravar a marca "tem PDF" já certa
+    const envio = (async () => {
+      try {
+        const r = await guardarArquivosNFe(pdfs)
+        if (!r) return
+        if (r.pdfs > 0) toast.success(`${r.pdfs} PDF(s) guardado(s) em Notas Fiscais.`)
+        if (r.avisos.length) setAvisos(v => [...v, ...r.avisos])
+        if (r.pdfs > 0) await marcarPdfsGuardados()
+      } catch {
+        toast.error('Não consegui guardar os PDFs.')
+      }
+    })()
+    envioPdfs.current = envio
+    try { await envio } finally { if (envioPdfs.current === envio) envioPdfs.current = null }
+  }
+
+  // A marca "tem PDF" de cada nota vem da leitura do XML, ANTES de os PDFs subirem.
+  // A resposta do envio só diz QUANTOS PDFs entraram, não de quais notas; então,
+  // depois do envio, confere no arquivo de notas (pela chave) as notas da tela
+  // ainda sem PDF e marca só as que o servidor diz que agora têm. As outras
+  // continuam com o aviso de PDF não guardado.
+  const marcarPdfsGuardados = async () => {
+    const chaves = [...new Set(itensRef.current.flatMap(it => (it.nfsDetalhadas ?? [])
+      .filter(n => !n.temPdf && (n.chave ?? '').length === 44).map(n => n.chave!)))]
+    const comPdf = new Set<string>()
+    for (const chave of chaves) {
+      try {
+        const { data } = await api.get<{ itens?: { chaveAcesso: string; temPdf: boolean }[] }>('/api/nfe-arquivos', { params: { busca: chave } })
+        if (data.itens?.some(a => a.chaveAcesso === chave && a.temPdf)) comPdf.add(chave)
+      } catch { /* sem confirmação: a nota fica como estava */ }
     }
+    if (!comPdf.size) return
+    const marcar = <T extends { nfsDetalhadas?: NfDetalhe[] }>(lista: T[]): T[] => lista.map(it =>
+      it.nfsDetalhadas?.some(n => n.chave && comPdf.has(n.chave))
+        ? { ...it, nfsDetalhadas: it.nfsDetalhadas.map(n => n.chave && comPdf.has(n.chave) ? { ...n, temPdf: true } : n) }
+        : it)
+    itensRef.current = marcar(itensRef.current)
+    if (resultadoRef.current) resultadoRef.current = { ...resultadoRef.current, itens: marcar(resultadoRef.current.itens) }
+    setItens(marcar)
+    setResultado(r => r ? { ...r, itens: marcar(r.itens) } : r)
   }
 
   // Notas da carga na tela (Admin, 15/10/2026: importar soma às que já estão, e ele tira
@@ -849,11 +895,12 @@ export default function FreteCalculoPage() {
     (it.cidadeConflito && (it.cidadesEncontradas?.length ?? 0) > 0) ||
     (it.pesoIncompleto && (it.produtosSemPeso?.length ?? 0) > 0)).length
 
-  // Os campos de peso e de cidade moram dentro da lista de itens, que fica
-  // fechada. Chegou nota com pendência, a lista abre sozinha: fechada, o
-  // pedido de peso passava batido e a nota ficava fora da conta.
-  const temPendencia = itensComPendencia > 0
-  useEffect(() => { if (temPendencia) setMostrarItens(true) }, [temPendencia])
+  // Os campos de peso e de cidade moram na aba NFs. Nota com pendência vira
+  // aviso no Cálculo, perto do botão de calcular (o pedido de peso não pode
+  // passar batido, senão a nota fica fora da conta).
+  const temNumeroNf = itens.some(it => (it.numeroNF ?? '').trim() !== '')
+  const nfsVazias = !temNumeroNf && itens.every(it => !it.emitente && !it.destinatario && !it.pesoKg && !it.cidadeDestino)
+  const irParaNfs = () => { setAba('nfs'); document.querySelector('main')?.scrollTo({ top: 0, behavior: 'smooth' }) }
 
   const rotasPorOrigem = rotas.reduce<Record<string, Rota[]>>((acc, r) => {
     ;(acc[`${r.origem}/${r.ufOrigem}`] ??= []).push(r)
@@ -952,6 +999,8 @@ export default function FreteCalculoPage() {
   )
 
   const campoLinha = 'w-full min-h-11 sm:min-h-0 border border-gray-300 rounded-lg px-2.5 py-1.5 text-sm'
+  // Campo dentro da tabela de NFs (computador): mesma altura em todas as colunas
+  const campoNfTabela = 'min-h-9 border border-gray-300 rounded-lg px-2 py-1 text-sm bg-white'
 
   // ─────────────────────────────────────────────────────────────
   return (
@@ -959,243 +1008,265 @@ export default function FreteCalculoPage() {
       <CabecalhoTela descricao="Importe os XMLs da carga: o sistema agrupa por emitente e destinatário, calcula a líquota e tira os romaneios da mesma viagem." />
 
       <Abas id={idAbas} valor={aba} onChange={setAba} rotulo="Partes da tela Viagens"
-        opcoes={[['calculo', 'Cálculo do frete', Calculator], ['rotas', `Rotas cadastradas (${rotas.length})`, MapPin], ['cargas', `Cargas (${salvos.length})`, Truck]]} />
+        opcoes={[['calculo', 'Cálculo do frete', Calculator], ['nfs', `NFs (${totalNfsTela})`, FileText], ['cargas', `Cargas (${salvos.length})`, Truck], ['rotas', `Rotas cadastradas (${rotas.length})`, MapPin]]} />
       <PainelAba id={idAbas} valor={aba}>
 
-      {/* ── Rotas cadastradas (aba) ── */}
-      {aba === 'rotas' && <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-4 sm:px-5 min-h-14 flex items-center">
-          <span className="font-semibold text-gray-900 text-sm flex items-center gap-2">
-            Rotas cadastradas
-            <span className="bg-gray-100 text-gray-700 text-xs font-medium px-2 py-0.5 rounded-full tabular-nums">{rotas.length}</span>
-          </span>
+      {/* ── NFs da carga (aba) ── */}
+      {aba === 'nfs' && (nfsVazias && !digitarNfs ? (
+        <div className="rounded-xl border border-gray-200 bg-white">
+          <Vazio compacto icone={FileText} titulo="Nenhuma NF na carga em tela"
+            acao={<div className="flex flex-wrap justify-center gap-2">
+              <Botao variante="primario" icone={FileUp} onClick={() => inputNfRef.current?.click()}
+                     carregando={importandoXml || trazendoXmls} textoCarregando="Lendo as notas...">Importar NF</Botao>
+              <Botao variante="secundario" onClick={() => setDigitarNfs(true)}>Digitar a NF à mão</Botao>
+            </div>}>
+            Importe os XMLs aqui ou na aba Cálculo do frete, ou abra uma carga salva na aba Cargas.
+          </Vazio>
+          <input ref={inputNfRef} type="file" accept=".xml,.pdf" multiple hidden
+                 onChange={e => { const f = [...(e.target.files ?? [])]; e.target.value = ''; if (f.length) importarXmls(f) }} />
         </div>
-
-        {(
-          <div className="border-t border-gray-100 animate-entrada">
-            {rotas.length === 0 ? (
-              <Vazio compacto icone={MapPin} titulo="Nenhuma rota cadastrada">Cadastre a primeira logo abaixo.</Vazio>
-            ) : <>
-            {/* Celular: um cartão por rota; editar abre os campos no próprio cartão */}
-            <ul className="sm:hidden divide-y divide-gray-100 max-h-[28rem] overflow-y-auto">
-              {rotas.map(r => editandoId === r.id ? (
-                <li key={r.id} className="p-4 space-y-3 bg-tinta-50">
-                  <div className="grid grid-cols-[1fr_5.5rem] gap-2">
-                    <Campo rotulo="Cidade de origem">
-                      <CityAutocomplete value={editRota.origem}
-                        onSelect={(nome, uf) => setEditRota(p => ({ ...p, origem: nome, ufOrigem: uf }))}
-                        className={campoLinha} />
-                    </Campo>
-                    <Campo rotulo="UF">
-                      <input value={editRota.ufOrigem} onChange={e => setEditRota(p => ({ ...p, ufOrigem: e.target.value.toUpperCase() }))}
-                        maxLength={2} className={`${campoLinha} uppercase text-center`} />
-                    </Campo>
-                    <Campo rotulo="Cidade de destino">
-                      <CityAutocomplete value={editRota.destino}
-                        onSelect={(nome, uf) => setEditRota(p => ({ ...p, destino: nome, uf }))}
-                        className={campoLinha} />
-                    </Campo>
-                    <Campo rotulo="UF">
-                      <input value={editRota.uf} onChange={e => setEditRota(p => ({ ...p, uf: e.target.value.toUpperCase() }))}
-                        maxLength={2} className={`${campoLinha} uppercase text-center`} />
-                    </Campo>
-                    <Campo rotulo="Distância (km)" className="col-span-2">
-                      <input inputMode="numeric" value={editRota.km || ''} onChange={e => setEditRota(p => ({ ...p, km: parseInt(e.target.value) || 0 }))}
-                        className={`${campoLinha} tabular-nums`} />
-                    </Campo>
-                  </div>
-                  <div className="flex gap-2">
-                    <Botao variante="primario" icone={Check} onClick={salvarEdicao} className="flex-1">Salvar a rota</Botao>
-                    <Botao variante="secundario" onClick={cancelarEdicao}>Cancelar</Botao>
-                  </div>
-                </li>
-              ) : (
-                <li key={r.id} className="flex items-center gap-2 pl-4 pr-1 py-2">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 flex flex-wrap items-center gap-x-1.5">
-                      <span>{r.origem}/{r.ufOrigem}</span>
-                      <ArrowRight size={14} className="text-gray-500" aria-label="até" />
-                      <span>{r.destino}/{r.uf}</span>
-                    </p>
-                    <p className="text-sm text-gray-600 tabular-nums">{r.km.toLocaleString('pt-BR')} km</p>
-                  </div>
-                  <BotaoIcone icone={Pencil} rotulo={`Editar a rota de ${r.origem} até ${r.destino}`} onClick={() => iniciarEdicao(r)} />
-                  <BotaoIcone icone={Trash2} perigo rotulo={`Remover a rota de ${r.origem} até ${r.destino}`} onClick={() => removerRota(r)} />
-                </li>
-              ))}
-            </ul>
-
-            {/* Computador: tabela */}
-            <div className="hidden sm:block max-h-80 overflow-y-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs text-gray-500 sticky top-0 z-10">
-                  <tr>
-                    <th className="px-4 py-2 text-left font-medium">Origem</th>
-                    <th className="px-4 py-2 text-center font-medium">UF</th>
-                    <th className="px-4 py-2 text-left font-medium">Destino</th>
-                    <th className="px-4 py-2 text-center font-medium">UF</th>
-                    <th className="px-4 py-2 text-right font-medium">Distância (km)</th>
-                    <th className="px-2 py-2 w-24"><span className="sr-only">Ações</span></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {rotas.map(r => (
-                    editandoId === r.id ? (
-                      <tr key={r.id} className="bg-tinta-50">
-                        <td className="px-2 py-1.5">
-                          <CityAutocomplete
-                            value={editRota.origem}
-                            onSelect={(nome, uf) => setEditRota(p => ({ ...p, origem: nome, ufOrigem: uf }))}
-                            className="w-40 border border-tinta-300 rounded-lg px-2 py-1 text-sm"
-                          />
-                        </td>
-                        <td className="px-2 py-1.5">
-                          <input value={editRota.ufOrigem} onChange={e => setEditRota(p => ({ ...p, ufOrigem: e.target.value.toUpperCase() }))}
-                            aria-label="UF de origem" maxLength={2} className="w-14 border border-tinta-300 rounded-lg px-2 py-1 text-sm uppercase text-center" />
-                        </td>
-                        <td className="px-2 py-1.5">
-                          <CityAutocomplete
-                            value={editRota.destino}
-                            onSelect={(nome, uf) => setEditRota(p => ({ ...p, destino: nome, uf }))}
-                            className="w-44 border border-tinta-300 rounded-lg px-2 py-1 text-sm"
-                          />
-                        </td>
-                        <td className="px-2 py-1.5">
-                          <input value={editRota.uf} onChange={e => setEditRota(p => ({ ...p, uf: e.target.value.toUpperCase() }))}
-                            aria-label="UF de destino" maxLength={2} className="w-14 border border-tinta-300 rounded-lg px-2 py-1 text-sm uppercase text-center" />
-                        </td>
-                        <td className="px-2 py-1.5 text-right">
-                          <input inputMode="numeric" value={editRota.km || ''} onChange={e => setEditRota(p => ({ ...p, km: parseInt(e.target.value) || 0 }))}
-                            aria-label="Distância em km" className="w-20 border border-tinta-300 rounded-lg px-2 py-1 text-sm text-right tabular-nums" />
-                        </td>
-                        <td className="px-2 py-1">
-                          <div className="flex justify-end gap-0.5">
-                            <BotaoIcone icone={Check} rotulo="Salvar a rota" onClick={salvarEdicao} className="text-tinta-700" />
-                            <BotaoIcone icone={X} rotulo="Cancelar a edição" onClick={cancelarEdicao} />
-                          </div>
-                        </td>
-                      </tr>
-                    ) : (
-                      <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                        <td className="px-4 py-1.5 font-medium text-gray-800">{r.origem}</td>
-                        <td className="px-4 py-1.5 text-center text-gray-600">{r.ufOrigem}</td>
-                        <td className="px-4 py-1.5 text-gray-700">{r.destino}</td>
-                        <td className="px-4 py-1.5 text-center text-gray-600">{r.uf}</td>
-                        <td className="px-4 py-1.5 text-right tabular-nums text-gray-900">{r.km.toLocaleString('pt-BR')}</td>
-                        <td className="px-2 py-1">
-                          <div className="flex justify-end gap-0.5">
-                            <BotaoIcone icone={Pencil} rotulo={`Editar a rota de ${r.origem} até ${r.destino}`} onClick={() => iniciarEdicao(r)} />
-                            <BotaoIcone icone={Trash2} perigo rotulo={`Remover a rota de ${r.origem} até ${r.destino}`} onClick={() => removerRota(r)} />
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  ))}
-                </tbody>
-              </table>
+      ) : (
+        <div className="space-y-3">
+          {/* Barra de cima, igual às abas Cargas e Rotas: resumo à esquerda, ações à direita */}
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div className="space-y-1 min-w-0">
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-600 tabular-nums">
+                <span><span className="font-semibold text-gray-900">{totalNfsTela}</span> {totalNfsTela === 1 ? 'NF' : 'NFs'} · {pesoResumo} kg · linhas agrupadas por emitente e destinatário</span>
+                {itensComPendencia > 0 && (
+                  <span className="bg-amber-100 text-amber-900 border border-amber-300 text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap">
+                    {itensComPendencia} a conferir
+                  </span>
+                )}
+              </p>
+              {/* Trocar uma NF: o ✕ ao lado do número tira; importar soma às que já estão */}
+              <p className="text-sm text-gray-500">O ✕ ao lado da NF tira ela da carga; importar soma as novas às que já estão.</p>
             </div>
-            </>}
-
-            {/* Formulário nova rota com autocomplete */}
-            <div className="px-4 py-4 border-t border-gray-100 bg-gray-50">
-              <h3 className="text-sm font-semibold text-gray-800 mb-3">Cadastrar nova rota</h3>
-              <div className="grid grid-cols-[1fr_5.5rem] sm:grid-cols-6 gap-2 sm:gap-3 items-end">
-                <Campo className="sm:col-span-2" rotulo="Cidade de origem">
-                  <CityAutocomplete
-                    value={novaRota.origem}
-                    placeholder="Ex.: ALDEIA"
-                    onSelect={(nome, uf) => setNovaRota(p => ({ ...p, origem: nome, ufOrigem: uf }))}
-                    className={campoLinha}
-                  />
-                </Campo>
-                <Campo rotulo="UF de origem">
-                  <input
-                    value={novaRota.ufOrigem}
-                    onChange={e => setNovaRota(p => ({ ...p, ufOrigem: e.target.value.toUpperCase() }))}
-                    placeholder="SP"
-                    maxLength={2}
-                    className={`${campoLinha} uppercase`}
-                  />
-                </Campo>
-                <Campo className="sm:col-span-2" rotulo="Cidade de destino">
-                  <CityAutocomplete
-                    value={novaRota.destino}
-                    placeholder="Ex.: GOIÂNIA"
-                    onSelect={(nome, uf) => setNovaRota(p => ({ ...p, destino: nome, uf }))}
-                    className={campoLinha}
-                  />
-                </Campo>
-                <Campo rotulo="UF de destino">
-                  <input
-                    value={novaRota.uf}
-                    onChange={e => setNovaRota(p => ({ ...p, uf: e.target.value.toUpperCase() }))}
-                    placeholder="GO"
-                    maxLength={2}
-                    className={`${campoLinha} uppercase`}
-                  />
-                </Campo>
-                <Campo rotulo="Distância (km)" className="col-span-2 sm:col-span-1">
-                  <input
-                    inputMode="numeric"
-                    value={novaRota.km || ''}
-                    onChange={e => setNovaRota(p => ({ ...p, km: parseInt(e.target.value) || 0 }))}
-                    placeholder="722"
-                    className={`${campoLinha} tabular-nums`}
-                  />
-                </Campo>
-                <div className="col-span-2 sm:col-span-1">
-                  <Botao variante="primario" tamanho="sm" icone={Plus} bloco onClick={salvarRota} carregando={salvandoRota} textoCarregando="Salvando...">
-                    Cadastrar
-                  </Botao>
-                </div>
-              </div>
+            <div className="flex flex-wrap gap-2 shrink-0">
+              <Botao variante="secundario" icone={Plus} onClick={adicionarLinha}>Adicionar linha</Botao>
+              <Botao variante="secundario" icone={FileUp} onClick={() => inputNfRef.current?.click()}
+                     carregando={importandoXml || trazendoXmls} textoCarregando="Lendo as notas...">
+                Importar NF
+              </Botao>
+              <input ref={inputNfRef} type="file" accept=".xml,.pdf" multiple hidden
+                     onChange={e => { const f = [...(e.target.files ?? [])]; e.target.value = ''; if (f.length) importarXmls(f) }} />
             </div>
           </div>
-        )}
-      </div>}
 
-      {/* ── Cargas salvas (aba) ── */}
-      {aba === 'cargas' && <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="px-4 sm:px-5 min-h-14 flex items-center">
-          <span className="font-semibold text-gray-900 text-sm flex items-center gap-2">
-            Cargas
-            <span className="bg-gray-100 text-gray-700 text-xs font-medium px-2 py-0.5 rounded-full tabular-nums">{salvos.length}</span>
-          </span>
-        </div>
-
-        {(
-          <ul className="border-t border-gray-100 divide-y divide-gray-100 max-h-96 overflow-y-auto animate-entrada">
-            {salvos.length === 0 && (
-              <li><Vazio compacto icone={Truck} titulo="Nenhuma carga salva ainda">Depois de calcular, use Salvar cálculo.</Vazio></li>
-            )}
-            {salvos.map(c => (
-              <li key={c.id} className={`flex items-center gap-1 pr-1 transition-colors hover:bg-gray-50 ${cargaAbertaId === c.id ? 'bg-tinta-50' : ''}`}>
-                <button onClick={() => abrirSalvo(c.id)} className="flex-1 min-w-0 text-left pl-4 sm:pl-5 py-3 flex items-center gap-3"
-                        aria-label={`Abrir a carga de ${c.placa}, ${new Date(c.criadoEm).toLocaleDateString('pt-BR')}`}>
-                  <span className="flex-1 min-w-0">
-                    <span className="flex flex-wrap items-baseline gap-x-2">
-                      <span className="font-semibold text-gray-900 tabular-nums tracking-wide">{c.placa}</span>
-                      <span className="text-sm text-gray-500 tabular-nums">
-                        {new Date(c.criadoEm).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                      {cargaAbertaId === c.id && <span className="text-xs font-semibold text-tinta-700">aberta</span>}
-                    </span>
-                    <span className="block text-sm text-gray-600 mt-0.5 tabular-nums">
-                      Carga {formatBRL(c.valorCarga)} · Pedágio {formatBRL(c.valorPedagio)}
-                      <span className="text-gray-500"> · {c.totalNFs} NFs · {c.totalCTes} CT-es</span>
-                      {(c.totalPlanilhas ?? 0) > 0 && (
-                        <span className="text-emerald-800"> · {c.totalPlanilhas} planilha{c.totalPlanilhas === 1 ? '' : 's'}</span>
-                      )}
-                    </span>
-                  </span>
-                  <ChevronRight size={18} className="text-gray-400 shrink-0" aria-hidden />
-                </button>
-                <BotaoIcone icone={Trash2} rotulo={`Excluir a carga de ${c.placa}`} perigo onClick={() => excluirSalvo(c)} />
+        {/* Celular e tablet: um cartão por linha, com os mesmos campos da tabela */}
+        <ul className="lg:hidden grid sm:grid-cols-2 gap-3">
+          {itens.map(it => {
+            const nfs = (it.numeroNF ?? '').split(',').map(n => n.trim()).filter(Boolean)
+            const conflito     = it.cidadeConflito && (it.cidadesEncontradas?.length ?? 0) > 0
+            const semPesoLinha = it.pesoIncompleto && (it.produtosSemPeso?.length ?? 0) > 0
+            const noGrupo      = (it.chaveGrupo && tamanhoDoGrupo[it.chaveGrupo] > 1) ? true : false
+            const mostraGrupo  = Boolean(it.grupo) || noGrupo
+            return (
+              <li key={it.id} className={`rounded-xl border p-4 space-y-3 ${conflito || semPesoLinha ? 'bg-amber-50 border-amber-300' : noGrupo ? 'bg-tinta-50 border-tinta-200' : 'bg-white border-gray-200'}`}>
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    {nfs.length > 0 ? chipsNf(nfs, it.nfsDetalhadas, true) : (
+                      <Campo rotulo="NF">
+                        <input value={it.numeroNF ?? ''} onChange={e => atualizarLinha(it.id, 'numeroNF', e.target.value)}
+                               className={`${campoLinha} tabular-nums`} />
+                      </Campo>
+                    )}
+                  </div>
+                  <BotaoIcone icone={X} perigo rotulo="Tirar esta linha" onClick={() => removerLinha(it.id)} disabled={itens.length <= 1} />
+                </div>
+                <Campo rotulo="Emitente">
+                  <input value={it.emitente ?? ''} onChange={e => atualizarLinha(it.id, 'emitente', e.target.value)} className={campoLinha} />
+                </Campo>
+                <Campo rotulo="Destinatário">
+                  <input value={it.destinatario ?? ''} onChange={e => atualizarLinha(it.id, 'destinatario', e.target.value)} className={campoLinha} />
+                </Campo>
+                {mostraGrupo && (
+                  <p className="flex flex-wrap items-center gap-1.5 text-sm text-tinta-900 -mt-1">
+                    <span className="text-tinta-800">CT-e feito como</span>
+                    <span className="bg-tinta-100 border border-tinta-200 rounded-md px-1.5 py-0.5 font-semibold">{it.grupo || it.destinatario}</span>
+                    {noGrupo && <span className="text-tinta-800">· junta {tamanhoDoGrupo[it.chaveGrupo!]} linhas</span>}
+                  </p>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <Campo rotulo="Origem">
+                    <input value={it.cidadeEmitente ?? ''} onChange={e => atualizarLinha(it.id, 'cidadeEmitente', e.target.value.toUpperCase())}
+                           className={`${campoLinha} uppercase`} />
+                  </Campo>
+                  <Campo rotulo="Peso (kg)">
+                    <input inputMode="decimal" value={it.pesoKg || ''} placeholder="0"
+                           onChange={e => atualizarLinha(it.id, 'pesoKg', parseFloat(e.target.value.replace(',', '.')) || 0)}
+                           className={`${campoLinha} text-right tabular-nums ${semPesoLinha ? 'border-amber-400' : ''}`} />
+                  </Campo>
+                </div>
+                {conflito ? escolherCidade(it) : (
+                  <div className="grid grid-cols-[1fr_5.5rem] gap-2">
+                    <Campo rotulo="Destino">
+                      <input value={it.cidadeDestino ?? ''} onChange={e => atualizarLinha(it.id, 'cidadeDestino', e.target.value.toUpperCase())}
+                             className={`${campoLinha} uppercase`} />
+                    </Campo>
+                    <Campo rotulo="UF">
+                      <input value={it.uf ?? ''} maxLength={2} onChange={e => atualizarLinha(it.id, 'uf', e.target.value.toUpperCase())}
+                             className={`${campoLinha} uppercase text-center`} />
+                    </Campo>
+                  </div>
+                )}
+                {semPesoLinha && pesosFaltando(it)}
               </li>
-            ))}
-          </ul>
-        )}
-      </div>}
+            )
+          })}
+        </ul>
+
+        {/* Computador: tabela com total de peso no pé; rola de lado dentro dela quando não cabe (UI-05) */}
+        <div className="hidden lg:block overflow-x-auto rounded-xl border border-gray-200 bg-white">
+          <table className="w-full text-sm">
+            <thead className="sticky -top-4 sm:-top-5 lg:-top-6 z-10 text-xs [&_th]:bg-gray-50 [&_th]:shadow-[inset_0_-1px_0] [&_th]:shadow-gray-200 text-gray-500 [&_th:first-child]:rounded-tl-xl [&_th:last-child]:rounded-tr-xl">
+              <tr>
+                <th className="pl-4 pr-2 py-2.5 text-left font-medium">NF(s)</th>
+                <th className="px-2 py-2.5 text-left font-medium">Emitente</th>
+                <th className="px-2 py-2.5 text-left font-medium">Origem</th>
+                <th className="px-2 py-2.5 text-left font-medium">Destinatário</th>
+                <th className="px-2 py-2.5 text-left font-medium">Destino</th>
+                <th className="px-2 py-2.5 text-center font-medium">UF</th>
+                <th className="px-2 py-2.5 text-right font-medium whitespace-nowrap">Peso (kg)</th>
+                <th className="pl-2 pr-3 py-2.5 w-12"><span className="sr-only">Tirar</span></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {itens.map(it => {
+                const nfs = (it.numeroNF ?? '').split(',').map(n => n.trim()).filter(Boolean)
+                const conflito      = it.cidadeConflito && (it.cidadesEncontradas?.length ?? 0) > 0
+                const semPesoLinha  = it.pesoIncompleto && (it.produtosSemPeso?.length ?? 0) > 0
+                const noGrupo       = (it.chaveGrupo && tamanhoDoGrupo[it.chaveGrupo] > 1) ? true : false
+                const nomeCobranca  = it.grupo || it.destinatario
+                const mostraGrupo   = Boolean(it.grupo) || noGrupo
+                // Sem faixa colorida na lateral: o tom do fundo já marca a linha
+                const rowClass      = conflito || semPesoLinha ? 'bg-amber-50'
+                                    : noGrupo      ? 'bg-tinta-50 hover:bg-tinta-100/70'
+                                    : 'hover:bg-gray-50'
+                return (
+                <Fragment key={it.id}>
+                <tr className={`align-top transition-colors ${rowClass}`}>
+                  <td className="pl-4 pr-2 py-2.5 w-[150px]">
+                    {nfs.length > 0 ? chipsNf(nfs, it.nfsDetalhadas, true) : (
+                      <input
+                        value={it.numeroNF ?? ''}
+                        onChange={e => atualizarLinha(it.id, 'numeroNF', e.target.value)}
+                        aria-label="Número da NF"
+                        className={`w-24 ${campoNfTabela} tabular-nums`}
+                        placeholder="NF"
+                      />
+                    )}
+                  </td>
+                  <td className="px-2 py-2.5">
+                    <input
+                      value={it.emitente ?? ''}
+                      onChange={e => atualizarLinha(it.id, 'emitente', e.target.value)}
+                      aria-label="Emitente"
+                      className={`w-full min-w-[9rem] ${campoNfTabela}`}
+                      placeholder="Emitente"
+                    />
+                  </td>
+                  <td className="px-2 py-2.5">
+                    <input
+                      value={it.cidadeEmitente ?? ''}
+                      onChange={e => atualizarLinha(it.id, 'cidadeEmitente', e.target.value.toUpperCase())}
+                      aria-label="Cidade de origem"
+                      className={`w-full min-w-[6rem] ${campoNfTabela} uppercase`}
+                      placeholder="Cidade"
+                    />
+                  </td>
+                  <td className="px-2 py-2.5">
+                    <input
+                      value={it.destinatario ?? ''}
+                      onChange={e => atualizarLinha(it.id, 'destinatario', e.target.value)}
+                      aria-label="Destinatário"
+                      className={`w-full min-w-[12rem] ${campoNfTabela}`}
+                      placeholder="Destinatário"
+                    />
+                    {/* O nome da nota fica; ao lado, por qual nome ele é cobrado */}
+                    {mostraGrupo && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-tinta-900">
+                        <span className="text-tinta-800 whitespace-nowrap">CT-e feito como</span>
+                        <span className="bg-tinta-100 border border-tinta-200 rounded-md px-1.5 py-0.5 font-semibold">
+                          {nomeCobranca}
+                        </span>
+                        {noGrupo && (
+                          <span className="text-tinta-800 whitespace-nowrap">
+                            · junta {tamanhoDoGrupo[it.chaveGrupo!]} linhas
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-2 py-2.5" colSpan={conflito ? 2 : 1}>
+                    {conflito ? escolherCidade(it) : (
+                      <input
+                        value={it.cidadeDestino ?? ''}
+                        onChange={e => atualizarLinha(it.id, 'cidadeDestino', e.target.value.toUpperCase())}
+                        aria-label="Cidade de destino"
+                        className={`w-full min-w-[7rem] ${campoNfTabela} uppercase`}
+                        placeholder="Destino"
+                      />
+                    )}
+                  </td>
+                  {!conflito && (
+                  <td className="px-2 py-2.5">
+                    <input
+                      value={it.uf ?? ''}
+                      onChange={e => atualizarLinha(it.id, 'uf', e.target.value.toUpperCase())}
+                      aria-label="UF de destino"
+                      className={`w-12 ${campoNfTabela} uppercase text-center`}
+                      placeholder="GO"
+                      maxLength={2}
+                    />
+                  </td>
+                  )}
+                  <td className="px-2 py-2.5 text-right">
+                    <input
+                      inputMode="decimal"
+                      value={it.pesoKg || ''}
+                      onChange={e => atualizarLinha(it.id, 'pesoKg', parseFloat(e.target.value.replace(',', '.')) || 0)}
+                      aria-label="Peso em kg"
+                      className={`w-24 ${campoNfTabela} text-right tabular-nums ${semPesoLinha ? '!border-amber-400 bg-white' : ''}`}
+                      placeholder="0"
+                    />
+                  </td>
+                  <td className="pl-2 pr-3 py-2">
+                    <BotaoIcone icone={X} perigo rotulo="Tirar esta linha" onClick={() => removerLinha(it.id)} disabled={itens.length <= 1} />
+                  </td>
+                </tr>
+                {/* Peso que falta: linha inteira embaixo, para não espremer a coluna */}
+                {semPesoLinha && (
+                  <tr className="bg-amber-50">
+                    <td colSpan={8} className="px-4 pb-3 pt-0">
+                      <div className="max-w-lg">{pesosFaltando(it)}</div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
+                )}
+              )}
+            </tbody>
+            <tfoot className="border-t-2 border-gray-200 bg-gray-50 text-gray-900 font-semibold tabular-nums">
+              <tr>
+                <td className="pl-4 pr-2 py-2.5 rounded-bl-xl" colSpan={6}>Total · {totalNfsTela} {totalNfsTela === 1 ? 'NF' : 'NFs'}</td>
+                <td className="px-2 py-2.5 text-right whitespace-nowrap">{pesoResumo}</td>
+                <td className="rounded-br-xl" />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        </div>
+      ))}
+
+
+      {aba === 'rotas' && <RotasCadastradas rotas={rotas} busca={buscaRota} onBusca={setBuscaRota}
+        novaRota={novaRota} setNovaRota={setNovaRota} salvandoRota={salvandoRota} onCadastrar={salvarRota}
+        editandoId={editandoId} editRota={editRota} setEditRota={setEditRota} onEditar={iniciarEdicao}
+        onSalvarEdicao={salvarEdicao} onCancelarEdicao={cancelarEdicao} onRemover={removerRota} />}
+
+      {aba === 'cargas' && <CargasSalvas salvos={salvos} cargaAbertaId={cargaAbertaId}
+        busca={buscaCarga} onBusca={setBuscaCarga} mes={mesCarga} onMes={setMesCarga}
+        onAbrir={abrirSalvo} onExcluir={excluirSalvo} />}
 
 
       {aba === 'calculo' && <>
@@ -1392,248 +1463,17 @@ export default function FreteCalculoPage() {
         </Campo>
       </section>
 
-      {/* ── NFs (fechado por padrão) ── */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <button
-          onClick={() => setMostrarItens(p => !p)}
-          aria-expanded={mostrarItens}
-          className="w-full px-4 sm:px-5 py-3 min-h-14 flex items-center justify-between gap-3 text-left hover:bg-gray-50 transition-colors"
-        >
-          <span className="text-sm flex items-center gap-x-2 gap-y-1 flex-wrap">
-            <span className="font-semibold text-gray-900">NFs</span>
-            <span className="bg-gray-100 text-gray-700 text-xs font-medium px-2 py-0.5 rounded-full tabular-nums">
-              {totalNfsTela || itens.length}
-            </span>
-            <span className="text-sm text-gray-500 tabular-nums">
-              <span className="hidden sm:inline">agrupados por emitente e destinatário · </span>{pesoResumo} kg
-            </span>
-            {/* Fechado, a linha com problema sumiria de vista; o aviso fica no
-                cabeçalho para não esconder pendência. */}
-            {itensComPendencia > 0 && (
-              <span className="bg-amber-100 text-amber-900 border border-amber-300 text-xs font-semibold px-2 py-0.5 rounded-full">
-                {itensComPendencia} a conferir
-              </span>
-            )}
-          </span>
-          <span className="text-sm text-gray-600 shrink-0 inline-flex items-center gap-1">{mostrarItens ? 'Ocultar' : 'Mostrar'}<ChevronDown size={16} aria-hidden className={`transition-transform duration-200 ${mostrarItens ? 'rotate-180' : ''}`} /></span>
-        </button>
-
-        {mostrarItens && (
-        <div className="border-t border-gray-100 animate-entrada">
-
-        {/* Trocar uma NF: o ✕ ao lado do número tira; importar soma às que já estão */}
-        <div className="px-4 sm:px-5 py-3 flex flex-wrap items-center justify-between gap-2 border-b border-gray-100">
-          <p className="text-sm text-gray-600">O ✕ ao lado da NF tira ela da carga; importar soma as novas às que já estão.</p>
-          <Botao variante="secundario" tamanho="sm" icone={FileUp} onClick={() => inputNfRef.current?.click()}
-                 carregando={importandoXml || trazendoXmls} textoCarregando="Lendo as notas...">
-            Importar NF
-          </Botao>
-          <input ref={inputNfRef} type="file" accept=".xml,.pdf" multiple hidden
-                 onChange={e => { const f = [...(e.target.files ?? [])]; e.target.value = ''; if (f.length) importarXmls(f) }} />
-        </div>
-
-        {/* Celular: um cartão por linha, com os mesmos campos da tabela */}
-        <ul className="sm:hidden divide-y divide-gray-100">
-          {itens.map(it => {
-            const nfs = (it.numeroNF ?? '').split(',').map(n => n.trim()).filter(Boolean)
-            const conflito     = it.cidadeConflito && (it.cidadesEncontradas?.length ?? 0) > 0
-            const semPesoLinha = it.pesoIncompleto && (it.produtosSemPeso?.length ?? 0) > 0
-            const noGrupo      = (it.chaveGrupo && tamanhoDoGrupo[it.chaveGrupo] > 1) ? true : false
-            const mostraGrupo  = Boolean(it.grupo) || noGrupo
-            return (
-              <li key={it.id} className={`p-4 space-y-3 ${conflito || semPesoLinha ? 'bg-amber-50' : noGrupo ? 'bg-tinta-50' : ''}`}>
-                <div className="flex items-start gap-2">
-                  <div className="flex-1 min-w-0">
-                    {nfs.length > 0 ? chipsNf(nfs, it.nfsDetalhadas, true) : (
-                      <Campo rotulo="NF">
-                        <input value={it.numeroNF ?? ''} onChange={e => atualizarLinha(it.id, 'numeroNF', e.target.value)}
-                               className={`${campoLinha} tabular-nums`} />
-                      </Campo>
-                    )}
-                  </div>
-                  <BotaoIcone icone={X} perigo rotulo="Tirar esta linha" onClick={() => removerLinha(it.id)} disabled={itens.length <= 1} />
-                </div>
-                <Campo rotulo="Emitente">
-                  <input value={it.emitente ?? ''} onChange={e => atualizarLinha(it.id, 'emitente', e.target.value)} className={campoLinha} />
-                </Campo>
-                <Campo rotulo="Destinatário">
-                  <input value={it.destinatario ?? ''} onChange={e => atualizarLinha(it.id, 'destinatario', e.target.value)} className={campoLinha} />
-                </Campo>
-                {mostraGrupo && (
-                  <p className="flex flex-wrap items-center gap-1.5 text-sm text-tinta-900 -mt-1">
-                    <span className="text-tinta-800">CT-e feito como</span>
-                    <span className="bg-tinta-100 border border-tinta-200 rounded-md px-1.5 py-0.5 font-semibold">{it.grupo || it.destinatario}</span>
-                    {noGrupo && <span className="text-tinta-800">· junta {tamanhoDoGrupo[it.chaveGrupo!]} linhas</span>}
-                  </p>
-                )}
-                <div className="grid grid-cols-2 gap-2">
-                  <Campo rotulo="Origem">
-                    <input value={it.cidadeEmitente ?? ''} onChange={e => atualizarLinha(it.id, 'cidadeEmitente', e.target.value.toUpperCase())}
-                           className={`${campoLinha} uppercase`} />
-                  </Campo>
-                  <Campo rotulo="Peso (kg)">
-                    <input inputMode="decimal" value={it.pesoKg || ''} placeholder="0"
-                           onChange={e => atualizarLinha(it.id, 'pesoKg', parseFloat(e.target.value.replace(',', '.')) || 0)}
-                           className={`${campoLinha} text-right tabular-nums ${semPesoLinha ? 'border-amber-400' : ''}`} />
-                  </Campo>
-                </div>
-                {conflito ? escolherCidade(it) : (
-                  <div className="grid grid-cols-[1fr_5.5rem] gap-2">
-                    <Campo rotulo="Destino">
-                      <input value={it.cidadeDestino ?? ''} onChange={e => atualizarLinha(it.id, 'cidadeDestino', e.target.value.toUpperCase())}
-                             className={`${campoLinha} uppercase`} />
-                    </Campo>
-                    <Campo rotulo="UF">
-                      <input value={it.uf ?? ''} maxLength={2} onChange={e => atualizarLinha(it.id, 'uf', e.target.value.toUpperCase())}
-                             className={`${campoLinha} uppercase text-center`} />
-                    </Campo>
-                  </div>
-                )}
-                {semPesoLinha && pesosFaltando(it)}
-              </li>
-            )
-          })}
-        </ul>
-
-        {/* Computador: tabela */}
-        <div className="hidden sm:block overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-xs text-gray-500">
-              <tr>
-                <th className="px-2 py-2 text-left font-medium">NF(s)</th>
-                <th className="px-2 py-2 text-left font-medium">Emitente</th>
-                <th className="px-2 py-2 text-left font-medium">Origem</th>
-                <th className="px-2 py-2 text-left font-medium">Destinatário</th>
-                <th className="px-2 py-2 text-left font-medium">Destino</th>
-                <th className="px-2 py-2 text-center font-medium">UF</th>
-                <th className="px-2 py-2 text-right font-medium">Peso (kg)</th>
-                <th className="px-2 py-2 w-10"><span className="sr-only">Tirar</span></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {itens.map(it => {
-                const nfs = (it.numeroNF ?? '').split(',').map(n => n.trim()).filter(Boolean)
-                const conflito      = it.cidadeConflito && (it.cidadesEncontradas?.length ?? 0) > 0
-                const semPesoLinha  = it.pesoIncompleto && (it.produtosSemPeso?.length ?? 0) > 0
-                const noGrupo       = (it.chaveGrupo && tamanhoDoGrupo[it.chaveGrupo] > 1) ? true : false
-                const nomeCobranca  = it.grupo || it.destinatario
-                const mostraGrupo   = Boolean(it.grupo) || noGrupo
-                // Sem faixa colorida na lateral: o tom do fundo já marca a linha
-                const rowClass      = conflito || semPesoLinha ? 'bg-amber-50'
-                                    : noGrupo      ? 'bg-tinta-50 hover:bg-tinta-100/70'
-                                    : 'hover:bg-gray-50'
-                return (
-                <Fragment key={it.id}>
-                <tr className={`align-top transition-colors ${rowClass}`}>
-                  <td className="pl-3 pr-2 py-2 w-[150px]">
-                    {nfs.length > 0 ? chipsNf(nfs, it.nfsDetalhadas, true) : (
-                      <input
-                        value={it.numeroNF ?? ''}
-                        onChange={e => atualizarLinha(it.id, 'numeroNF', e.target.value)}
-                        aria-label="Número da NF"
-                        className="w-24 border border-gray-300 rounded-lg px-2 py-1 text-sm tabular-nums"
-                        placeholder="NF"
-                      />
-                    )}
-                  </td>
-                  <td className="px-2 py-2">
-                    <input
-                      value={it.emitente ?? ''}
-                      onChange={e => atualizarLinha(it.id, 'emitente', e.target.value)}
-                      aria-label="Emitente"
-                      className="w-full min-w-[9rem] border border-gray-300 rounded-lg px-2 py-1"
-                      placeholder="Emitente"
-                    />
-                  </td>
-                  <td className="px-2 py-2">
-                    <input
-                      value={it.cidadeEmitente ?? ''}
-                      onChange={e => atualizarLinha(it.id, 'cidadeEmitente', e.target.value.toUpperCase())}
-                      aria-label="Cidade de origem"
-                      className="w-24 border border-gray-300 rounded-lg px-2 py-1 uppercase"
-                      placeholder="Cidade"
-                    />
-                  </td>
-                  <td className="px-2 py-2">
-                    <input
-                      value={it.destinatario ?? ''}
-                      onChange={e => atualizarLinha(it.id, 'destinatario', e.target.value)}
-                      aria-label="Destinatário"
-                      className="w-full min-w-[12rem] border border-gray-300 rounded-lg px-2 py-1"
-                      placeholder="Destinatário"
-                    />
-                    {/* O nome da nota fica; ao lado, por qual nome ele é cobrado */}
-                    {mostraGrupo && (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-tinta-900">
-                        <span className="text-tinta-800 whitespace-nowrap">CT-e feito como</span>
-                        <span className="bg-tinta-100 border border-tinta-200 rounded-md px-1.5 py-0.5 font-semibold">
-                          {nomeCobranca}
-                        </span>
-                        {noGrupo && (
-                          <span className="text-tinta-800 whitespace-nowrap">
-                            · junta {tamanhoDoGrupo[it.chaveGrupo!]} linhas
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-2 py-2" colSpan={conflito ? 2 : 1}>
-                    {conflito ? escolherCidade(it) : (
-                      <input
-                        value={it.cidadeDestino ?? ''}
-                        onChange={e => atualizarLinha(it.id, 'cidadeDestino', e.target.value.toUpperCase())}
-                        aria-label="Cidade de destino"
-                        className="w-28 border border-gray-300 rounded-lg px-2 py-1 uppercase"
-                        placeholder="Destino"
-                      />
-                    )}
-                  </td>
-                  {!conflito && (
-                  <td className="px-2 py-2">
-                    <input
-                      value={it.uf ?? ''}
-                      onChange={e => atualizarLinha(it.id, 'uf', e.target.value.toUpperCase())}
-                      aria-label="UF de destino"
-                      className="w-12 border border-gray-300 rounded-lg px-1 py-1 uppercase text-center"
-                      placeholder="GO"
-                      maxLength={2}
-                    />
-                  </td>
-                  )}
-                  <td className="px-2 py-2">
-                    <input
-                      inputMode="decimal"
-                      value={it.pesoKg || ''}
-                      onChange={e => atualizarLinha(it.id, 'pesoKg', parseFloat(e.target.value.replace(',', '.')) || 0)}
-                      aria-label="Peso em kg"
-                      className={`w-24 border rounded-lg px-2 py-1 text-right tabular-nums ${semPesoLinha ? 'border-amber-400 bg-white' : 'border-gray-300'}`}
-                      placeholder="0"
-                    />
-                  </td>
-                  <td className="px-2 py-1.5">
-                    <BotaoIcone icone={X} perigo rotulo="Tirar esta linha" onClick={() => removerLinha(it.id)} disabled={itens.length <= 1} />
-                  </td>
-                </tr>
-                {/* Peso que falta: linha inteira embaixo, para não espremer a coluna */}
-                {semPesoLinha && (
-                  <tr className="bg-amber-50">
-                    <td colSpan={8} className="px-3 pb-3 pt-0">
-                      <div className="max-w-lg">{pesosFaltando(it)}</div>
-                    </td>
-                  </tr>
-                )}
-                </Fragment>
-                )}
-              )}
-            </tbody>
-          </table>
-        </div>
-        <div className="px-3 sm:px-4 py-2 border-t border-gray-100">
-          <Botao variante="fantasma" tamanho="sm" icone={Plus} onClick={adicionarLinha}>Adicionar linha</Botao>
-        </div>
-        </div>
-        )}
-      </div>
+      {/* ── NFs: a lista mora na aba NFs; aqui fica o resumo e o aviso do que falta ── */}
+      {itensComPendencia > 0 && (
+        <Aviso tipo="atencao" titulo={`${itensComPendencia} ${itensComPendencia === 1 ? 'linha das NFs' : 'linhas das NFs'} a conferir`}>
+          Falta peso ou a cidade não bateu. Confira antes de calcular.{' '}
+          <button type="button" onClick={irParaNfs} className="font-medium text-tinta-700 hover:underline">Conferir na aba NFs</button>
+        </Aviso>
+      )}
+      <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-600 tabular-nums">
+        <span><span className="font-semibold text-gray-900">{totalNfsTela}</span> {totalNfsTela === 1 ? 'NF' : 'NFs'} · {pesoResumo} kg</span>
+        <button type="button" onClick={irParaNfs} className="font-medium text-tinta-700 hover:underline">Ver na aba NFs</button>
+      </p>
 
       {quedaLancada && (
         <Aviso tipo="atencao" titulo="Esta carga não pode ser calculada de novo">

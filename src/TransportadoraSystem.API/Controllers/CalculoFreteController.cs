@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using TransportadoraSystem.Application.Services;
 using TransportadoraSystem.Core.Entities;
 using TransportadoraSystem.Infrastructure.Data;
 
@@ -49,11 +50,24 @@ public class CalculoFreteController(AppDbContext db) : ControllerBase
             .Select(p => new { p.Id, p.Nome, p.CriadoEm, tamanho = p.Conteudo.Length })
             .ToListAsync();
 
+        // "temPdf" foi gravado quando o XML foi lido, antes de o PDF subir: confere de novo
+        // no arquivo de notas, senão a tela diz "PDF ainda não guardado" com o PDF guardado.
+        var payload = c.PayloadJson;
+        var chaves = PdfNotasCarga.Chaves(payload);
+        if (chaves.Count > 0)
+        {
+            var comPdf = await db.ArquivosNFe.AsNoTracking()
+                .Where(a => chaves.Contains(a.ChaveAcesso) && a.Pdf != null)
+                .Select(a => a.ChaveAcesso)
+                .ToListAsync();
+            payload = PdfNotasCarga.Atualizar(payload, comPdf.ToHashSet(StringComparer.Ordinal));
+        }
+
         return Ok(new
         {
             c.Id, c.Placa, c.ValorCarga, c.ValorPedagio, c.PesoTotal,
             c.LiquotaBruta, c.LiquotaArredondada, c.TotalNFs, c.TotalCTes,
-            c.PayloadJson, c.CriadoEm,
+            PayloadJson = payload, c.CriadoEm,
             planilhas,
         });
     }

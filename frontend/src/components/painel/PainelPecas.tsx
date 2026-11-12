@@ -57,7 +57,7 @@ export function Cartao({ titulo, icone: Icone, link, rotuloLink, children, extra
   const auto = useId()
   const idTitulo = id ?? auto
   return (
-    <section aria-labelledby={idTitulo} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+    <section aria-labelledby={idTitulo} className="bg-white border border-gray-200 rounded-xl overflow-hidden scroll-mt-4">
       <header className="flex items-center gap-3 pl-4 pr-2 sm:pl-5 py-2 min-h-14 border-b border-gray-100">
         {Icone && <Icone size={18} strokeWidth={1.9} className="text-tinta-500 shrink-0" aria-hidden />}
         <h2 id={idTitulo} className="font-display text-lg font-semibold text-gray-900 leading-tight flex-1 min-w-0">{titulo}</h2>
@@ -149,20 +149,23 @@ export function diferencaTexto(d: { nome: string; valor: number; emProdutosC: bo
   }).join(' · ') + (d.length > 3 ? ' · ...' : '')
 }
 
-const TONS: Record<Tom, { icone: string; titulo: string }> = {
-  vermelho: { icone: 'bg-red-50 text-red-700 border-red-200', titulo: 'text-red-800' },
-  ambar:    { icone: 'bg-amber-50 text-amber-700 border-amber-200', titulo: 'text-gray-900' },
+// faixa: fio de 4 px na borda esquerda da linha, para o grave se ver de longe
+const TONS: Record<Tom, { icone: string; titulo: string; faixa: string }> = {
+  vermelho: { icone: 'bg-red-50 text-red-700 border-red-200', titulo: 'text-red-800', faixa: 'before:bg-red-500' },
+  ambar:    { icone: 'bg-amber-50 text-amber-700 border-amber-200', titulo: 'text-gray-900', faixa: 'before:bg-amber-400' },
 }
 
 export function PedeAtencao({ alertas }: { alertas: Alerta[] }) {
   if (alertas.length === 0) return <TudoEmDia />
+  const grave = alertas.some(a => a.tom === 'vermelho')
   return (
     <Cartao titulo="Pede atenção" icone={TriangleAlert} id="painel-atencao"
-            extra={<span className="text-sm font-semibold text-gray-500 tabular-nums" aria-hidden>{alertas.length}</span>}>
+            extra={<span className={`inline-flex items-center justify-center min-w-7 h-7 px-2 rounded-full border text-sm font-semibold tabular-nums
+                                     ${grave ? 'bg-red-50 text-red-700 border-red-200' : 'bg-amber-50 text-amber-800 border-amber-200'}`} aria-hidden>{alertas.length}</span>}>
       <ul className="divide-y divide-gray-100">
         {alertas.map(a => (
           <li key={a.chave}>
-            <LinhaLink to={a.link}>
+            <LinhaLink to={a.link} className={`relative before:absolute before:inset-y-0 before:left-0 before:w-1 ${TONS[a.tom].faixa}`}>
               <span className={`w-10 h-10 rounded-lg border flex items-center justify-center shrink-0 ${TONS[a.tom].icone}`}>
                 <a.icone size={19} strokeWidth={1.9} aria-hidden />
               </span>
@@ -181,10 +184,11 @@ export function PedeAtencao({ alertas }: { alertas: Alerta[] }) {
 /** Estado vazio do topo: nada vencido, nada por enviar, os volumes batendo */
 function TudoEmDia() {
   return (
-    <section aria-labelledby="painel-atencao" className="relative overflow-hidden rounded-xl border border-gray-200 bg-white px-5 py-6 sm:px-6 flex items-center gap-4">
+    <section aria-labelledby="painel-atencao" className="relative overflow-hidden rounded-xl border border-gray-200 bg-white px-5 py-6 sm:px-6 flex items-center gap-4 scroll-mt-4">
       <span className="relative w-14 h-14 rounded-full bg-gema-50 border border-gema-200 flex items-center justify-center shrink-0" aria-hidden>
         <span className="absolute inset-[9px] rounded-full bg-gema-400 animate-[fundo_400ms_ease-out_both]" />
-        <Check size={22} strokeWidth={2.6} className="relative text-tinta-950" />
+        {/* Sobre amarelo cheio: cor fixa, senão some no tema escuro (UI-23) */}
+        <Check size={22} strokeWidth={2.6} className="relative text-sobre-gema" />
       </span>
       <div className="min-w-0">
         <h2 id="painel-atencao" className="font-display text-xl font-semibold text-gray-900 leading-tight">Tudo em dia</h2>
@@ -212,7 +216,8 @@ function lerFeitos(dia: string): string[] {
   try { const v = JSON.parse(localStorage.getItem(chaveFeitos(dia)) ?? '[]'); return Array.isArray(v) ? v : [] }
   catch { return [] }
 }
-function useFeitos(dia: string) {
+/** Fica no DashboardPage: a ficha "Tarefas de hoje" do topo conta os lembretes marcados também */
+export function useFeitos(dia: string) {
   const [feitos, setFeitos] = useState<string[]>(() => lerFeitos(dia))
   useEffect(() => setFeitos(lerFeitos(dia)), [dia])
   const alternar = (chave: string) => setFeitos(f => {
@@ -225,16 +230,23 @@ function useFeitos(dia: string) {
 
 const ROTULO_DIA: Record<number, string> = { 1: 'Seg', 2: 'Ter', 3: 'Qua', 4: 'Qui', 5: 'Sex', 6: 'Fim de semana' }
 
-export function Rotina({ rotina, diaHoje, hoje, mensal }: { rotina: DiaRotina[]; diaHoje: number; hoje: string; mensal: Tarefa[] }) {
+/** Tarefa conta como feita se a API diz, ou se é lembrete marcado à mão hoje */
+export const situacaoDoDia = (t: Tarefa, ehHoje: boolean, feitos: string[]): SituacaoTarefa =>
+  (t.situacao === 'lembrete' && ehHoje && feitos.includes(t.chave) ? 'feito' : t.situacao)
+
+export function Rotina({ rotina, diaHoje, hoje, mensal, feitos, alternar }: {
+  rotina: DiaRotina[]; diaHoje: number; hoje: string; mensal: Tarefa[]
+  feitos: string[]; alternar: (chave: string) => void
+}) {
   const [dia, setDia] = useState(diaHoje)
-  const [feitos, alternar] = useFeitos(hoje)
   const atual = rotina.find(d => d.dia === dia) ?? rotina[0]
   const ehHoje = dia === diaHoje
   const idAbas = `rotina-${useId().replace(/:/g, '')}`
 
-  const situacao = (t: Tarefa): SituacaoTarefa => (t.situacao === 'lembrete' && ehHoje && feitos.includes(t.chave) ? 'feito' : t.situacao)
+  const situacao = (t: Tarefa) => situacaoDoDia(t, ehHoje, feitos)
   const tarefas = atual?.tarefas ?? []
   const prontas = tarefas.filter(t => situacao(t) === 'feito').length
+  const progresso = tarefas.length > 0 ? Math.round((prontas / tarefas.length) * 100) : 0
   const mensalAberto = mensal.filter(t => t.situacao !== 'feito')
   const diaInicioMes = dataLocal(hoje).getDate() <= 12
 
@@ -245,6 +257,13 @@ export function Rotina({ rotina, diaHoje, hoje, mensal }: { rotina: DiaRotina[];
                 <span className="sr-only">Prontas: </span>{prontas} de {tarefas.length}
               </span>
             )}>
+      {/* Quanto do dia já foi: o mesmo "x de y" do cabeçalho, em barra */}
+      {tarefas.length > 0 && (
+        <div className="h-1 bg-gray-100" aria-hidden>
+          <div className={`h-full transition-[width] duration-500 ease-out ${prontas === tarefas.length ? 'bg-emerald-500' : 'bg-tinta-500'}`}
+               style={{ width: `${progresso}%` }} />
+        </div>
+      )}
       <div className="px-4 sm:px-5 pt-3">
         <Abas id={idAbas} valor={String(dia)} onChange={v => setDia(Number(v))} rotulo="Dia da semana"
               opcoes={rotina.map(d => [String(d.dia), d.dia === diaHoje ? `${ROTULO_DIA[d.dia]} · hoje` : ROTULO_DIA[d.dia]] as const)} />
