@@ -295,10 +295,13 @@ public class CarregamentoVolumes
     public DateTime CriadoEm { get; set; } = DateTime.UtcNow;
 }
 
-/// <summary>PDF da CNH do motorista, separado do cadastro (uma linha por motorista).</summary>
+/// <summary>Arquivo da CNH do motorista (PDF, JPG ou PNG), separado do cadastro (uma linha por motorista).</summary>
 public class MotoristaCnhPdf
 {
     [System.ComponentModel.DataAnnotations.Key, System.ComponentModel.DataAnnotations.Schema.DatabaseGenerated(System.ComponentModel.DataAnnotations.Schema.DatabaseGeneratedOption.None)]
     public int MotoristaId { get; set; }
+    /// <summary>O arquivo como veio (a coluna se chama Pdf desde quando só aceitava PDF).</summary>
     public byte[] Pdf { get; set; } = [];
+    /// <summary>"application/pdf", "image/jpeg" ou "image/png"; nulo nos guardados antes de 12/11/2026 (todos PDF).</summary>
+    public string? Tipo { get; set; }
 }

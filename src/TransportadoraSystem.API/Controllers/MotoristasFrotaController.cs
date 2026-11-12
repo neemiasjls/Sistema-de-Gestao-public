@@ -12,7 +12,7 @@ using static TransportadoraSystem.Application.Services.ViagemCaminhaoCalculo;
 namespace TransportadoraSystem.API.Controllers;
 
 /// <summary>
-/// CNH dos motoristas (VIA-20): lê o PDF da CNH digital, mostra o que muda e só então grava,
+/// CNH dos motoristas (VIA-20): lê a CNH digital (PDF, ou JPG/PNG exportado), mostra o que muda e só então grava,
 /// criando o motorista ou atualizando os campos da CNH do que já existe (achado pelo CPF; sem
 /// CPF, pelo nome sem acento). O cadastro em si (nome, login, comissão) segue em
 /// ViagensCaminhaoController. Só escritório e dono: o perfil motorista recebe 403 no Program.cs.
@@ -22,7 +22,7 @@ namespace TransportadoraSystem.API.Controllers;
 [Route("api/motoristas-frota")]
 public class MotoristasFrotaController(AppDbContext db, AuthService auth, ILogger<MotoristasFrotaController> logger) : ControllerBase
 {
-    private const int MaxPdf = 8 * 1024 * 1024;
+    private const int MaxArquivo = 8 * 1024 * 1024;
 
     // Campos da CNH, na ordem da tela: (campo, rótulo, valor atual do cadastro, valor lido)
     private static readonly (string Campo, string Rotulo, Func<MotoristaFrota, string?> Atual, Func<CnhDados, string?> Novo)[] Campos =
@@ -75,17 +75,20 @@ public class MotoristasFrotaController(AppDbContext db, AuthService auth, ILogge
         return ms.ToArray();
     }
 
-    private static bool EhPdf(byte[] b) => b.Length > 5 && b[0] == '%' && b[1] == 'P' && b[2] == 'D' && b[3] == 'F';
+    // PDF, JPG ou PNG pelo conteúdo (há arquivo sem extensão); nulo = recusa
+    private static string? TipoAceito(byte[] b) => CnhLeitor.TipoArquivo(b);
+
+    private static string Extensao(string? tipo) => tipo switch { "image/jpeg" => ".jpg", "image/png" => ".png", _ => ".pdf" };
 
     // ── Ler ──
 
     [HttpPost("cnh/ler")]
     public async Task<IActionResult> Ler(IFormFile? arquivo)
     {
-        if (arquivo == null || arquivo.Length == 0) return BadRequest(new { erro = "Escolha o PDF da CNH." });
-        if (arquivo.Length > MaxPdf) return BadRequest(new { erro = "O PDF é grande demais (limite de 8 MB)." });
+        if (arquivo == null || arquivo.Length == 0) return BadRequest(new { erro = "Escolha o arquivo da CNH." });
+        if (arquivo.Length > MaxArquivo) return BadRequest(new { erro = "O arquivo é grande demais (limite de 8 MB)." });
         var bytes = await Bytes(arquivo);
-        if (!EhPdf(bytes)) return BadRequest(new { erro = "Este arquivo não é um PDF." });
+        if (TipoAceito(bytes) == null) return BadRequest(new { erro = "Este arquivo não é PDF, JPG nem PNG." });
 
         CnhLeitura leitura;
         try { leitura = CnhLeitor.Ler(bytes); }
@@ -93,7 +96,7 @@ public class MotoristasFrotaController(AppDbContext db, AuthService auth, ILogge
         catch (Exception ex)
         {
             logger.LogError(ex, "Erro ao ler a CNH");
-            return BadRequest(new { erro = "Não consegui ler este PDF. Preencha à mão." });
+            return BadRequest(new { erro = "Não consegui ler este arquivo. Preencha à mão." });
         }
 
         var d = leitura.Dados;
@@ -137,6 +140,8 @@ public class MotoristasFrotaController(AppDbContext db, AuthService auth, ILogge
         {
             dados = d,
             naoAchou = leitura.NaoAchou,
+            tipo = leitura.Tipo,
+            reconhecida = leitura.Reconhecida,
             motorista = achado == null ? null : new { achado.Id, achado.Nome, achado.Ativo, TemCnhPdf = achado.CnhPdfNome != null },
             achadoPor,
             diferencas,
@@ -159,15 +164,16 @@ public class MotoristasFrotaController(AppDbContext db, AuthService auth, ILogge
     [HttpPost("cnh/aplicar")]
     public async Task<IActionResult> Aplicar([FromForm] AplicarCnhForm f)
     {
-        if (f.Arquivo == null || f.Arquivo.Length == 0) return BadRequest(new { erro = "Falta o PDF da CNH." });
-        if (f.Arquivo.Length > MaxPdf) return BadRequest(new { erro = "O PDF é grande demais (limite de 8 MB)." });
+        if (f.Arquivo == null || f.Arquivo.Length == 0) return BadRequest(new { erro = "Falta o arquivo da CNH." });
+        if (f.Arquivo.Length > MaxArquivo) return BadRequest(new { erro = "O arquivo é grande demais (limite de 8 MB)." });
         var bytes = await Bytes(f.Arquivo);
-        if (!EhPdf(bytes)) return BadRequest(new { erro = "Este arquivo não é um PDF." });
+        var tipoArquivo = TipoAceito(bytes);
+        if (tipoArquivo == null) return BadRequest(new { erro = "Este arquivo não é PDF, JPG nem PNG." });
 
         CnhDados? d;
         try { d = JsonSerializer.Deserialize<CnhDados>(f.Dados ?? "", new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
         catch (JsonException) { d = null; }
-        if (d == null) return BadRequest(new { erro = "Não entendi os dados da CNH. Leia o PDF de novo." });
+        if (d == null) return BadRequest(new { erro = "Não entendi os dados da CNH. Leia o arquivo de novo." });
         if (d.Cpf != null && FormatarCpf(d.Cpf) == null) return BadRequest(new { erro = "CPF inválido: são 11 números." });
 
         MotoristaFrota m;
@@ -176,6 +182,9 @@ public class MotoristasFrotaController(AppDbContext db, AuthService auth, ILogge
         {
             var achado = await db.MotoristasFrota.FindAsync(mid);
             if (achado == null) return NotFound(new { erro = "Motorista não encontrado." });
+            // Motorista escolhido na tela com outro CPF: não grava a CNH de uma pessoa no cadastro de outra
+            if (Digitos(d.Cpf) is { Length: 11 } cpfLido && Digitos(achado.Cpf) is { Length: 11 } cpfCad && cpfLido != cpfCad)
+                return BadRequest(new { erro = $"O CPF desta CNH não é o de {achado.Nome}. Escolha o motorista certo." });
             m = achado;
         }
         else
@@ -214,14 +223,14 @@ public class MotoristasFrotaController(AppDbContext db, AuthService auth, ILogge
         if (d.CnhValidade != null) m.CnhValidade = d.CnhValidade;
         if (Texto(d.Pai) is { } pai) m.Pai = pai;
         if (Texto(d.Mae) is { } mae) m.Mae = mae;
-        m.CnhPdfNome = Path.GetFileName(f.Arquivo.FileName) is { Length: > 0 } fn ? fn : "cnh.pdf";
+        m.CnhPdfNome = Path.GetFileName(f.Arquivo.FileName) is { Length: > 0 } fn ? fn : "cnh" + Extensao(tipoArquivo);
         m.CnhAtualizadaEm = DateTime.UtcNow;
         m.AtualizadoEm = DateTime.UtcNow;
         await db.SaveChangesAsync();
-        // O PDF vai depois do salvar: motorista novo só tem Id aqui
+        // O arquivo vai depois do salvar: motorista novo só tem Id aqui
         var pdf = await db.MotoristasCnhPdf.FindAsync(m.Id);
-        if (pdf == null) db.MotoristasCnhPdf.Add(new MotoristaCnhPdf { MotoristaId = m.Id, Pdf = bytes });
-        else pdf.Pdf = bytes;
+        if (pdf == null) db.MotoristasCnhPdf.Add(new MotoristaCnhPdf { MotoristaId = m.Id, Pdf = bytes, Tipo = tipoArquivo });
+        else { pdf.Pdf = bytes; pdf.Tipo = tipoArquivo; }
         await db.SaveChangesAsync();
 
         // Motorista novo já ganha o usuário de acesso, como no cadastro (senha padrão: usuário + 123);
@@ -256,14 +265,18 @@ public class MotoristasFrotaController(AppDbContext db, AuthService auth, ILogge
         return (null, "Não consegui achar um usuário livre. Informe um.");
     }
 
-    // ── PDF guardado ──
+    // ── Arquivo guardado (PDF, JPG ou PNG) ──
 
     [HttpGet("{id:int}/cnh")]
     public async Task<IActionResult> Pdf(int id)
     {
         var pdf = await db.MotoristasCnhPdf.AsNoTracking().FirstOrDefaultAsync(x => x.MotoristaId == id);
-        if (pdf == null) return NotFound(new { erro = "Este motorista não tem PDF da CNH guardado." });
+        if (pdf == null) return NotFound(new { erro = "Este motorista não tem o arquivo da CNH guardado." });
         var nome = await db.MotoristasFrota.AsNoTracking().Where(x => x.Id == id).Select(x => x.CnhPdfNome).FirstOrDefaultAsync();
-        return File(pdf.Pdf, "application/pdf", nome ?? "cnh.pdf");
+        // Tipo pelo conteúdo, não pelo que foi gravado: arquivo antigo (Tipo nulo) é PDF
+        var tipo = CnhLeitor.TipoArquivo(pdf.Pdf) ?? "application/octet-stream";
+        // Arquivo sem extensão (ex.: foto salva do WhatsApp) baixa com a extensão do tipo
+        var nomeArq = nome is { Length: > 0 } n ? (Path.HasExtension(n) ? n : n + Extensao(tipo)) : "cnh" + Extensao(tipo);
+        return File(pdf.Pdf, tipo, nomeArq);
     }
 }

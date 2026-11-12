@@ -152,7 +152,7 @@ export default function ListaPessoas() {
           <p className="text-sm text-gray-600 mt-0.5">Todos que entram no sistema, uma vez cada, com o que cada um acessa. Toque na pessoa para editar.</p>
         </div>
         <div className="flex flex-wrap gap-2 shrink-0">
-          <Botao variante="secundario" icone={FileUp} onClick={() => setImportar(true)}>Importar CNH (PDF)</Botao>
+          <Botao variante="secundario" icone={FileUp} onClick={() => setImportar(true)}>Importar CNH</Botao>
           <Botao variante="primario" icone={Plus} onClick={() => setNova(true)}>Nova pessoa</Botao>
         </div>
       </div>

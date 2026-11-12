@@ -13,7 +13,11 @@ public record CnhDados(string? Nome, string? Cpf, string? Rg, string? RgOrgaoUf,
     string? CidadeNascimento, string? UfNascimento, string? CnhRegistro, string? CnhCategoria,
     DateOnly? CnhEmissao, DateOnly? CnhValidade, string? Pai, string? Mae);
 
-public record CnhLeitura(CnhDados Dados, List<string> NaoAchou);
+/// <summary>
+/// Tipo = o que foi reconhecido, para a tela ("CNH digital em PDF, modelo novo"...). Reconhecida = falso quando a
+/// imagem não é a da CNH digital (foto da CNH de papel): nada é lido, mas o arquivo pode ser guardado.
+/// </summary>
+public record CnhLeitura(CnhDados Dados, List<string> NaoAchou, string Tipo = "", bool Reconhecida = true);
 
 /// <summary>
 /// Lê o PDF da CNH digital (CNH-e da Senatran / Carteira Digital de Trânsito) com o PdfPig (VIA-20).
@@ -67,11 +71,65 @@ public static class CnhLeitor
 
     // ───────────────────────── Entrada ─────────────────────────
 
-    // CNH digital da Carteira Digital de Trânsito: dados só na imagem, vai pelo OCR (CnhOcr)
-    public static CnhLeitura Ler(byte[] pdf)
+    /// <summary>Tipo do arquivo pelo conteúdo (há arquivos sem extensão): "application/pdf", "image/jpeg", "image/png" ou nulo.</summary>
+    public static string? TipoArquivo(byte[] b) =>
+        b.Length > 4 && b[0] == '%' && b[1] == 'P' && b[2] == 'D' && b[3] == 'F' ? "application/pdf"
+        : b.Length > 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF ? "image/jpeg"
+        : b.Length > 8 && b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G' ? "image/png"
+        : null;
+
+    // PDF com texto: por rótulo. PDF da CNH digital (só imagem) e JPG/PNG: pelo OCR (CnhOcr)
+    public static CnhLeitura Ler(byte[] arquivo)
     {
-        var palavras = Palavras(pdf);
-        return palavras.Any(p => p.Chave == "CPF") ? LerPalavras(palavras) : CnhOcr.Ler(pdf);
+        switch (TipoArquivo(arquivo))
+        {
+            case "application/pdf":
+                var palavras = Palavras(arquivo);
+                return palavras.Any(p => p.Chave == "CPF") ? LerPalavras(palavras) with { Tipo = "CNH em PDF com texto" } : CnhOcr.Ler(arquivo);
+            case "image/jpeg" or "image/png":
+                return CnhOcr.LerImagem(arquivo);
+            default:
+                throw new ErroCnh("Este arquivo não é PDF, JPG nem PNG.");
+        }
+    }
+
+    /// <summary>CPF com 11 números e os dois dígitos verificadores certos ("123.456.789-09"); senão nulo.</summary>
+    public static string? CpfConferido(string? s)
+    {
+        var d = new string((s ?? "").Where(char.IsDigit).ToArray());
+        // O OCR às vezes pega o número do rótulo junto ("4d CPF", "5 Nº REGISTRO"): valem os 11 do fim, se conferirem
+        if (d.Length > 11) d = d[^11..];
+        if (d.Length != 11 || d.Distinct().Count() == 1) return null;
+        int Dv(int n)
+        {
+            var soma = 0;
+            for (var i = 0; i < n; i++) soma += (d[i] - '0') * (n + 1 - i);
+            var r = soma % 11;
+            return r < 2 ? 0 : 11 - r;
+        }
+        return Dv(9) == d[9] - '0' && Dv(10) == d[10] - '0' ? $"{d[..3]}.{d[3..6]}.{d[6..9]}-{d[9..]}" : null;
+    }
+
+    /// <summary>
+    /// Número de registro da CNH (11 números) com os dois dígitos verificadores do Denatran certos; senão nulo.
+    /// </summary>
+    public static string? RegistroConferido(string? s)
+    {
+        var d = new string((s ?? "").Where(char.IsDigit).ToArray());
+        // O OCR às vezes pega o número do rótulo junto ("4d CPF", "5 Nº REGISTRO"): valem os 11 do fim, se conferirem
+        if (d.Length > 11) d = d[^11..];
+        if (d.Length != 11 || d.Distinct().Count() == 1) return null;
+        int soma = 0, desconto = 0;
+        for (var i = 0; i < 9; i++) soma += (d[i] - '0') * (9 - i);
+        var dv1 = soma % 11;
+        if (dv1 >= 10) { dv1 = 0; desconto = 2; }
+        soma = 0;
+        for (var i = 0; i < 9; i++) soma += (d[i] - '0') * (1 + i);
+        var x = soma % 11;
+        var dv2 = x >= 10 ? 0 : x - desconto;
+        if (dv2 < 0) dv2 += 11;
+        if (dv2 >= 10) dv2 = 0;
+        return dv1 == d[9] - '0' && dv2 == d[10] - '0' ? d : null;
     }
 
     /// <summary>
@@ -316,7 +374,7 @@ public static class CnhLeitor
         var m = RxCpf.Match(t);
         if (!m.Success) return null;
         var d = Regex.Replace(m.Value, @"\D", "");
-        return d.Length == 11 ? $"{d[..3]}.{d[3..6]}.{d[6..9]}-{d[9..]}" : null;
+        return CpfConferido(d);
     }
 
     // "01/01/1980, CIDADE, GO" (ou "01/01/1980 CIDADE GO", "01/01/1980 CIDADE/GO")

@@ -87,7 +87,7 @@ export default function MotoristasSecao({ comTitulo = false }: { comTitulo?: boo
           </p>
         </div>
         <div className="flex flex-wrap gap-2 shrink-0">
-          <Botao variante="secundario" icone={FileUp} onClick={() => setImportar(true)}>Importar CNH (PDF)</Botao>
+          <Botao variante="secundario" icone={FileUp} onClick={() => setImportar(true)}>Importar CNH</Botao>
           <Botao variante="secundario" icone={Plus} onClick={() => setEdicao({ m: null })}>Novo motorista</Botao>
         </div>
       </div>
@@ -142,7 +142,7 @@ export default function MotoristasSecao({ comTitulo = false }: { comTitulo?: boo
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   {m.temCnhPdf && (
-                    <BotaoIcone icone={Download} rotulo={`Baixar o PDF da CNH de ${m.nome}`}
+                    <BotaoIcone icone={Download} rotulo={`Baixar o arquivo da CNH de ${m.nome}`}
                                 onClick={() => viagensApi.baixarCnh(m.id, m.nome).catch(async e => toast.error(await erroDaApi(e, 'Não consegui baixar.')))} />
                   )}
                   <BotaoIcone icone={KeyRound} rotulo={`Trocar a senha de ${m.nome}`} onClick={() => setSenhaDe(m)} />
@@ -226,7 +226,7 @@ export function MotoristaModal({ m, base, onClose, onSalvou }: {
         </Campo>
         <Campo rotulo="Comissão (%)"><CampoNumero valor={pct} onChange={v => setPct(v ?? 0)} /></Campo>
       </div>
-      <Campo rotulo="Documentos e CNH" grupo dica="Vêm do PDF da CNH digital (Importar CNH) ou podem ser digitados.">
+      <Campo rotulo="Documentos e CNH" grupo dica="Vêm da CNH digital, em PDF ou imagem (Importar CNH), ou podem ser digitados.">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Campo rotulo="CPF">{texto('cpf', false)}</Campo>
           <Campo rotulo="Data de nascimento">{data('dataNascimento')}</Campo>

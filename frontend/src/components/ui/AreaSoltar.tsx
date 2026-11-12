@@ -45,6 +45,8 @@ type Props = {
   /** Do tamanho de um botão comum (mostra só `textoBotao`), para ficar num canto; continua aceitando arrastar */
   discreta?: boolean
   textoBotao?: string
+  /** Aceita também arquivo sem extensão (o servidor confere o conteúdo; ex.: foto salva do WhatsApp sem ".jpg") */
+  aceitaSemExtensao?: boolean
   /** Texto dos tipos aceitos para o leitor de tela e a linha de baixo (padrão: montado de `aceita`) */
   descricaoTipos?: string
   className?: string
@@ -61,6 +63,7 @@ const temArquivos = (e: { dataTransfer: DataTransfer | null }) =>
 export default function AreaSoltar({
   aceita, onArquivos, titulo, dica, icone: Icone = FileUp, multiplos = true, carregando = false,
   textoCarregando, desabilitado = false, compacta = false, discreta = false, textoBotao = 'Escolher arquivos', descricaoTipos, className = '',
+  aceitaSemExtensao = false,
 }: Props) {
   const id = useId()
   const entrada = useRef<HTMLInputElement>(null)
@@ -87,7 +90,7 @@ export default function AreaSoltar({
     const todos = Array.from(lista ?? [])
     if (!todos.length) return
     const ext = aceita.map(a => a.toLowerCase())
-    const ok = todos.filter(f => ext.some(e => f.name.toLowerCase().endsWith(e)))
+    const ok = todos.filter(f => ext.some(e => f.name.toLowerCase().endsWith(e)) || (aceitaSemExtensao && !/\.[^./\\]+$/.test(f.name)))
     const fora = todos.filter(f => !ok.includes(f)).map(f => f.name)
     const usados = multiplos ? ok : ok.slice(0, 1)
     if (!multiplos && ok.length > 1) fora.push(...ok.slice(1).map(f => f.name))

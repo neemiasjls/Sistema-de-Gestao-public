@@ -1402,6 +1402,10 @@ static class Ddl
         """
         ALTER TABLE "MotoristasCnhPdf" ENABLE ROW LEVEL SECURITY;
         """,
+        // Arquivo da CNH também em JPG/PNG (VIA-20, 12/11/2026): tipo para baixar com o formato certo
+        """
+        ALTER TABLE "MotoristasCnhPdf" ADD COLUMN IF NOT EXISTS "Tipo" text;
+        """,
         // Placas (cavalos) que rodaram no mes, para dividir as despesas (VIA-19)
         """
         CREATE TABLE IF NOT EXISTS "DespesasDivididasPlacas" (
@@ -1857,6 +1861,6 @@ static class Ddl
         ("VendasProdutoB", "RecebidoEm"), ("VendasProdutoB", "RecebidoPix"),
         ("Usuarios", "Permissoes"), ("MotoristasFrota", "Email"), ("FretePerfilAjustes", "HouveQueda"),
         ("Usuarios", "SenhaProvisoriaHash"), ("Usuarios", "SenhaProvisoriaExpiraEm"), ("Usuarios", "SenhaProvisoriaEm"),
-        ("Usuarios", "SenhaAlteradaEm"), ("MotoristasFrota", "EmailConfirmadoEm"),
+        ("Usuarios", "SenhaAlteradaEm"), ("MotoristasFrota", "EmailConfirmadoEm"), ("MotoristasCnhPdf", "Tipo"),
     ];
 }

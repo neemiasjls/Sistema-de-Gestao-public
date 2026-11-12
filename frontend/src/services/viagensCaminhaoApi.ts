@@ -134,10 +134,14 @@ export type MotoristaEntrada = DadosCnh & {
   nome: string; apelidos: string | null; login: string; porcentagemComissao: number; ativo: boolean; usuarioId?: number | null
   email?: string | null
 }
-/** Leitura do PDF da CNH: o que foi lido, quem é no cadastro e o que muda (antes e depois) */
+/** Leitura da CNH (PDF, JPG ou PNG): o que foi lido, quem é no cadastro e o que muda (antes e depois) */
 export type LeituraCnh = {
   dados: DadosCnh & { nome: string | null }
   naoAchou: string[]
+  /** O que foi reconhecido, para mostrar ("CNH digital em imagem, modelo novo...") */
+  tipo: string
+  /** Falso = imagem sem CNH digital (foto da CNH de papel): nada lido, só dá para guardar o arquivo */
+  reconhecida: boolean
   motorista: { id: number; nome: string; ativo: boolean; temCnhPdf: boolean } | null
   achadoPor: 'cpf' | 'nome' | null
   diferencas: { campo: string; rotulo: string; atual: string | null; novo: string | null }[]
