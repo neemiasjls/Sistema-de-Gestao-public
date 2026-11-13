@@ -6,7 +6,7 @@ import Botao, { BotaoIcone } from '../components/ui/Botao'
 import AreaSoltar from '../components/ui/AreaSoltar'
 import { Link } from 'react-router-dom'
 import { Abas, PainelAba, useAbas } from '../components/ui/Abas'
-import { Fragment, useCallback, useEffect, useState, useRef } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import ProdutoECampo from '../components/ProdutoECampo'
 import ProdutosCBrzCampo, { produtosCSemResposta, faltaProdutosC, type ProdutosCBrz } from '../components/ProdutosCBrzCampo'
 import ConflitosTipoVolume from '../components/ConflitosTipoVolume'
@@ -267,6 +267,16 @@ export default function FreteCalculoPage() {
 
   useEffect(() => { carregarSalvos() }, [carregarSalvos])
 
+  // Carga aberta sem nada mudado: "Salvar alterações" fica apagado (Admin, 13/11/2026).
+  // Retrato do que o salvar grava; ao abrir ou salvar, o retrato daquele momento vira o "salvo".
+  const retrato = useMemo(() => JSON.stringify([placa.trim().toUpperCase(), motorista, valorCarga, valorPedagio,
+    itens, resultado, planilhasGeradas.map(p => `${p.nome}:${p.conteudo.length}`)]),
+    [placa, motorista, valorCarga, valorPedagio, itens, resultado, planilhasGeradas])
+  const [retratoSalvo, setRetratoSalvo] = useState<string | null>(null)
+  const [marcarSalvo, setMarcarSalvo] = useState(0)
+  useEffect(() => { if (marcarSalvo) setRetratoSalvo(retrato) }, [marcarSalvo]) // eslint-disable-line react-hooks/exhaustive-deps
+  const temAlteracao = cargaAbertaId == null || retrato !== retratoSalvo
+
   // Carga aberta: grava por cima (editar). comoNova = salvar outra carga com estes dados.
   const salvarCalculo = async (comoNova = false) => {
     if (!resultado) return
@@ -308,6 +318,7 @@ export default function FreteCalculoPage() {
       toast.success(editar
         ? 'Carga atualizada.'
         : data.planilhas > 0 ? `Carga salva com ${data.planilhas} planilha(s)!` : 'Carga salva!')
+      setMarcarSalvo(n => n + 1)
       await carregarSalvos()
     } catch { toast.error('Erro ao salvar cálculo.') }
     finally { setSalvandoCalc(false) }
@@ -348,6 +359,7 @@ export default function FreteCalculoPage() {
       setAnalise(null)
       setXmlFiles([])
       xmlRef.current = []
+      setMarcarSalvo(n => n + 1)
 
       setAba('calculo')
       // Quem rola é o <main> (a janela não rola): sem isto, abrir uma carga do fim da lista caía no meio do cálculo
@@ -1274,6 +1286,7 @@ export default function FreteCalculoPage() {
         editandoId={editandoId} editRota={editRota} setEditRota={setEditRota} onEditar={iniciarEdicao}
         onSalvarEdicao={salvarEdicao} onCancelarEdicao={cancelarEdicao} onRemover={removerRota} />}
 
+
       {aba === 'cargas' && <CargasSalvas salvos={salvos} cargaAbertaId={cargaAbertaId}
         busca={buscaCarga} onBusca={setBuscaCarga} mes={mesCarga} onMes={setMesCarga}
         onAbrir={abrirSalvo} onExcluir={excluirSalvo} />}
@@ -1552,8 +1565,9 @@ export default function FreteCalculoPage() {
 
           {/* Ações: salvar cálculo + copiar resumo */}
           <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
-            <Botao variante="primario" icone={Save} onClick={() => salvarCalculo()} carregando={salvandoCalc} textoCarregando="Salvando...">
-              {cargaAbertaId ? 'Salvar alterações na carga' : 'Salvar cálculo'}
+            <Botao variante="primario" icone={Save} onClick={() => salvarCalculo()} carregando={salvandoCalc} textoCarregando="Salvando..."
+              disabled={!temAlteracao} title={temAlteracao ? undefined : 'Nada mudou desde que a carga foi salva.'}>
+              {!cargaAbertaId ? 'Salvar cálculo' : temAlteracao ? 'Salvar alterações na carga' : 'Carga salva, sem alterações'}
             </Botao>
             {cargaAbertaId && (
               <Botao variante="secundario" icone={Save} onClick={() => salvarCalculo(true)} disabled={salvandoCalc}>
