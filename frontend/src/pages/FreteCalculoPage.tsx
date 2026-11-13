@@ -1641,7 +1641,7 @@ export default function FreteCalculoPage() {
                       </dl>
                       <Botao variante="secundario" tamanho="sm" icone={copiadoIdx === i ? Check : Copy}
                              aria-label={`Copiar o pedágio do CT-e ${i + 1}`} onClick={() => copiarPedagio(it.valorPedagio, i)}>
-                        {copiadoIdx === i ? 'Último copiado' : copiados.has(i) ? 'Copiado' : 'Copiar'}
+                        {copiados.has(i) ? 'Copiado' : 'Copiar'}
                       </Botao>
                     </div>
                   </li>
@@ -1692,7 +1692,6 @@ export default function FreteCalculoPage() {
                       </td>
                       <td className="pl-3 pr-2 py-1.5 text-right">
                         <div className="flex items-center justify-end gap-1">
-                          {copiadoIdx === i && <span className="text-xs font-semibold text-emerald-800 whitespace-nowrap">último</span>}
                           <span className="font-semibold text-tinta-800 tabular-nums">{formatBRL(it.valorPedagio)}</span>
                           <button
                             type="button"
