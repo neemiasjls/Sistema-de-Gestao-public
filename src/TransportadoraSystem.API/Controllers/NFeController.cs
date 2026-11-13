@@ -99,6 +99,33 @@ public class NFeController(NFeImportService nfeService, AppDbContext db,
         }
     }
 
+    // Próximo número de romaneio por cliente (último + 1). Calculou antes e não salvou: o último romaneio
+    // do cliente, do mesmo dia, ficou solto (sem carga); aí reaproveita esse número (gerar substitui o de
+    // mesmo nome) em vez de pular um. Carga salva é editada aberta e mantém os números dela.
+    private async Task<Dictionary<string, int>> SugerirNumerosAsync(Dictionary<string, GrupoCliente> grupos)
+    {
+        var porApelido = new Dictionary<string, DateTime?>();
+        foreach (var (destNorm, grupo) in grupos)
+        {
+            var apelido = NFeImportService.Clientes.TryGetValue(destNorm, out var c) ? c.Apelido : destNorm;
+            if (!porApelido.ContainsKey(apelido)) porApelido[apelido] = grupo.DataEmissao;
+        }
+        var apelidos = porApelido.Keys.ToList();
+        var contadores = await db.RomaneioContadores.Where(rc => apelidos.Contains(rc.Apelido)).ToListAsync();
+        var sugeridos = new Dictionary<string, int>();
+        foreach (var (apelido, data) in porApelido)
+        {
+            var ultimo = contadores.FirstOrDefault(c => c.Apelido == apelido)?.Ultimo ?? 0;
+            sugeridos[apelido] = ultimo + 1;
+            if (ultimo <= 0 || data is not { } d) continue;
+            var nome = $"{ultimo}--{apelido}-{d:dd-MM-yyyy}.xlsx";
+            if (await db.PlanilhasCarga.AnyAsync(p => p.Nome == nome && p.CalculoId == null)
+                && !await db.PlanilhasCarga.AnyAsync(p => p.Nome == nome && p.CalculoId != null))
+                sugeridos[apelido] = ultimo;
+        }
+        return sugeridos;
+    }
+
     [HttpPost("gerar-planilhas")]
     public async Task<IActionResult> GerarPlanilhas(
         IFormFileCollection arquivos,
@@ -132,6 +159,16 @@ public class NFeController(NFeImportService nfeService, AppDbContext db,
                 trocas = JsonSerializer.Deserialize<List<CorrecaoTipo>>(correcoes, Json);
 
             var escritas = await tiposVolume.EscritasAsync();
+
+            // Romaneio nunca sai sem número: o que a tela não mandou (a análise falhou ou a página recarregou)
+            // o servidor completa com o mesmo número que sugeriria
+            nums ??= new Dictionary<string, int>();
+            var lidas = new List<NFeData>();
+            foreach (var xml in xmls)
+                try { lidas.Add(NFeImportService.ParseXml(xml, escritas)); } catch { /* o gerar avisa */ }
+            foreach (var (apelido, n) in await SugerirNumerosAsync(NFeImportService.AgruparPorCliente(lidas)))
+                if (!nums.TryGetValue(apelido, out var dado) || dado <= 0) nums[apelido] = n;
+
             // Preço da produtoD da CD: o mesmo do boleto (aba Sicoob → Emissão de boletos, BOL-12)
             decimal precoProdutoD;
             try { precoProdutoD = await db.ConfigEmissaoBoleto.AsNoTracking().Where(c => c.Cliente == "CD").Select(c => c.PrecoCaixaProdutoD).FirstOrDefaultAsync(); }
@@ -249,12 +286,7 @@ public class NFeController(NFeImportService nfeService, AppDbContext db,
                 .Select(k => NFeImportService.Clientes.TryGetValue(k, out var c3) ? c3.Apelido : k)
                 .Distinct()
                 .ToList();
-            var contadores = await db.RomaneioContadores
-                .Where(rc => apelidosPlanilha.Contains(rc.Apelido))
-                .ToListAsync();
-            var numerosSugeridos = apelidosPlanilha.ToDictionary(
-                a => a,
-                a => (contadores.FirstOrDefault(c => c.Apelido == a)?.Ultimo ?? 0) + 1);
+            var numerosSugeridos = await SugerirNumerosAsync(grupos);
 
             return Ok(new
             {

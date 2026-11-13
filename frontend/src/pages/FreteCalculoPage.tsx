@@ -620,7 +620,10 @@ export default function FreteCalculoPage() {
         if (an.data.clientesEncontrados.length > 0)
           toast(`${an.data.clientesEncontrados.length} romaneio(s) podem ser gerados desta carga.`,
             { duration: 5000 })
-      } catch { /* sem romaneio pra esta carga, segue a vida */ }
+      } catch {
+        // Sem a análise a tela não tem os números: o servidor completa ao gerar, mas avisa
+        setAvisos(v => [...v, 'Não consegui conferir os romaneios destas notas agora. Se faltar número ou romaneio, clique de novo em "Calcular frete e pedágio e gerar romaneios".'])
+      }
 
     } catch { toast.error('Erro ao importar XMLs.') }
     finally { setImportandoXml(false) }
