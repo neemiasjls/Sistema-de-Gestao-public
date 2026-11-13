@@ -160,7 +160,9 @@ export default function FreteCalculoPage() {
   const envioPdfs    = useRef<Promise<void> | null>(null)
   const [calculando, setCalculando]     = useState(false)
   const [importandoXml, setImportandoXml] = useState(false)
+  // Último pedágio copiado (fica marcado até copiar outro) e os que já foram copiados neste cálculo
   const [copiadoIdx, setCopiadoIdx]     = useState<number | null>(null)
+  const [copiados, setCopiados]         = useState<Set<number>>(new Set())
   // Sem NF na tela, a aba NFs mostra o vazio; 'Digitar a NF à mão' abre a lista mesmo assim
   const [digitarNfs, setDigitarNfs]     = useState(false)
 
@@ -197,14 +199,17 @@ export default function FreteCalculoPage() {
   const [buscaRota, setBuscaRota]   = useState('')
   const [salvandoCalc, setSalvandoCalc] = useState(false)
 
+  const assinaturaPedagios = resultado?.itens.map(it => it.valorPedagio).join('|') ?? ''
+  useEffect(() => { setCopiadoIdx(null); setCopiados(new Set()) }, [assinaturaPedagios])
+
   // Copia o valor do pedágio de um CT-e (grupo de NFs) sem cifrão, no formato BR
   const copiarPedagio = async (valor: number, idx: number) => {
     const texto = valor.toFixed(2).replace('.', ',')
     try {
       await navigator.clipboard.writeText(texto)
       setCopiadoIdx(idx)
-      toast.success(`Pedágio copiado: ${texto}`)
-      setTimeout(() => setCopiadoIdx(c => (c === idx ? null : c)), 1500)
+      setCopiados(s => new Set(s).add(idx))
+      toast.success(`Pedágio do CT-e ${idx + 1} copiado: ${texto}`)
     } catch {
       toast.error('Não foi possível copiar.')
     }
@@ -1609,7 +1614,7 @@ export default function FreteCalculoPage() {
               {resultado.itens.map((it, i) => {
                 const nfsRes = (it.numeroNF ?? '').split(',').map(n => n.trim()).filter(Boolean)
                 return (
-                  <li key={i} className="p-4 space-y-2">
+                  <li key={i} className={`p-4 space-y-2 ${copiadoIdx === i ? 'bg-emerald-50 border-l-4 border-emerald-500' : ''}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <p className="text-xs font-semibold text-gray-500 tabular-nums">CT-e {i + 1}</p>
@@ -1636,7 +1641,7 @@ export default function FreteCalculoPage() {
                       </dl>
                       <Botao variante="secundario" tamanho="sm" icone={copiadoIdx === i ? Check : Copy}
                              aria-label={`Copiar o pedágio do CT-e ${i + 1}`} onClick={() => copiarPedagio(it.valorPedagio, i)}>
-                        {copiadoIdx === i ? 'Copiado' : 'Copiar'}
+                        {copiadoIdx === i ? 'Último copiado' : copiados.has(i) ? 'Copiado' : 'Copiar'}
                       </Botao>
                     </div>
                   </li>
@@ -1664,7 +1669,7 @@ export default function FreteCalculoPage() {
                   {resultado.itens.map((it, i) => {
                     const nfsRes = (it.numeroNF ?? '').split(',').map(n => n.trim()).filter(Boolean)
                     return (
-                    <tr key={i} className="hover:bg-gray-50 transition-colors align-top">
+                    <tr key={i} className={`transition-colors align-top ${copiadoIdx === i ? 'bg-emerald-50 shadow-[inset_4px_0_0_0_theme(colors.emerald.500)]' : 'hover:bg-gray-50'}`}>
                       <td className="pl-4 pr-2 py-2.5 text-right tabular-nums font-semibold text-gray-500">{i + 1}</td>
                       <td className="px-3 py-2.5 w-[10rem]">
                         {nfsRes.length > 0 ? chipsNf(nfsRes, undefined, false) : <span className="text-gray-500">—</span>}
@@ -1687,19 +1692,22 @@ export default function FreteCalculoPage() {
                       </td>
                       <td className="pl-3 pr-2 py-1.5 text-right">
                         <div className="flex items-center justify-end gap-1">
+                          {copiadoIdx === i && <span className="text-xs font-semibold text-emerald-800 whitespace-nowrap">último</span>}
                           <span className="font-semibold text-tinta-800 tabular-nums">{formatBRL(it.valorPedagio)}</span>
                           <button
                             type="button"
                             onClick={() => copiarPedagio(it.valorPedagio, i)}
                             aria-label={`Copiar o pedágio do CT-e ${i + 1}`}
-                            title="Copiar o pedágio deste CT-e"
+                            title={copiadoIdx === i ? 'Último pedágio copiado' : copiados.has(i) ? 'Já copiado (clique para copiar de novo)' : 'Copiar o pedágio deste CT-e'}
                             className={`shrink-0 w-9 h-9 inline-flex items-center justify-center rounded-lg border transition-colors ${
                               copiadoIdx === i
-                                ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
-                                : 'bg-white border-gray-300 text-gray-600 hover:bg-tinta-50 hover:text-tinta-800 hover:border-tinta-300'
+                                ? 'bg-emerald-600 border-emerald-600 text-white'
+                                : copiados.has(i)
+                                  ? 'bg-gray-50 border-gray-200 text-emerald-700 hover:bg-tinta-50 hover:text-tinta-800 hover:border-tinta-300'
+                                  : 'bg-white border-gray-300 text-gray-600 hover:bg-tinta-50 hover:text-tinta-800 hover:border-tinta-300'
                             }`}
                           >
-                            {copiadoIdx === i ? <Check size={15} aria-hidden /> : <Copy size={15} aria-hidden />}
+                            {copiadoIdx === i || copiados.has(i) ? <Check size={15} aria-hidden /> : <Copy size={15} aria-hidden />}
                           </button>
                         </div>
                       </td>
