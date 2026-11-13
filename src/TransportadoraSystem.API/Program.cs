@@ -289,6 +289,17 @@ using (var scope = app.Services.CreateScope())
                 log.LogError(ex, "DDL falhou em: {Inicio}", inicio);
             }
         }
+        // PEN-39: número das transferências que já existem (só se nenhuma tem número)
+        try
+        {
+            var numeradas = await scope.ServiceProvider.GetRequiredService<StradaService>().NumerarIniciaisAsync();
+            if (numeradas > 0)
+                scope.ServiceProvider.GetRequiredService<ILogger<Program>>().LogInformation("Transferências numeradas: {N}", numeradas);
+        }
+        catch (Exception ex)
+        {
+            scope.ServiceProvider.GetRequiredService<ILogger<Program>>().LogError(ex, "Numeração das transferências da Strada falhou");
+        }
     }
     catch (Exception ex)
     {

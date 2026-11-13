@@ -15,6 +15,8 @@ namespace TransportadoraSystem.API.Controllers;
 [Route("api/strada")]
 public class StradaController(StradaService strada, SicoobService sicoob, ILogger<StradaController> logger) : ControllerBase
 {
+    private const string Xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
     public record LigarPedido(int? ViagemId, string? Placa);
     public record LigarRetornoPedido(int? RetornoId);
 
@@ -101,10 +103,41 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
     }
 
     [HttpGet("faturas")]
-    public async Task<IActionResult> Faturas([FromQuery] int? ano, [FromQuery] int? mes, CancellationToken ct)
+    public async Task<IActionResult> Faturas([FromQuery] int? ano, [FromQuery] int? mes, [FromQuery] string? agrupar, CancellationToken ct)
     {
         if (mes is < 1 or > 12) return BadRequest(new { erro = "Mês inválido." });
-        return Ok(await strada.ListarFaturasAsync(ano, mes, ct));
+        if (agrupar is not (null or "" or "vencimento" or "caiu")) return BadRequest(new { erro = "Agrupar por \"vencimento\" ou \"caiu\"." });
+        return Ok(await strada.ListarFaturasAsync(ano, mes, agrupar, ct));
+    }
+
+    /// <summary>Todas as planilhas de transferência do mês (vencimento) num .zip; as travadas vão no LEIA.txt.</summary>
+    [HttpGet("faturas/planilhas")]
+    public async Task<IActionResult> Planilhas([FromQuery] int ano, [FromQuery] int mes, CancellationToken ct)
+    {
+        if (ano < 2000 || mes is < 1 or > 12) return BadRequest(new { erro = "Escolha o mês e o ano." });
+        var (bytes, nome, _) = await strada.PlanilhasDoMesAsync(ano, mes, ct);
+        return File(bytes, "application/zip", nome);
+    }
+
+    /// <summary>Planilha "{nº}IP-TRANSFERÊNCIA (vencimento).xlsx"; 409 se houver contrato sem sócio ou sem número.</summary>
+    [HttpGet("faturas/{numero}/planilha")]
+    public async Task<IActionResult> Planilha(string numero, CancellationToken ct)
+    {
+        var p = await strada.PlanilhaAsync(numero, ct);
+        if (p is not { } r) return NotFound(new { erro = $"Fatura {numero} não encontrada." });
+        if (r.Erro != null) return Conflict(new { erro = r.Erro });
+        return File(r.Bytes!, Xlsx, r.Nome);
+    }
+
+    public record NumeroPedido(int Numero);
+
+    /// <summary>Troca o número da transferência; recusa número já usado.</summary>
+    [HttpPut("faturas/{numero}/numero")]
+    public async Task<IActionResult> MudarNumero(string numero, [FromBody] NumeroPedido pedido, CancellationToken ct)
+    {
+        var erro = await strada.MudarNumeroAsync(numero, pedido.Numero, ct);
+        if (erro == "Fatura não encontrada.") return NotFound(new { erro = $"Fatura {numero} não encontrada." });
+        return erro == null ? NoContent() : BadRequest(new { erro });
     }
 
     [HttpGet("faturas/{numero}")]

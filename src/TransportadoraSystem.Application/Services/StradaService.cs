@@ -206,9 +206,11 @@ public sealed class StradaService(AppDbContext db)
                 resultado.Add(new(nome, "igual", f.Numero, "Fatura já completada pelo detalhamento.", 0, 0, atual.Contratos.Count, [], f.Avisos));
                 continue;
             }
+            // .txt sem contratos nunca apaga os contratos que o detalhamento trouxe: compara e troca só o cabeçalho
+            var soCabecalho = atual is { Origem: "detalhamento" } && atual.Contratos.Count > 0 && f.Contratos.Count == 0;
             if (atual != null)
             {
-                var mudancas = DiferencasFatura(atual, f);
+                var mudancas = DiferencasFatura(atual, f, soCabecalho);
                 if (mudancas.Count == 0)
                 {
                     await GuardarArquivoAsync("txt", nome, bytes, f.Numero, ct);
@@ -230,8 +232,29 @@ public sealed class StradaService(AppDbContext db)
                 }
             }
 
+            if (soCabecalho)
+            {
+                // Mantém contratos, total, taxa e repasse do detalhamento; só as datas vêm do .txt.
+                atual!.DataGeracao = f.DataGeracao; atual.DataPagamento = f.DataPagamento;
+                foreach (var c in atual.Contratos) { c.DataTransferencia = f.DataPagamento; c.AtualizadoEm = agora; }
+                var avisosCab = f.Avisos.ToList();
+                if (Math.Abs(atual.Total - f.TotalCabecalho) > 0.01m)
+                    avisosCab.Add($"Total do cabeçalho {Dinheiro(f.TotalCabecalho)} diferente do detalhamento {Dinheiro(atual.Total)}: ficou o do detalhamento; suba o detalhamento novo se mudou.");
+                atual.AtualizadoEm = agora;
+                await GuardarArquivoAsync("txt", nome, bytes, f.Numero, ct);
+                await db.SaveChangesAsync(ct);
+                resultado.Add(new(nome, "substituido", f.Numero, "Cabeçalho atualizado; contratos do detalhamento mantidos.", 0, 0, atual.Contratos.Count, [], avisosCab));
+                continue;
+            }
+
             var fatura = atual ?? new StradaFatura { Numero = f.Numero, CriadoEm = agora };
-            if (atual == null) db.StradaFaturas.Add(fatura);
+            if (atual == null)
+            {
+                // Fatura nova: próximo número da transferência (substituir mantém o que tinha).
+                // Nenhuma numerada ainda: fica nula, a numeração inicial cuida.
+                fatura.NumeroTransferencia = await ProximoNumeroAsync(ct);
+                db.StradaFaturas.Add(fatura);
+            }
             fatura.DataGeracao = f.DataGeracao; fatura.DataPagamento = f.DataPagamento;
             fatura.Total = f.Total; fatura.Taxa = f.Taxa; fatura.Repasse = f.Repasse;
             if (f.Incompleta && f.Contratos.Count == 0)
@@ -282,6 +305,52 @@ public sealed class StradaService(AppDbContext db)
         return resultado;
     }
 
+    // ─────────────── Número da transferência (500, 501…), como as planilhas "500IP-TRANSFERÊNCIA" ───────────────
+
+    public const int PrimeiraTransferencia = 500;
+    public static readonly DateOnly InicioTransferencias = new(2026, 10, 1);
+
+    /// <summary>Maior número + 1; nulo quando nenhuma fatura tem número ainda.</summary>
+    private async Task<int?> ProximoNumeroAsync(CancellationToken ct)
+    {
+        var maior = await db.StradaFaturas.MaxAsync(f => f.NumeroTransferencia, ct);
+        return maior is null ? null : maior + 1;
+    }
+
+    /// <summary>
+    /// Numeração inicial: só se NENHUMA fatura tem número. Numera por vencimento (DataPagamento) e número da
+    /// fatura, a partir de 500, as com vencimento desde 01/10/2026; as anteriores ficam sem número.
+    /// Grava tudo de uma vez (repetir não muda nada). Devolve quantas numerou.
+    /// </summary>
+    public async Task<int> NumerarIniciaisAsync(CancellationToken ct = default)
+    {
+        if (await db.StradaFaturas.AnyAsync(f => f.NumeroTransferencia != null, ct)) return 0;
+        var faturas = (await db.StradaFaturas.Where(f => f.DataPagamento >= InicioTransferencias).ToListAsync(ct))
+            .OrderBy(f => f.DataPagamento)
+            .ThenBy(f => long.TryParse(f.Numero, out var n) ? n : long.MaxValue).ThenBy(f => f.Numero, StringComparer.Ordinal)
+            .ToList();
+        var numero = PrimeiraTransferencia;
+        foreach (var f in faturas) f.NumeroTransferencia = numero++;
+        if (faturas.Count > 0) await db.SaveChangesAsync(ct);
+        return faturas.Count;
+    }
+
+    /// <summary>Troca o número da transferência à mão. Nulo = ok; texto = motivo da recusa.</summary>
+    public async Task<string?> MudarNumeroAsync(string numeroFatura, int novo, CancellationToken ct = default)
+    {
+        if (novo <= 0) return "Número inválido.";
+        var fatura = await db.StradaFaturas.FirstOrDefaultAsync(f => f.Numero == numeroFatura, ct);
+        if (fatura == null) return "Fatura não encontrada.";
+        if (fatura.NumeroTransferencia == novo) return null;
+        var dona = await db.StradaFaturas.Where(f => f.NumeroTransferencia == novo && f.Id != fatura.Id)
+            .Select(f => f.Numero).FirstOrDefaultAsync(ct);
+        if (dona != null) return $"O número {novo} já é da fatura {dona}.";
+        fatura.NumeroTransferencia = novo;
+        fatura.AtualizadoEm = DateTime.UtcNow;
+        await db.SaveChangesAsync(ct);
+        return null;
+    }
+
     // ─────────────── "Exportar detalhamento" (.xlsx): completa a fatura que veio só com o cabeçalho ───────────────
 
     public async Task<ResultadoArquivo> ImportarDetalhamentoAsync(string nome, byte[] bytes, string? modo, CancellationToken ct = default)
@@ -298,14 +367,31 @@ public sealed class StradaService(AppDbContext db)
         var candidatas = await db.StradaFaturas.Include(f => f.Contratos)
             .Where(f => f.Total >= d.Total - 0.01m && f.Total <= d.Total + 0.01m).ToListAsync(ct);
         var completa = candidatas.FirstOrDefault(f => f.Contratos.Count > 0 && f.Contratos.Select(c => c.Contrato).ToHashSet().SetEquals(numeros));
+        var incompletas = candidatas.Where(f => f.Incompleta && f.Contratos.Count == 0).ToList();
+        if (completa == null && incompletas.Count == 0)
+        {
+            // Reenvio com valor mudado ou contrato a mais/a menos: o total já não bate; acha pela fatura que tem contrato em comum
+            var comuns = await db.StradaFaturas.Include(f => f.Contratos)
+                .Where(f => f.Contratos.Any(c => numeros.Contains(c.Contrato))).ToListAsync(ct);
+            if (comuns.Count > 1)
+                return new(nome, "erro", null, $"Os contratos deste arquivo estão em mais de uma fatura ({string.Join(", ", comuns.Select(f => f.Numero))}): não sei qual comparar.", 0, 0, 0, [], avisos);
+            completa = comuns.FirstOrDefault();
+        }
         if (completa != null)
         {
+            // Resumo do reenvio (UI-21): contrato que entra, que muda e que sai; total, taxa e repasse
+            var taxaNova = d.Taxa > 0 ? d.Taxa : taxaCerta;
+            var repasseNovo = d.Repasse > 0 ? d.Repasse : d.Total - taxaNova;
             var mudancas = new List<Mudanca>();
             var valores = completa.Contratos.ToDictionary(c => c.Contrato, c => c.Valor);
-            foreach (var c in d.Contratos.Where(c => valores[c.Numero] != c.Valor))
-                mudancas.Add(new($"Contrato {c.Numero}", $"{Dinheiro(valores[c.Numero])} → {Dinheiro(c.Valor)}"));
-            if (d.Taxa > 0 && completa.Taxa != d.Taxa) mudancas.Add(new("Taxa", $"{Dinheiro(completa.Taxa)} → {Dinheiro(d.Taxa)}"));
-            if (d.Repasse > 0 && completa.Repasse != d.Repasse) mudancas.Add(new("Repasse", $"{Dinheiro(completa.Repasse)} → {Dinheiro(d.Repasse)}"));
+            foreach (var c in d.Contratos)
+                if (!valores.TryGetValue(c.Numero, out var antes)) mudancas.Add(new($"Contrato {c.Numero}", $"entra com {Dinheiro(c.Valor)}"));
+                else if (antes != c.Valor) mudancas.Add(new($"Contrato {c.Numero}", $"{Dinheiro(antes)} → {Dinheiro(c.Valor)}"));
+            foreach (var k in valores.Keys.Where(k => !numeros.Contains(k)))
+                mudancas.Add(new($"Contrato {k}", "sai da fatura"));
+            if (completa.Total != d.Total) mudancas.Add(new("Total", $"{Dinheiro(completa.Total)} → {Dinheiro(d.Total)}"));
+            if (completa.Taxa != taxaNova) mudancas.Add(new("Taxa", $"{Dinheiro(completa.Taxa)} → {Dinheiro(taxaNova)}"));
+            if (completa.Repasse != repasseNovo) mudancas.Add(new("Repasse", $"{Dinheiro(completa.Repasse)} → {Dinheiro(repasseNovo)}"));
             if (mudancas.Count == 0)
             {
                 await GuardarArquivoAsync("xlsx", nome, bytes, completa.Numero, ct);
@@ -318,16 +404,25 @@ public sealed class StradaService(AppDbContext db)
                     $"A fatura {completa.Numero} já está no sistema e o detalhamento traz mudanças. Manter como está ou substituir?",
                     0, mudancas.Count, 0, mudancas, avisos);
             var agoraS = DateTime.UtcNow;
-            foreach (var c in completa.Contratos) { c.Valor = d.Contratos.First(x => x.Numero == c.Contrato).Valor; c.AtualizadoEm = agoraS; }
-            if (d.Taxa > 0) completa.Taxa = d.Taxa;
-            if (d.Repasse > 0) completa.Repasse = d.Repasse;
+            foreach (var sobra in completa.Contratos.Where(c => !numeros.Contains(c.Contrato)).ToList())
+            {
+                completa.Contratos.Remove(sobra);
+                db.StradaContratos.Remove(sobra);
+            }
+            foreach (var c in d.Contratos)
+            {
+                var contrato = completa.Contratos.FirstOrDefault(x => x.Contrato == c.Numero)
+                    ?? await NovoContratoDetalhamentoAsync(completa, c.Numero, agoraS, ct);
+                contrato.Valor = c.Valor;
+                contrato.AtualizadoEm = agoraS;
+            }
+            completa.Total = d.Total; completa.Taxa = taxaNova; completa.Repasse = repasseNovo;
             completa.AtualizadoEm = agoraS;
             await GuardarArquivoAsync("xlsx", nome, bytes, completa.Numero, ct);
             await db.SaveChangesAsync(ct);
             await ReconciliarAsync(ct);
             return new(nome, "substituido", completa.Numero, null, 0, mudancas.Count, 0, [], avisos);
         }
-        var incompletas = candidatas.Where(f => f.Incompleta && f.Contratos.Count == 0).ToList();
         if (incompletas.Count == 0)
             return new(nome, "erro", null, $"Não achei fatura só com o cabeçalho de {Dinheiro(d.Total)}. Suba antes o .txt de repasse dela.", 0, 0, 0, [], avisos);
         if (incompletas.Count > 1)
@@ -337,16 +432,8 @@ public sealed class StradaService(AppDbContext db)
         var agora = DateTime.UtcNow;
         foreach (var c in d.Contratos)
         {
-            var contrato = new StradaContrato { Contrato = c.Numero, Origem = "fatura", CriadoEm = agora };
-            fatura.Contratos.Add(contrato);
-            var soPdf = await db.StradaContratos.FirstOrDefaultAsync(x => x.FaturaId == null && x.Origem == "pdf" && x.Contrato == c.Numero, ct);
-            if (soPdf != null)
-            {
-                CopiarPdf(soPdf, contrato);
-                db.StradaContratos.Remove(soPdf);
-            }
+            var contrato = await NovoContratoDetalhamentoAsync(fatura, c.Numero, agora, ct);
             contrato.Valor = c.Valor;
-            contrato.DataTransferencia = fatura.DataPagamento;
             contrato.AtualizadoEm = agora;
         }
         fatura.Total = d.Total;
@@ -361,6 +448,20 @@ public sealed class StradaService(AppDbContext db)
         return new(nome, "atualizado", fatura.Numero, $"Fatura {fatura.Numero} completada com {d.Contratos.Count} contrato(s).", d.Contratos.Count, 0, 0, [], avisos);
     }
 
+    /// <summary>Contrato novo vindo do detalhamento; o PDF que subiu antes passa os dados para ele.</summary>
+    private async Task<StradaContrato> NovoContratoDetalhamentoAsync(StradaFatura fatura, string numero, DateTime agora, CancellationToken ct)
+    {
+        var contrato = new StradaContrato { Contrato = numero, Origem = "fatura", CriadoEm = agora, DataTransferencia = fatura.DataPagamento };
+        fatura.Contratos.Add(contrato);
+        var soPdf = await db.StradaContratos.FirstOrDefaultAsync(x => x.FaturaId == null && x.Origem == "pdf" && x.Contrato == numero, ct);
+        if (soPdf != null)
+        {
+            CopiarPdf(soPdf, contrato);
+            db.StradaContratos.Remove(soPdf);
+        }
+        return contrato;
+    }
+
     private static decimal? Soma(IEnumerable<StradaRepasseLeitor.Linha> linhas)
     {
         var l = linhas.ToList();
@@ -373,13 +474,15 @@ public sealed class StradaService(AppDbContext db)
         para.ValorContratoPdf = de.ValorContratoPdf; para.Seguro = de.Seguro; para.DataContrato = de.DataContrato;
     }
 
-    private static List<Mudanca> DiferencasFatura(StradaFatura e, StradaRepasseLeitor.Fatura f)
+    private static List<Mudanca> DiferencasFatura(StradaFatura e, StradaRepasseLeitor.Fatura f, bool soCabecalho = false)
     {
         var d = new List<Mudanca>();
         // Fatura só com o cabeçalho guarda o total dele (o Total lido vem 0, sem contratos)
         var total = f.Incompleta && f.Contratos.Count == 0 ? f.TotalCabecalho : f.Total;
-        if (e.Total != total) d.Add(new("Total", $"{Dinheiro(e.Total)} → {Dinheiro(total)}"));
+        if (e.Total != total)
+            d.Add(new("Total", $"{Dinheiro(e.Total)} → {Dinheiro(total)}" + (soCabecalho ? " (fica o do detalhamento)" : "")));
         if (e.DataPagamento != f.DataPagamento) d.Add(new("Data de pagamento", $"{Data(e.DataPagamento)} → {Data(f.DataPagamento)}"));
+        if (soCabecalho) return d; // .txt sem contratos: os do detalhamento ficam
         var antes = e.Contratos.ToDictionary(c => c.Contrato, c => c.Valor);
         var depois = f.Contratos.ToDictionary(c => c.Numero, c => c.Valor);
         foreach (var (k, v) in depois)
@@ -704,7 +807,11 @@ public sealed class StradaService(AppDbContext db)
 
     // ───────────────────────── Consultas ─────────────────────────
 
-    public async Task<object> ListarFaturasAsync(int? ano, int? mes, CancellationToken ct = default)
+    /// <summary>
+    /// Faturas (transferências) do mês do vencimento. agrupar "caiu" ordena pelo dia que caiu no banco (as que
+    /// ainda não caíram primeiro); o padrão ("vencimento") ordena pelo vencimento. O agrupamento por dia é da tela.
+    /// </summary>
+    public async Task<object> ListarFaturasAsync(int? ano, int? mes, string? agrupar = null, CancellationToken ct = default)
     {
         var q = db.StradaFaturas.AsNoTracking().Include(f => f.Contratos).AsQueryable();
         if (ano is int a && mes is int m)
@@ -712,10 +819,15 @@ public sealed class StradaService(AppDbContext db)
             var (de, ate) = Mes(a, m);
             q = q.Where(f => f.DataPagamento >= de && f.DataPagamento <= ate);
         }
-        var faturas = await q.OrderByDescending(f => f.DataPagamento).ThenByDescending(f => f.Numero).ToListAsync(ct);
+        var lidas = await q.ToListAsync(ct);
+        var faturas = string.Equals(agrupar, "caiu", StringComparison.OrdinalIgnoreCase)
+            ? lidas.OrderBy(f => f.DataCreditoBanco is null ? 0 : 1).ThenByDescending(f => f.DataCreditoBanco)
+                .ThenByDescending(f => f.NumeroTransferencia).ThenByDescending(f => f.Numero).ToList()
+            : lidas.OrderByDescending(f => f.DataPagamento).ThenByDescending(f => f.NumeroTransferencia)
+                .ThenByDescending(f => f.Numero).ToList();
         return faturas.Select(f => new
         {
-            f.Id, f.Numero, f.DataPagamento, f.Total, f.Taxa, f.Repasse, f.Incompleta,
+            f.Id, f.Numero, f.NumeroTransferencia, f.DataPagamento, f.Total, f.Taxa, f.Repasse, f.Incompleta,
             f.CaiuNoBanco, f.DataCreditoBanco, ConferidaSemCredito = !f.CaiuNoBanco && f.LancamentoBancoId == "",
             Avisos = Linhas(f.Avisos),
             Contratos = f.Contratos.Count,
@@ -748,10 +860,13 @@ public sealed class StradaService(AppDbContext db)
                 observacoes.Add($"A soma das taxas por sócio ({soma.ToString("N2", PtBr)}) difere 1 centavo da taxa da fatura ({f.Taxa.ToString("N2", PtBr)}).");
         }
 
+        var planilha = await DadosPlanilhaAsync(numero, ct);
+
         return new
         {
-            f.Id, f.Numero, f.DataGeracao, f.DataPagamento, f.Total, f.Taxa, f.Repasse, f.Incompleta,
+            f.Id, f.Numero, f.NumeroTransferencia, f.DataGeracao, f.DataPagamento, f.DataCreditoBanco, f.Total, f.Taxa, f.Repasse, f.Incompleta,
             Avisos = Linhas(f.Avisos), Observacoes = observacoes, PorSocio = porSocio,
+            Blocos = planilha!.Blocos, planilha.TotalTransferido, planilha.SemSocio, PlanilhaErro = planilha.Erro,
             Contratos = f.Contratos.OrderBy(c => c.Contrato).Select(c => new
             {
                 c.Id, c.Contrato, c.Valor, c.Adiantamento, c.Saldo, c.Tipo, c.Placa, c.Socio, NomeSocio = NomeSocio(c.Socio),
@@ -766,6 +881,104 @@ public sealed class StradaService(AppDbContext db)
                     : new List<object>(),
             }).ToList(),
         };
+    }
+
+    // ─────────────── Planilha da transferência (TIP Bank): a tela e o Excel leem daqui ───────────────
+
+    public static readonly string[] SociosPlanilha = [nameof(Socio.Bento), nameof(Socio.Caio), nameof(Socio.Dudu)];
+
+    public record LinhaBloco(string Contrato, string? Placa, decimal Valor);
+    public record BlocoSocio(string Socio, string Nome, IReadOnlyList<LinhaBloco> Linhas, decimal Total, decimal Taxa, decimal Saldo);
+    public record ContratoSemSocio(int Id, string Contrato, decimal Valor, string? Placa, string Tipo, string Situacao);
+    /// <summary>Erro preenchido = planilha travada (409); Dados só vem quando dá para gerar.</summary>
+    public record PlanilhaTransferencia(string Fatura, int? NumeroTransferencia, DateOnly? Vencimento,
+        IReadOnlyList<BlocoSocio> Blocos, decimal TotalTransferido, IReadOnlyList<ContratoSemSocio> SemSocio, string? Erro,
+        TipTransferenciaPlanilha.Dados? Dados);
+
+    /// <summary>
+    /// Os três blocos (BENTO, CAIO, DUDU, sempre nessa ordem) da planilha da transferência: um contrato por linha,
+    /// sócio pela placa (frota) gravado no contrato, nunca pelo parceiro da Strada. Contrato sem sócio trava a planilha.
+    /// </summary>
+    public async Task<PlanilhaTransferencia?> DadosPlanilhaAsync(string numeroFatura, CancellationToken ct = default)
+    {
+        var f = await db.StradaFaturas.AsNoTracking().Include(x => x.Contratos).FirstOrDefaultAsync(x => x.Numero == numeroFatura, ct);
+        if (f == null) return null;
+        var ids = f.Contratos.Where(c => c.Placa == null && c.ViagemId != null).Select(c => c.ViagemId!.Value).ToList();
+        var placasViagem = ids.Count == 0 ? new Dictionary<int, string?>()
+            : await db.AgrotradeViagens.AsNoTracking().Where(v => ids.Contains(v.Id)).ToDictionaryAsync(v => v.Id, v => v.Placa, ct);
+        string? PlacaDe(StradaContrato c) => c.Placa ?? (c.ViagemId is int id && placasViagem.TryGetValue(id, out var p) ? p : null);
+
+        var blocos = SociosPlanilha.Select(s =>
+        {
+            var linhas = f.Contratos.Where(c => c.Socio == s).OrderBy(c => c.Contrato, StringComparer.Ordinal)
+                .Select(c => new LinhaBloco(c.Contrato, PlacaDe(c), c.Valor)).ToList();
+            var total = linhas.Sum(l => l.Valor);
+            var taxa = linhas.Count == 0 ? 0 : StradaRepasseLeitor.CalcularTaxa(total);
+            return new BlocoSocio(s, NomeSocio(s), linhas, total, taxa, total - taxa);
+        }).ToList();
+        var semSocio = f.Contratos.Where(c => !SociosPlanilha.Contains(c.Socio)).OrderBy(c => c.Contrato, StringComparer.Ordinal)
+            .Select(c => new ContratoSemSocio(c.Id, c.Contrato, c.Valor, PlacaDe(c), c.Tipo, c.Situacao)).ToList();
+
+        string? erro = null;
+        if (semSocio.Count > 0)
+            erro = (semSocio.Count == 1 ? $"Contrato {semSocio[0].Contrato}" : $"Contratos {string.Join(", ", semSocio.Select(c => c.Contrato))}")
+                + " sem sócio: ligue à viagem ou suba o PDF do contrato.";
+        else if (f.Contratos.Count == 0)
+            erro = $"Fatura {f.Numero} sem contratos: suba o \"Exportar detalhamento\" desta fatura.";
+        else if (f.NumeroTransferencia is null)
+            erro = $"Fatura {f.Numero} sem número de transferência: dê o número antes de baixar a planilha.";
+        else if (f.DataPagamento is null)
+            erro = $"Fatura {f.Numero} sem data de pagamento (vencimento).";
+
+        TipTransferenciaPlanilha.Dados? dados = null;
+        if (erro == null)
+        {
+            List<TipTransferenciaPlanilha.Linha> L(int i) => blocos[i].Linhas.Select(l => new TipTransferenciaPlanilha.Linha(l.Contrato, l.Placa, l.Valor)).ToList();
+            dados = new(f.NumeroTransferencia!.Value, f.DataPagamento!.Value, L(0), L(1), L(2));
+        }
+        return new PlanilhaTransferencia(f.Numero, f.NumeroTransferencia, f.DataPagamento, blocos, blocos.Sum(b => b.Saldo), semSocio, erro, dados);
+    }
+
+    /// <summary>Planilha de uma transferência: (bytes, nome) ou o motivo da trava; nulo se a fatura não existe.</summary>
+    public async Task<(byte[]? Bytes, string? Nome, string? Erro)?> PlanilhaAsync(string numeroFatura, CancellationToken ct = default)
+    {
+        var p = await DadosPlanilhaAsync(numeroFatura, ct);
+        if (p == null) return null;
+        if (p.Dados == null) return (null, null, p.Erro);
+        var (bytes, nome) = TipTransferenciaPlanilha.Gerar(p.Dados);
+        return (bytes, nome, null);
+    }
+
+    /// <summary>.zip com uma planilha por transferência com vencimento no mês; as travadas vão listadas no LEIA.txt.</summary>
+    public async Task<(byte[] Bytes, string Nome, int Planilhas)> PlanilhasDoMesAsync(int ano, int mes, CancellationToken ct = default)
+    {
+        var (de, ate) = Mes(ano, mes);
+        var numeros = await db.StradaFaturas.AsNoTracking().Where(f => f.DataPagamento >= de && f.DataPagamento <= ate)
+            .OrderBy(f => f.NumeroTransferencia).ThenBy(f => f.DataPagamento).ThenBy(f => f.Numero)
+            .Select(f => f.Numero).ToListAsync(ct);
+        var travadas = new List<string>();
+        var feitas = 0;
+        using var ms = new MemoryStream();
+        using (var zip = new System.IO.Compression.ZipArchive(ms, System.IO.Compression.ZipArchiveMode.Create, true))
+        {
+            foreach (var n in numeros)
+            {
+                var p = await DadosPlanilhaAsync(n, ct);
+                if (p?.Dados == null) { travadas.Add($"Fatura {n}: {p?.Erro}"); continue; }
+                var (bytes, nome) = TipTransferenciaPlanilha.Gerar(p.Dados);
+                using (var s = zip.CreateEntry(nome).Open()) s.Write(bytes);
+                feitas++;
+            }
+            if (travadas.Count > 0 || feitas == 0)
+            {
+                var texto = feitas == 0 && travadas.Count == 0
+                    ? $"Nenhuma transferência com vencimento em {mes:00}/{ano}."
+                    : "Planilhas que não saíram (resolva na tela Agrotrade / TIP Bank e baixe de novo):\r\n" + string.Join("\r\n", travadas);
+                using var s = zip.CreateEntry("LEIA.txt").Open();
+                s.Write(System.Text.Encoding.UTF8.GetBytes(texto));
+            }
+        }
+        return (ms.ToArray(), $"TIP-TRANSFERENCIAS ({mes:00}-{ano}).zip", feitas);
     }
 
     /// <summary>Retornos com contrato (candidatos a reembolso) e os que já têm reembolso ligado.</summary>

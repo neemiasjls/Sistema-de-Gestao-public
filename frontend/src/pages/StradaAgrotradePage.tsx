@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { AlertTriangle, Landmark, ChevronLeft, ChevronRight, FileText, HandCoins, Inbox, LayoutDashboard, Link2, ListChecks, Search, Truck, Unlink } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, ChevronRight, HandCoins, Inbox, LayoutDashboard, Link2, ListChecks, Search, Truck, Unlink } from 'lucide-react'
 import CabecalhoTela from '../components/ui/CabecalhoTela'
 import { Abas, PainelAba, useAbas } from '../components/ui/Abas'
 import AreaSoltar from '../components/ui/AreaSoltar'
+import AbaTransferencias from '../components/strada/AbaTransferencias'
+import ModalManterSubstituir from '../components/strada/ModalManterSubstituir'
+import DetalheTransferencia from '../components/strada/DetalheTransferencia'
 import Aviso from '../components/ui/Aviso'
 import Botao from '../components/ui/Botao'
 import { Carregando, ErroCarga, Vazio } from '../components/ui/Estados'
@@ -12,8 +15,8 @@ import { Modal } from '../components/ModalBase'
 import { formatBRL } from '../services/api'
 import { erroCobranca as erroApi } from '../services/cobrancasAbastecimentoApi'
 import {
-  stradaApi, type ContratoFatura, type FaturaDetalhe, type FaturaResumo, type Modo, type Painel,
-  type ResultadoArquivo, type ViagemBase, type ViagemResumo, type ConferenciaBanco, type Descargas, type SituacaoDescarga,
+  stradaApi, type ContratoFatura, type FaturaDetalhe, type Modo, type Painel,
+  type ResultadoArquivo, type ViagemBase, type ViagemResumo, type Descargas, type SituacaoDescarga,
 } from '../services/stradaApi'
 import { dataBr } from '../utils/formato'
 
@@ -24,7 +27,7 @@ type Aba = 'painel' | 'descargas' | 'faturas' | 'base'
 const ABAS = [
   ['painel', 'Painel', LayoutDashboard],
   ['descargas', 'Descargas', HandCoins],
-  ['faturas', 'Faturas', ListChecks],
+  ['faturas', 'Transferências', ListChecks],
   ['base', 'Base de viagens', Truck],
 ] as const
 
@@ -82,7 +85,7 @@ export default function StradaAgrotradePage() {
       <PainelAba id={id} valor={aba}>
         {aba === 'painel' && <AbaPainel ano={periodo.ano} mes={periodo.mes} versao={versao} abrir={setFaturaAberta} />}
         {aba === 'descargas' && <AbaDescargas ano={periodo.ano} mes={periodo.mes} versao={versao} mudou={recarregar} />}
-        {aba === 'faturas' && <AbaFaturas ano={periodo.ano} mes={periodo.mes} versao={versao} mudou={recarregar} abrir={setFaturaAberta} />}
+        {aba === 'faturas' && <AbaTransferencias ano={periodo.ano} mes={periodo.mes} versao={versao} mudou={recarregar} abrir={setFaturaAberta} />}
         {aba === 'base' && <AbaBase ano={periodo.ano} mes={periodo.mes} versao={versao} mudou={recarregar} />}
       </PainelAba>
       {faturaAberta && <DetalheFatura numero={faturaAberta} onClose={() => setFaturaAberta(null)} mudou={recarregar} />}
@@ -396,178 +399,6 @@ function LinhaRetorno({ l, gravando, ligar }: {
   )
 }
 
-// ───────────────────────── Faturas ─────────────────────────
-
-function AbaFaturas({ ano, mes, versao, mudou, abrir }: { ano: number; mes: number; versao: number; mudou: () => void; abrir: (n: string) => void }) {
-  const [faturas, setFaturas] = useState<FaturaResumo[] | null>(null)
-  const [carregando, setCarregando] = useState(true)
-  const [erro, setErro] = useState<string | null>(null)
-
-  const carregar = useCallback(async () => {
-    setCarregando(true)
-    try {
-      const { data: f } = await stradaApi.faturas(ano, mes)
-      setFaturas(f); setErro(null)
-    } catch (e) { setErro(await erroApi(e, 'Não consegui carregar as faturas.')) }
-    finally { setCarregando(false) }
-  }, [ano, mes])
-  useEffect(() => { carregar() }, [carregar, versao])
-
-  const [conferindo, setConferindo] = useState(false)
-  const [banco, setBanco] = useState<ConferenciaBanco[] | null>(null)
-  const conferirBanco = async () => {
-    setConferindo(true)
-    try {
-      const { data: r } = await stradaApi.conferirBanco()
-      setBanco(r)
-      const caiu = r.filter(x => x.situacao === 'caiu').length
-      toast.success(r.length === 0 ? 'Nenhuma fatura dos últimos 60 dias para conferir.' : `${caiu} de ${r.length} ${r.length === 1 ? 'fatura conferida' : 'faturas conferidas'} com crédito no banco.`)
-      mudou()
-    } catch (e) { toast.error(await erroApi(e, 'Não consegui conferir com o Sicoob.')) }
-    finally { setConferindo(false) }
-  }
-
-  return (
-    <div className="space-y-5">
-      <Envio mudou={mudou} />
-      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-        <p className="flex-1 text-sm text-gray-600">O repasse de cada fatura tem de cair na conta do Sicoob (Pix da Strada) até 5 dias depois do pagamento.</p>
-        <Botao icone={Landmark} carregando={conferindo} textoCarregando="Lendo o banco..." onClick={conferirBanco}>Conferir com o banco</Botao>
-      </div>
-      {banco && banco.some(b => b.situacao !== 'caiu') && (
-        <Aviso tipo="atencao" titulo="Faturas para conferir no banco" onFechar={() => setBanco(null)}
-               itens={banco.filter(b => b.situacao !== 'caiu').map(b => `Fatura ${b.fatura}: ${b.mensagem ?? b.situacao}`)} />
-      )}
-      {carregando && !faturas ? <Carregando linhas={4} rotulo="Carregando as faturas" />
-        : erro ? <ErroCarga mensagem={erro} onTentar={carregar} />
-        : !faturas || faturas.length === 0 ? (
-          <Vazio icone={FileText} titulo="Nenhuma fatura neste mês">Suba os arquivos de repasse da Strada acima; a fatura entra no mês em que foi paga.</Vazio>
-        ) : (
-          <ul className="space-y-2" aria-label="Faturas do mês">
-            {faturas.map(f => (
-              <li key={f.id}>
-                <button type="button" onClick={() => abrir(f.numero)}
-                        className="w-full text-left bg-white border border-gray-200 rounded-xl p-4 hover:border-gray-400 transition-colors">
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-gray-900">Fatura {f.numero} <span className="font-normal text-gray-600">· paga em {data(f.dataPagamento)}</span></p>
-                      <p className="text-sm text-gray-600">
-                        {f.porSocio.length > 0 ? f.porSocio.map(s => `${s.nome} ${formatBRL(s.repasse)}`).join(' · ') : 'Sem contratos no arquivo'}
-                      </p>
-                    </div>
-                    <div className="text-sm sm:text-right tabular-nums">
-                      <p>Total {formatBRL(f.total)} · taxa {formatBRL(f.taxa)}</p>
-                      <p className="font-semibold">Repasse {formatBRL(f.repasse)}</p>
-                    </div>
-                  </div>
-                  <p className={`mt-2 text-sm ${f.conferidaSemCredito ? 'text-amber-800' : 'text-gray-600'}`}>
-                    {f.caiuNoBanco ? `Caiu no banco em ${data(f.dataCreditoBanco)}.` : f.conferidaSemCredito ? 'Não caiu no banco: confira.' : 'Ainda não conferida com o banco.'}
-                  </p>
-                  {(f.incompleta || f.pendencias > 0) && (
-                    <p className="mt-2 text-sm text-amber-800">
-                      {f.incompleta ? 'Fatura incompleta: falta o "Exportar detalhamento". ' : ''}
-                      {f.pendencias > 0 ? `${f.pendencias} ${f.pendencias === 1 ? 'contrato para conferir' : 'contratos para conferir'}.` : ''}
-                    </p>
-                  )}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-    </div>
-  )
-}
-
-// Sobe .txt e .xlsx (faturas) e .pdf (contratos) juntos; arquivo que já existe e mudou pede Manter ou Substituir (UI-21).
-function Envio({ mudou }: { mudou: () => void }) {
-  const [enviando, setEnviando] = useState(false)
-  const [resultado, setResultado] = useState<ResultadoArquivo[]>([])
-  const [pendentes, setPendentes] = useState<{ arquivos: File[]; itens: ResultadoArquivo[] } | null>(null)
-
-  const subir = async (arquivos: File[], modo?: Modo) => {
-    const txt = arquivos.filter(a => !a.name.toLowerCase().endsWith('.pdf'))
-    const pdf = arquivos.filter(a => a.name.toLowerCase().endsWith('.pdf'))
-    setEnviando(true)
-    try {
-      const r: ResultadoArquivo[] = []
-      // Faturas primeiro: o PDF completa o contrato da fatura que já subiu.
-      if (txt.length) r.push(...(await stradaApi.importarFaturas(txt, modo)).data)
-      if (pdf.length) r.push(...(await stradaApi.importarPdfs(pdf, modo)).data)
-      const confirmar = r.filter(x => x.status === 'confirmar')
-      setResultado(prev => (modo ? [...prev.filter(p => !confirmar.some(c => c.arquivo === p.arquivo) && !r.some(x => x.arquivo === p.arquivo)), ...r] : r))
-      setPendentes(confirmar.length ? { arquivos: arquivos.filter(a => confirmar.some(c => c.arquivo === a.name)), itens: confirmar } : null)
-      const entrou = r.filter(x => ['criado', 'substituido', 'atualizado'].includes(x.status)).length
-      if (entrou) toast.success(`${entrou} ${entrou === 1 ? 'arquivo entrou' : 'arquivos entraram'} no sistema.`)
-      mudou()
-    } catch (e) {
-      toast.error(await erroApi(e, 'Não consegui subir os arquivos.'))
-    } finally { setEnviando(false) }
-  }
-
-  return (
-    <section aria-label="Subir arquivos da Strada" className="space-y-3">
-      <AreaSoltar aceita={['.txt', '.xlsx', '.pdf']} onArquivos={a => subir(a)} carregando={enviando} textoCarregando="Lendo os arquivos..."
-                  titulo="Arraste os arquivos da Strada"
-                  dica='Arquivo de repasse de cada fatura (.txt), o "Exportar detalhamento" (.xlsx) da fatura que veio só com o total e o PDF "Baixar contrato" dos reembolsos. Pode subir vários de uma vez.' />
-      {resultado.length > 0 && <ResultadoEnvio itens={resultado} onFechar={() => setResultado([])} />}
-      {pendentes && (
-        <ModalManterSubstituir itens={pendentes.itens} enviando={enviando} onClose={() => setPendentes(null)}
-                               escolher={modo => subir(pendentes.arquivos, modo)} />
-      )}
-    </section>
-  )
-}
-
-const STATUS: Record<ResultadoArquivo['status'], string> = {
-  criado: 'Entrou', atualizado: 'Atualizado', substituido: 'Substituído', igual: 'Já estava, igual',
-  mantido: 'Mantido como estava', confirmar: 'Esperando sua escolha', erro: 'Não entrou',
-}
-
-function ResultadoEnvio({ itens, onFechar }: { itens: ResultadoArquivo[]; onFechar: () => void }) {
-  const erros = itens.filter(i => i.status === 'erro').length
-  return (
-    <Aviso tipo={erros ? 'atencao' : 'sucesso'} titulo={erros ? `${erros} ${erros === 1 ? 'arquivo não entrou' : 'arquivos não entraram'}` : 'Arquivos lidos'} onFechar={onFechar}>
-      <ul className="mt-1 space-y-1 text-sm">
-        {itens.map((i, n) => (
-          <li key={n}>
-            <span className="font-medium">{i.arquivo}</span>: {STATUS[i.status]}
-            {i.referencia ? ` (${i.referencia})` : ''}{i.mensagem ? `. ${i.mensagem}` : ''}
-            {i.avisos.length > 0 && <span className="block text-gray-700">{i.avisos.join(' · ')}</span>}
-          </li>
-        ))}
-      </ul>
-    </Aviso>
-  )
-}
-
-function ModalManterSubstituir({ itens, enviando, onClose, escolher }: {
-  itens: ResultadoArquivo[]; enviando: boolean; onClose: () => void; escolher: (m: Modo) => void
-}) {
-  return (
-    <Modal titulo="Arquivo que já está no sistema" onClose={onClose} largura="lg"
-           descricao="Estes arquivos já tinham subido e agora trazem mudanças. Veja o que muda e escolha."
-           rodape={
-             <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2">
-               <Botao onClick={() => escolher('manter')} carregando={enviando}>Manter como está</Botao>
-               <Botao variante="primario" onClick={() => escolher('substituir')} carregando={enviando}>Substituir</Botao>
-             </div>
-           }>
-      {itens.map((i, n) => (
-        <div key={n} className="border border-gray-200 rounded-lg p-3 space-y-1">
-          <p className="font-medium text-gray-900">{i.arquivo}{i.referencia ? ` (${i.referencia})` : ''}</p>
-          {i.mensagem && <p className="text-sm text-gray-700">{i.mensagem}</p>}
-          <details className="text-sm" open={i.mudancas.length <= 6}>
-            <summary className="cursor-pointer text-gray-700">{i.mudancas.length} {i.mudancas.length === 1 ? 'mudança' : 'mudanças'}</summary>
-            <ul className="mt-1 space-y-0.5 text-gray-800">
-              {i.mudancas.map((m, k) => <li key={k}><span className="font-medium">{m.chave}</span>: {m.descricao}</li>)}
-            </ul>
-          </details>
-        </div>
-      ))}
-    </Modal>
-  )
-}
-
 // ───────────────────────── Detalhe da fatura ─────────────────────────
 
 function DetalheFatura({ numero, onClose, mudou }: { numero: string; onClose: () => void; mudou: () => void }) {
@@ -601,8 +432,9 @@ function DetalheFatura({ numero, onClose, mudou }: { numero: string; onClose: ()
   }
 
   return (
-    <Modal titulo={`Fatura ${numero}`} onClose={onClose} largura="xl" fundoCinza
-           descricao={fatura ? `Paga em ${data(fatura.dataPagamento)} · total ${formatBRL(fatura.total)} · taxa ${formatBRL(fatura.taxa)} · repasse ${formatBRL(fatura.repasse)}` : undefined}>
+    <Modal titulo={fatura?.numeroTransferencia != null ? `Transferência ${fatura.numeroTransferencia} · fatura ${numero}` : `Fatura ${numero}`}
+           onClose={onClose} largura="2xl" fundoCinza
+           descricao={fatura ? `Vencimento ${data(fatura.dataPagamento)} · total ${formatBRL(fatura.total)} · taxa ${formatBRL(fatura.taxa)} · repasse ${formatBRL(fatura.repasse)}` : undefined}>
       {erro ? <ErroCarga mensagem={erro} onTentar={carregar} />
         : !fatura ? <Carregando linhas={3} rotulo="Abrindo a fatura" />
         : (
@@ -610,19 +442,8 @@ function DetalheFatura({ numero, onClose, mudou }: { numero: string; onClose: ()
             {(fatura.avisos.length > 0 || fatura.observacoes.length > 0) && (
               <Aviso tipo="info" itens={[...fatura.avisos, ...fatura.observacoes]} />
             )}
-            {fatura.porSocio.length > 0 && (
-              <section aria-label="Divisão por sócio" className="bg-white border border-gray-200 rounded-xl p-4">
-                <h3 className="text-sm font-semibold text-gray-900 mb-2">Divisão por sócio</h3>
-                <ul className="space-y-1 text-sm">
-                  {fatura.porSocio.map(s => (
-                    <li key={s.socio ?? 'sem'} className="flex flex-col sm:flex-row sm:justify-between gap-0.5">
-                      <span className="font-medium">{s.nome}</span>
-                      <span className="tabular-nums">{formatBRL(s.total)} − taxa {formatBRL(s.taxa)} = <strong>{formatBRL(s.repasse)}</strong></span>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
+            <DetalheTransferencia fatura={fatura} mudou={() => { carregar(); mudou() }} />
+            {fatura.contratos.length > 0 && <h3 className="text-sm font-semibold text-gray-900 pt-2">Contratos da fatura</h3>}
             <ul className="space-y-2" aria-label="Contratos da fatura">
               {fatura.contratos.map(c => (
                 <li key={c.id} className="bg-white border border-gray-200 rounded-xl p-4 space-y-2">

@@ -1,4 +1,4 @@
-import api from './api'
+import api, { downloadBlob, nomeDoArquivo } from './api'
 import { comDados, comoLista, comoObjeto } from '../utils/resposta'
 
 // Agrotrade / TIP Bank (PEN-39): base de viagens, faturas da Strada, PDFs dos contratos e painel por sócio
@@ -22,6 +22,9 @@ export interface ParteSocio { socio: string | null; nome: string; total: number;
 export interface FaturaResumo {
   id: number
   numero: string
+  /** Número da transferência no banco (nome da planilha); null enquanto não numerada. */
+  numeroTransferencia: number | null
+  /** Vencimento da fatura. */
   dataPagamento: string | null
   total: number
   taxa: number
@@ -101,11 +104,25 @@ export interface Descargas {
   }[]
 }
 
+/** Bloco de um sócio na planilha da transferência (sempre Bento, Caio e Dudu). */
+export interface BlocoSocio {
+  socio: string
+  nome: string
+  linhas: { contrato: string; placa: string | null; valor: number }[]
+  total: number
+  taxa: number
+  saldo: number
+}
+
+export interface ContratoSemSocio { id: number; contrato: string; valor: number; placa: string | null; tipo: string; situacao: string }
+
 export interface FaturaDetalhe {
   id: number
   numero: string
+  numeroTransferencia: number | null
   dataGeracao: string | null
   dataPagamento: string | null
+  dataCreditoBanco: string | null
   total: number
   taxa: number
   repasse: number
@@ -114,7 +131,14 @@ export interface FaturaDetalhe {
   observacoes: string[]
   porSocio: ParteSocio[]
   contratos: ContratoFatura[]
+  blocos: BlocoSocio[]
+  totalTransferido: number
+  semSocio: ContratoSemSocio[]
+  /** Por que a planilha não sai (contrato sem sócio, sem número); null quando sai. */
+  planilhaErro: string | null
 }
+
+export type Agrupar = 'vencimento' | 'caiu'
 
 export interface ViagemBase {
   id: number
@@ -183,11 +207,23 @@ export const stradaApi = {
   },
   importarFaturas: (arquivos: File[], modo?: Modo) => enviar('/api/strada/faturas/importar', arquivos, modo),
   importarPdfs: (arquivos: File[], modo?: Modo) => enviar('/api/strada/contratos-pdf/importar', arquivos, modo),
-  faturas: (ano: number, mes: number) =>
-    api.get('/api/strada/faturas', { params: { ano, mes } }).then(r => comDados(r, d => comoLista<FaturaResumo>(d, 'faturas'))),
+  faturas: (ano: number, mes: number, agrupar?: Agrupar) =>
+    api.get('/api/strada/faturas', { params: { ano, mes, agrupar } }).then(r => comDados(r, d => comoLista<FaturaResumo>(d, 'faturas'))),
   fatura: (numero: string) =>
     api.get(`/api/strada/faturas/${encodeURIComponent(numero)}`)
-      .then(r => comDados(r, d => comoObjeto<FaturaDetalhe>(d, ['contratos', 'porSocio', 'avisos', 'observacoes'], 'fatura'))),
+      .then(r => comDados(r, d => comoObjeto<FaturaDetalhe>(d, ['contratos', 'porSocio', 'avisos', 'observacoes', 'blocos', 'semSocio'], 'fatura'))),
+  /** Planilha da transferência (.xlsx). 409 traz { erro } dentro do Blob: ler com erroStrada. */
+  baixarPlanilha: async (numero: string) => {
+    const r = await api.get(`/api/strada/faturas/${encodeURIComponent(numero)}/planilha`, { responseType: 'blob' })
+    downloadBlob(r.data as Blob, nomeDoArquivo(r.headers['content-disposition'] as string | undefined, `Transferencia fatura ${numero}.xlsx`))
+  },
+  /** Todas as planilhas do mês (vencimento) num .zip. */
+  baixarPlanilhas: async (ano: number, mes: number) => {
+    const r = await api.get('/api/strada/faturas/planilhas', { params: { ano, mes }, responseType: 'blob' })
+    downloadBlob(r.data as Blob, nomeDoArquivo(r.headers['content-disposition'] as string | undefined, `Transferencias ${String(mes).padStart(2, '0')}-${ano}.zip`))
+  },
+  /** Troca o número da transferência; 400 { erro } se o número já é de outra. */
+  mudarNumero: (numero: string, novo: number) => api.put(`/api/strada/faturas/${encodeURIComponent(numero)}/numero`, { numero: novo }),
   viagens: (params: { ano?: number; mes?: number; busca?: string }) =>
     api.get('/api/strada/viagens', { params }).then(r => comDados(r, d => comoLista<ViagemBase>(d, 'viagens'))),
   painel: (ano: number, mes: number) =>
@@ -201,4 +237,13 @@ export const stradaApi = {
       .then(r => comDados(r, d => comoObjeto<Descargas>(d, ['socios', 'retornos', 'contratosSemRetorno'], 'descargas'))),
   /** Reembolso de descarga ligado à mão ao retorno; null solta. */
   ligarRetorno: (id: number, retornoId: number | null) => api.put(`/api/strada/contratos/${id}/retorno`, { retornoId }),
+}
+
+// Em download a resposta de erro chega como Blob; o { erro } fica dentro dele
+export const erroStrada = async (e: unknown, padrao: string): Promise<string> => {
+  const dados = (e as { response?: { data?: unknown } })?.response?.data
+  if (dados instanceof Blob) {
+    try { return JSON.parse(await dados.text()).erro ?? padrao } catch { return padrao }
+  }
+  return (dados as { erro?: string } | undefined)?.erro ?? padrao
 }

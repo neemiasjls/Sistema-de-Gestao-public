@@ -47,6 +47,8 @@ public class StradaFatura : BaseEntity
     public bool CaiuNoBanco { get; set; }
     public DateOnly? DataCreditoBanco { get; set; }
     public string? LancamentoBancoId { get; set; }
+    /// <summary>Número da transferência (planilha "500IP-TRANSFERÊNCIA"). Único; nulo = ainda sem número.</summary>
+    public int? NumeroTransferencia { get; set; }
     public List<StradaContrato> Contratos { get; set; } = [];
 }
 

@@ -1878,6 +1878,14 @@ static class Ddl
             END IF;
         END $$;
         """,
+        // PEN-39 (TIP Bank): número da transferência (500, 501…). A numeração das que já existem
+        // é feita depois do DDL por StradaService.NumerarIniciaisAsync (só se nenhuma tem número).
+        """
+        ALTER TABLE "StradaFaturas" ADD COLUMN IF NOT EXISTS "NumeroTransferencia" integer;
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS "UX_StradaFaturas_NumeroTransferencia" ON "StradaFaturas" ("NumeroTransferencia") WHERE "NumeroTransferencia" IS NOT NULL;
+        """,
     ];
 
     /// <summary>
@@ -1912,5 +1920,6 @@ static class Ddl
         ("Usuarios", "Permissoes"), ("MotoristasFrota", "Email"), ("FretePerfilAjustes", "HouveQueda"),
         ("Usuarios", "SenhaProvisoriaHash"), ("Usuarios", "SenhaProvisoriaExpiraEm"), ("Usuarios", "SenhaProvisoriaEm"),
         ("Usuarios", "SenhaAlteradaEm"), ("MotoristasFrota", "EmailConfirmadoEm"), ("MotoristasCnhPdf", "Tipo"),
+        ("StradaFaturas", "NumeroTransferencia"),
     ];
 }

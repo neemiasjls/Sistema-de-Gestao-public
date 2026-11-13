@@ -14,7 +14,7 @@ namespace TransportadoraSystem.Application.Services;
 ///      paga, transfere ou devolve Pix.
 /// </summary>
 public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob, PostosPagosExtratoService postos,
-    BoletoMontagemService montagem, ProdutosCReceberService produtosC, ViagensCaminhaoService viagens,
+    BoletoMontagemService montagem, ProdutosCReceberService produtosC, ViagensCaminhaoService viagens, StradaService strada,
     ILogger<ConferenciaAutomaticaService> log)
 {
     public const int DiasExtrato = 10;
@@ -35,8 +35,10 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
     public record PartePostos(List<PostoMarcado> Marcados, int Duvidas, string? Erro);
     public record PixAguardando(string Id, DateOnly Data, decimal Valor, string Pagador, bool Duvida, List<string> Boletos);
     public record PartePix(List<PixAguardando> Aguardando, string? Erro);
+    public record StradaFatura(string Fatura, DateOnly? DataPagamento, decimal Repasse, DateOnly? DataCredito, string? Mensagem);
+    public record ParteStrada(List<StradaFatura> Caiu, List<StradaFatura> NaoCaiu, string? Erro);
     public record Resumo(DateTime Em, DateOnly Inicio, DateOnly Fim, ParteReceber Receber, PartePostos Postos, PartePix Pix,
-        ProdutosCReceberService.ResultadoPix? ProdutosC = null)
+        ProdutosCReceberService.ResultadoPix? ProdutosC = null, ParteStrada? Strada = null)
     {
         // Para o log: só contagens, nada de conta, CNPJ ou nome
         public string Texto =>
@@ -44,7 +46,8 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
             $"{(Receber.ParouNoLimite ? ", parou no limite do Sicoob" : "")}{(Receber.Erro != null ? ", erro" : "")}), " +
             $"não marcados {Receber.NaoMarcados.Count}; postos marcados {Postos.Marcados.Count}, dúvidas {Postos.Duvidas}" +
             $"{(Postos.Erro != null ? ", erro" : "")}; Pix aguardando confirmação {Pix.Aguardando.Count}{(Pix.Erro != null ? ", erro" : "")}" +
-            $"; produtosC da BRZ baixadas {ProdutosC?.Marcadas ?? 0}";
+            $"; produtosC da BRZ baixadas {ProdutosC?.Marcadas ?? 0}" +
+            $"; Strada caiu {Strada?.Caiu.Count ?? 0}, não caiu {Strada?.NaoCaiu.Count ?? 0}{(Strada?.Erro != null ? ", erro" : "")}";
     }
 
     private static DateOnly Hoje() => DateOnly.FromDateTime(DateTime.UtcNow.AddHours(-3));
@@ -58,7 +61,7 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
             var hoje = Hoje();
             var de = hoje.AddDays(-DiasExtrato);
             if (sicoob.FaltaConfigurar() is { } falta)
-                return new(DateTime.UtcNow, de, hoje, new(0, 0, 0, false, [], [], falta), new([], 0, falta), new([], falta));
+                return new(DateTime.UtcNow, de, hoje, new(0, 0, 0, false, [], [], falta), new([], 0, falta), new([], falta), null, new([], [], falta));
 
             var receber = await ConferirReceberAsync(hoje, ct);
 
@@ -66,10 +69,12 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
             PartePostos partePostos;
             PartePix partePix;
             ProdutosCReceberService.ResultadoPix? parteProdutosC = null;
+            ParteStrada parteStrada;
             if (extrato == null)
             {
                 partePostos = new([], 0, erroExtrato);
                 partePix = new([], erroExtrato);
+                parteStrada = new([], [], erroExtrato);
             }
             else
             {
@@ -88,8 +93,21 @@ public class ConferenciaAutomaticaService(AppDbContext db, SicoobService sicoob,
                     log.LogError(ex, "Conferência das produtosC da BRZ falhou");
                     parteProdutosC = new([], 0, "Não consegui conferir as produtosC da BRZ.");
                 }
+                // BOL-14: Pix STRADA PAY confere as faturas da Strada (marca "caiu"; não paga nem devolve nada)
+                try
+                {
+                    var cb = await strada.ConferirBancoAsync(extrato.Lancamentos, de, hoje, hoje, ct);
+                    StradaFatura Fat(StradaService.ConferenciaBanco c) => new(c.Fatura, c.DataPagamento, c.Repasse, c.DataCredito, c.Mensagem);
+                    parteStrada = new(cb.Where(c => c.Situacao == "caiu").Select(Fat).ToList(),
+                        cb.Where(c => c.Situacao == "nao caiu").Select(Fat).ToList(), null);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    log.LogError(ex, "Conferência da Strada falhou");
+                    parteStrada = new([], [], "Não consegui conferir as faturas da Strada.");
+                }
             }
-            return new(DateTime.UtcNow, de, hoje, receber, partePostos, partePix, parteProdutosC);
+            return new(DateTime.UtcNow, de, hoje, receber, partePostos, partePix, parteProdutosC, parteStrada);
         }
         finally { Trava.Release(); }
     }

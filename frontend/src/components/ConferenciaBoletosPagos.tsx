@@ -230,6 +230,14 @@ function ResumoConferencia({ r }: { r: ResumoConferenciaTudo }) {
     : pix.aguardando.length === 0 ? 'Nenhum Pix de boleto esperando confirmação.'
     : `${pix.aguardando.length === 1 ? '1 Pix de boleto aguardando' : `${pix.aguardando.length} Pix de boleto aguardando`} sua confirmação na aba Extrato: ` +
       pix.aguardando.map(p => `${formatBRL(p.valor)} em ${dataBr(p.data)} de ${p.pagador} (${p.duvida ? 'mais de uma combinação' : p.boletos.join(' + ')})`).join('; ') + '.')
-  const tudoCerto = !receber.erro && !postos.erro && !pix.erro && !receber.parouNoLimite
+  const st = r.strada
+  if (st) {
+    linhas.push(st.erro ? `Strada: ${st.erro}`
+      : st.caiu.length === 0 ? 'Nenhuma fatura da Strada nova caiu no banco.'
+      : `${st.caiu.length === 1 ? '1 fatura da Strada marcada' : `${st.caiu.length} faturas da Strada marcadas`} como caída no banco: ` +
+        st.caiu.map(f => `${f.fatura} em ${f.dataCredito ? dataBr(f.dataCredito) : 'data não informada'} (${formatBRL(f.repasse)})`).join('; ') + '.')
+    for (const f of st.naoCaiu) linhas.push(`Fatura ${f.fatura} da Strada (${formatBRL(f.repasse)}): não caiu no banco, confira.`)
+  }
+  const tudoCerto = !receber.erro && !postos.erro && !pix.erro && !st?.erro && !receber.parouNoLimite
   return <Aviso tipo={tudoCerto ? 'info' : 'atencao'} titulo="Conferência com o banco" itens={linhas} />
 }
