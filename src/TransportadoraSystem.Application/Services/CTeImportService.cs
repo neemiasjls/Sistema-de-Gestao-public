@@ -113,6 +113,7 @@ public class CTeImportService(AppDbContext db)
             [NormalizarTextoFrete("C.D. COMERCIO DE HORTIFRUTI LTDA")]   = "DISTRIBUIDORA DE HORTIGRANJEIROS VALE VERDE LTDA",
             [NormalizarTextoFrete("VERDURAO DUNAS LTDA ME")]                  = "DISTRIBUIDORA DE HORTIGRANJEIROS VALE VERDE LTDA",
             [NormalizarTextoFrete("BOX FRUIT COMERCIO LTDA")]                  = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
+            [NormalizarTextoFrete("J. M. DA LUZ ROCHA LTDA")]                  = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
         };
         SubstituicoesCidadeUF = new Dictionary<string, (string, string)>
         {

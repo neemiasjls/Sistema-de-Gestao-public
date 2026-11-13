@@ -253,6 +253,7 @@ public class NFeImportService
             [Norm("C.D. COMERCIO DE HORTIFRUTI LTDA")]     = "DISTRIBUIDORA DE HORTIGRANJEIROS VALE VERDE LTDA",
             [Norm("VERDURAO DUNAS LTDA ME")]                    = "DISTRIBUIDORA DE HORTIGRANJEIROS VALE VERDE LTDA",
             [Norm("BOX FRUIT COMERCIO LTDA")]                    = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
+            [Norm("J. M. DA LUZ ROCHA LTDA")]                    = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
         };
 
         // Substituições de cidade/UF após substituição de destinatário
