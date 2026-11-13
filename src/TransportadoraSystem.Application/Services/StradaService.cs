@@ -338,7 +338,7 @@ public sealed class StradaService(AppDbContext db)
     /// <summary>Troca o número da transferência à mão. Nulo = ok; texto = motivo da recusa.</summary>
     public async Task<string?> MudarNumeroAsync(string numeroFatura, int novo, CancellationToken ct = default)
     {
-        if (novo <= 0) return "Número inválido.";
+        if (novo is <= 0 or > 999_999) return "Número inválido (de 1 a 999999).";
         var fatura = await db.StradaFaturas.FirstOrDefaultAsync(f => f.Numero == numeroFatura, ct);
         if (fatura == null) return "Fatura não encontrada.";
         if (fatura.NumeroTransferencia == novo) return null;

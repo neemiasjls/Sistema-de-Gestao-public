@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using TransportadoraSystem.Application.Services;
 
 namespace TransportadoraSystem.API.Controllers;
@@ -30,6 +31,11 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
         {
             return Ok(await strada.ImportarBaseAsync(arquivo.FileName, await Bytes(arquivo), modo, ct));
         }
+        catch (DbUpdateException ex)
+        {
+            logger.LogError(ex, "Conflito ao gravar importação da Strada");
+            return Conflict(new { erro = "Outra pessoa gravou ao mesmo tempo. Envie de novo." });
+        }
         catch (Exception ex)
         {
             logger.LogError(ex, "Erro ao importar a base AGROTRADE {Nome}", arquivo.FileName);
@@ -59,6 +65,11 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
             foreach (var (nome, bytes) in detalhes) resultado.Add(await strada.ImportarDetalhamentoAsync(nome, bytes, modo, ct));
             return Ok(recusados.Concat(resultado));
         }
+        catch (DbUpdateException ex)
+        {
+            logger.LogError(ex, "Conflito ao gravar importação da Strada");
+            return Conflict(new { erro = "Outra pessoa gravou ao mesmo tempo. Envie de novo." });
+        }
         catch (Exception ex)
         {
             logger.LogError(ex, "Erro ao importar faturas da Strada");
@@ -77,6 +88,11 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
         try
         {
             return Ok(await strada.ImportarPdfsAsync(lidos, modo, ct));
+        }
+        catch (DbUpdateException ex)
+        {
+            logger.LogError(ex, "Conflito ao gravar importação da Strada");
+            return Conflict(new { erro = "Outra pessoa gravou ao mesmo tempo. Envie de novo." });
         }
         catch (Exception ex)
         {
@@ -106,6 +122,7 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
     public async Task<IActionResult> Faturas([FromQuery] int? ano, [FromQuery] int? mes, [FromQuery] string? agrupar, CancellationToken ct)
     {
         if (mes is < 1 or > 12) return BadRequest(new { erro = "Mês inválido." });
+        if (ano is < 2000 or > 2100) return BadRequest(new { erro = "Ano inválido." });
         if (agrupar is not (null or "" or "vencimento" or "caiu")) return BadRequest(new { erro = "Agrupar por \"vencimento\" ou \"caiu\"." });
         return Ok(await strada.ListarFaturasAsync(ano, mes, agrupar, ct));
     }
@@ -114,7 +131,7 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
     [HttpGet("faturas/planilhas")]
     public async Task<IActionResult> Planilhas([FromQuery] int ano, [FromQuery] int mes, CancellationToken ct)
     {
-        if (ano < 2000 || mes is < 1 or > 12) return BadRequest(new { erro = "Escolha o mês e o ano." });
+        if (ano is < 2000 or > 2100 || mes is < 1 or > 12) return BadRequest(new { erro = "Escolha o mês e o ano." });
         var (bytes, nome, _) = await strada.PlanilhasDoMesAsync(ano, mes, ct);
         return File(bytes, "application/zip", nome);
     }
@@ -135,7 +152,9 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
     [HttpPut("faturas/{numero}/numero")]
     public async Task<IActionResult> MudarNumero(string numero, [FromBody] NumeroPedido pedido, CancellationToken ct)
     {
-        var erro = await strada.MudarNumeroAsync(numero, pedido.Numero, ct);
+        string? erro;
+        try { erro = await strada.MudarNumeroAsync(numero, pedido.Numero, ct); }
+        catch (DbUpdateException) { return Conflict(new { erro = $"O número {pedido.Numero} acabou de ser usado por outra fatura." }); }
         if (erro == "Fatura não encontrada.") return NotFound(new { erro = $"Fatura {numero} não encontrada." });
         return erro == null ? NoContent() : BadRequest(new { erro });
     }
@@ -151,13 +170,14 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
     public async Task<IActionResult> Viagens([FromQuery] int? ano, [FromQuery] int? mes, [FromQuery] string? busca, CancellationToken ct)
     {
         if (mes is < 1 or > 12) return BadRequest(new { erro = "Mês inválido." });
+        if (ano is < 2000 or > 2100) return BadRequest(new { erro = "Ano inválido." });
         return Ok(await strada.ListarViagensAsync(ano, mes, busca, ct));
     }
 
     [HttpGet("painel")]
     public async Task<IActionResult> Painel([FromQuery] int ano, [FromQuery] int mes, CancellationToken ct)
     {
-        if (ano < 2000 || mes is < 1 or > 12) return BadRequest(new { erro = "Escolha o mês e o ano." });
+        if (ano is < 2000 or > 2100 || mes is < 1 or > 12) return BadRequest(new { erro = "Escolha o mês e o ano." });
         return Ok(await strada.PainelAsync(ano, mes, ct));
     }
 
@@ -165,7 +185,7 @@ public class StradaController(StradaService strada, SicoobService sicoob, ILogge
     [HttpGet("descargas")]
     public async Task<IActionResult> Descargas([FromQuery] int ano, [FromQuery] int mes, CancellationToken ct)
     {
-        if (ano < 2000 || mes is < 1 or > 12) return BadRequest(new { erro = "Escolha o mês e o ano." });
+        if (ano is < 2000 or > 2100 || mes is < 1 or > 12) return BadRequest(new { erro = "Escolha o mês e o ano." });
         return Ok(await strada.DescargasAsync(ano, mes, ct));
     }
 
