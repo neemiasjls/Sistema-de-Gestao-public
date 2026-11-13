@@ -55,6 +55,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     // Tipos de volumes e as escritas de cada um nas notas
     public DbSet<TipoVolume> TiposVolume => Set<TipoVolume>();
     public DbSet<EscritaVolume> EscritasVolume => Set<EscritaVolume>();
+    public DbSet<GrupoDestinatario> GruposDestinatario => Set<GrupoDestinatario>();
+    public DbSet<ClienteSubstituido> ClientesSubstituidos => Set<ClienteSubstituido>();
 
     // Acertos semanais com a Fazenda Alfa e os PDFs de cada um
     public DbSet<AcertoAlfa> AcertosAlfa => Set<AcertoAlfa>();

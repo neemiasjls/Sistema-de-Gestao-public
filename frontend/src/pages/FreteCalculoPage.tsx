@@ -11,7 +11,7 @@ import ProdutoECampo from '../components/ProdutoECampo'
 import ProdutosCBrzCampo, { produtosCSemResposta, faltaProdutosC, type ProdutosCBrz } from '../components/ProdutosCBrzCampo'
 import ConflitosTipoVolume from '../components/ConflitosTipoVolume'
 import ProdutosSemTipo, { type ProdutoSemTipo } from '../components/ProdutosSemTipo'
-import { ArrowRight, ArrowUp, Calculator, Check, ChevronDown, Copy, Download, FileSpreadsheet, FileText, FileUp, MapPin, Plus, Save, Truck, X } from 'lucide-react'
+import { ArrowRight, ArrowUp, Calculator, Check, ChevronDown, Copy, Download, FileSpreadsheet, FileText, FileUp, MapPin, Plus, Save, Settings, Truck, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api, { ctesApi, calculosFreteApi, downloadBlob, formatBRL, guardarArquivosNFe, nomeDoArquivo, type FreteCalculoResult, type ItemFreteCalculo, type NfDetalhe, type CalculoFreteSalvoResumo, type PlanilhaDaCarga, type ConflitoTipo, type CorrecaoTipo } from '../services/api'
 import ClienteBadge from '../components/ClienteBadge'
@@ -23,6 +23,7 @@ import { calculoPerfilDoNome, linkBoletosPerfil } from '../utils/calculoPerfil'
 import { Vazio } from '../components/ui/Estados'
 import RotasCadastradas from '../components/frete/RotasCadastradas'
 import CargasSalvas from '../components/frete/CargasSalvas'
+import SubstituicoesFrete from '../components/frete/SubstituicoesFrete'
 
 // Cálculo do frete Perfil (BOL-17): o .txt "dd-MM-aaaa PLACA.txt" fica guardado na carga, não baixa.
 const ehTxt = (nome: string) => /\.txt$/i.test(nome)
@@ -188,7 +189,7 @@ export default function FreteCalculoPage() {
 
   // ── Cargas salvas ─────────────────────────────────────────────
   const [salvos, setSalvos]             = useState<CalculoFreteSalvoResumo[]>([])
-  const [aba, setAba] = useState<'calculo' | 'nfs' | 'rotas' | 'cargas'>('calculo')
+  const [aba, setAba] = useState<'calculo' | 'nfs' | 'rotas' | 'cargas' | 'substituicoes'>('calculo')
   const idAbas = useAbas('viagens')
   // Filtros das abas Rotas e Cargas: ficam aqui para não sumirem ao abrir uma carga e voltar
   const [buscaCarga, setBuscaCarga] = useState('')
@@ -1232,7 +1233,7 @@ export default function FreteCalculoPage() {
       <CabecalhoTela descricao="Importe os XMLs da carga: o sistema agrupa por emitente e destinatário, calcula a líquota e tira os romaneios da mesma viagem." />
 
       <Abas id={idAbas} valor={aba} onChange={setAba} rotulo="Partes da tela Viagens"
-        opcoes={[['calculo', 'Cálculo do frete', Calculator], ['nfs', `NFs (${totalNfsTela})`, FileText], ['cargas', `Cargas (${salvos.length})`, Truck], ['rotas', `Rotas cadastradas (${rotas.length})`, MapPin]]} />
+        opcoes={[['calculo', 'Cálculo do frete', Calculator], ['nfs', `NFs (${totalNfsTela})`, FileText], ['cargas', `Cargas (${salvos.length})`, Truck], ['rotas', `Rotas cadastradas (${rotas.length})`, MapPin], ['substituicoes', 'Substituições', Settings, 'discreta']]} />
       <PainelAba id={idAbas} valor={aba}>
 
       {/* ── NFs da carga (aba) ── */}
@@ -1286,6 +1287,7 @@ export default function FreteCalculoPage() {
         editandoId={editandoId} editRota={editRota} setEditRota={setEditRota} onEditar={iniciarEdicao}
         onSalvarEdicao={salvarEdicao} onCancelarEdicao={cancelarEdicao} onRemover={removerRota} />}
 
+      {aba === 'substituicoes' && <SubstituicoesFrete />}
 
       {aba === 'cargas' && <CargasSalvas salvos={salvos} cargaAbertaId={cargaAbertaId}
         busca={buscaCarga} onBusca={setBuscaCarga} mes={mesCarga} onMes={setMesCarga}

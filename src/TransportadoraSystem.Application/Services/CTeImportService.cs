@@ -80,7 +80,7 @@ public class ItemFreteResultado
     public List<NfDetalhe> NfsDetalhadas { get; set; } = [];
 }
 
-public class CTeImportService(AppDbContext db)
+public class CTeImportService(AppDbContext db, SubstituicoesService substituicoes)
 {
     // Alíquotas ICMS por UF destino — idêntico ao ALIQUOTAS dos scripts Python
     private static readonly Dictionary<string, decimal> AliquotasICMS = new(StringComparer.OrdinalIgnoreCase)
@@ -94,35 +94,6 @@ public class CTeImportService(AppDbContext db)
 
     // Rotas agora persistidas no banco (tabela RotasDistancia).
     // O dict estático foi removido — use os métodos async abaixo.
-
-    // Substituições de destinatários — chaves NORMALIZADAS, idêntico ao FRETE.py
-    // (bug anterior: chaves não normalizadas nunca davam match)
-    private static readonly Dictionary<string, string> SubstituicoesDestinatarios;
-    private static readonly Dictionary<string, (string cidade, string uf)> SubstituicoesCidadeUF;
-
-    static CTeImportService()
-    {
-        SubstituicoesDestinatarios = new Dictionary<string, string>
-        {
-            [NormalizarTextoFrete("MARIELA R DE C PEREIRA EIRELI")]        = "A. IPANEMA COMERCIAL DE HORTIFRUTIGRANJEIROS LTDA",
-            [NormalizarTextoFrete("DISTRIBUIDORA DE ALIMENTOS CAMPESTRE LTDA")]  = "A. IPANEMA COMERCIAL DE HORTIFRUTIGRANJEIROS LTDA",
-            [NormalizarTextoFrete("LX9 EMPREENDIMENTOS LTDA")]                 = "A. IPANEMA COMERCIAL DE HORTIFRUTIGRANJEIROS LTDA",
-            [NormalizarTextoFrete("P.Q. R. SANTOS COMERCIO DE ALIMENTOS LTD")] = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
-            [NormalizarTextoFrete("VINHEDO DIST.DE HORTIFRUTIGRANJEIROS LTD")] = "MF AMARAL TRANSPORTE LTDA",
-            [NormalizarTextoFrete("R. DE ALMEIDA LIMA COMERCIO LTDA")]       = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
-            [NormalizarTextoFrete("C.D. COMERCIO DE HORTIFRUTI LTDA")]   = "DISTRIBUIDORA DE HORTIGRANJEIROS VALE VERDE LTDA",
-            [NormalizarTextoFrete("VERDURAO DUNAS LTDA ME")]                  = "DISTRIBUIDORA DE HORTIGRANJEIROS VALE VERDE LTDA",
-            [NormalizarTextoFrete("BOX FRUIT COMERCIO LTDA")]                  = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
-            [NormalizarTextoFrete("J. M. DA LUZ ROCHA LTDA")]                  = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
-        };
-        SubstituicoesCidadeUF = new Dictionary<string, (string, string)>
-        {
-            [NormalizarTextoFrete("MF AMARAL TRANSPORTE LTDA")]                                   = ("ANAPOLIS", "GO"),
-            [NormalizarTextoFrete("A. IPANEMA COMERCIAL DE HORTIFRUTIGRANJEIROS LTDA")]              = ("ANAPOLIS", "GO"),
-            [NormalizarTextoFrete("IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO")]               = ("ANAPOLIS", "GO"),
-            [NormalizarTextoFrete("DISTRIBUIDORA DE HORTIGRANJEIROS VALE VERDE LTDA")]         = ("GOIANIA",  "GO"),
-        };
-    }
 
     // ──────────────────────────────────────────────────────────────
     // IMPORTAÇÃO DE CT-e (substitui cte_geral.py e cte_placas.py)
@@ -289,6 +260,9 @@ public class CTeImportService(AppDbContext db)
     {
         // Carrega todas as rotas do banco de uma vez (evita N+1 queries)
         var todasRotas = await db.RotasDistancia.ToListAsync();
+        // Substituições da aba Substituições (FRE-03); o banco fora do ar cai no mapa do código
+        var (substDestinatarios, substCidadeUF) =
+            SubstituicoesService.Mapas(await substituicoes.GruposAsync(), NormalizarTextoFrete);
         var distancias = todasRotas.ToDictionary(
             r => (r.Origem, r.Destino, r.UF),
             r => r.Km);
@@ -310,15 +284,15 @@ public class CTeImportService(AppDbContext db)
             var ufFinal     = NormalizarTextoFrete(item.UF);
 
             // Substituições de destinatário
-            if (SubstituicoesDestinatarios.TryGetValue(destNorm, out var destSubst))
+            if (substDestinatarios.TryGetValue(destNorm, out var destSubst))
             {
                 destFinal = destSubst;
                 destNorm  = NormalizarTextoFrete(destSubst);
             }
-            if (SubstituicoesCidadeUF.TryGetValue(destNorm, out var cidadeSubst))
+            if (substCidadeUF.TryGetValue(destNorm, out var cidadeSubst))
             {
-                cidadeFinal = cidadeSubst.cidade;
-                ufFinal     = cidadeSubst.uf;
+                cidadeFinal = NormalizarTextoFrete(cidadeSubst.cidade);
+                ufFinal     = NormalizarTextoFrete(cidadeSubst.uf);
             }
 
             var origemNorm = NormalizarTextoFrete(item.CidadeEmitente);

@@ -8,7 +8,9 @@ import type { LucideIcon } from 'lucide-react'
 //   <Abas id={abas} valor={aba} onChange={setAba} opcoes={[['pagar','A pagar',Icone], ...]} />
 //   <PainelAba id={abas} valor={aba}>...</PainelAba>
 
-export type OpcaoAba<T extends string> = readonly [T, string, LucideIcon?]
+// O 4º item marca a aba discreta (configuração pouco usada): vai no fim, depois
+// de um traço, com texto mais apagado.
+export type OpcaoAba<T extends string> = readonly [T, string, LucideIcon?, 'discreta'?]
 
 export const useAbas = (nome: string) => `${nome}-${useId().replace(/:/g, '')}`
 
@@ -71,8 +73,9 @@ export function Abas<T extends string>({ id, valor, opcoes, onChange, rotulo }: 
   return (
     <div className="inline-flex max-w-full bg-gray-100 border border-gray-200 rounded-lg">
     <div role="tablist" aria-label={rotulo} {...faixa} className="relative flex min-w-0 overflow-x-auto p-1 gap-1">
-      {opcoes.map(([v, texto, Icone], i) => {
+      {opcoes.map(([v, texto, Icone, jeito], i) => {
         const marcada = v === valor
+        const discreta = jeito === 'discreta'
         return (
           <button
             key={v}
@@ -85,8 +88,9 @@ export function Abas<T extends string>({ id, valor, opcoes, onChange, rotulo }: 
             tabIndex={marcada ? 0 : -1}
             onClick={() => onChange(v)}
             onKeyDown={e => tecla(e, i)}
-            className={`inline-flex items-center gap-1.5 px-4 min-h-10 sm:min-h-8 text-sm font-medium rounded-md whitespace-nowrap transition-colors
-              ${marcada ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}
+            className={`inline-flex items-center gap-1.5 min-h-10 sm:min-h-8 text-sm rounded-md whitespace-nowrap transition-colors
+              ${discreta ? 'relative ml-2 px-3 before:absolute before:-left-1.5 before:top-1.5 before:bottom-1.5 before:w-px before:bg-gray-300' : 'px-4 font-medium'}
+              ${marcada ? 'bg-white text-gray-900 shadow-sm' : discreta ? 'text-gray-500 hover:text-gray-900' : 'text-gray-600 hover:text-gray-900'}`}
           >
             {Icone && <Icone size={15} aria-hidden />} {texto}
           </button>

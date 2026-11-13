@@ -13,7 +13,7 @@ namespace TransportadoraSystem.API.Controllers;
 [Route("api/nfe")]
 public class NFeController(NFeImportService nfeService, AppDbContext db,
     ArquivoNFeService arquivoNFe, TiposVolumeService tiposVolume, ViagensCaminhaoService viagens, ProdutosCRomaneioService produtosCRomaneio,
-    ILogger<NFeController> logger) : ControllerBase
+    SubstituicoesService substituicoes, ILogger<NFeController> logger) : ControllerBase
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
@@ -340,7 +340,7 @@ public class NFeController(NFeImportService nfeService, AppDbContext db,
             }
             await GuardarNoArquivo(guardar);
 
-            var itens = NFeImportService.ExtrairParaFrete(pares);
+            var itens = NFeImportService.ExtrairParaFrete(pares, await substituicoes.GruposAsync());
 
             // Marca quais notas já têm o DANFE guardado, para a tela poder
             // oferecer o download ao lado de cada NF.

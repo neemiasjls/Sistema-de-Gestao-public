@@ -202,10 +202,6 @@ public class NFeImportService
 
     private static readonly Dictionary<string, string> LabelNormMap;
 
-    // ── Substituições de destinatários (idêntico ao FRETE.py) ──
-    private static readonly Dictionary<string, string> SubstDestinatarios;
-    private static readonly Dictionary<string, (string cidade, string uf)> SubstCidadeUF;
-
     // ── Peso por produto quando pesoL == 0 no XML ──
     // Chave: nome do produto normalizado (uppercase, sem espaços duplos)
     // Valor: kg por caixa
@@ -238,32 +234,6 @@ public class NFeImportService
         LabelNormMap = new Dictionary<string, string>();
         foreach (var (v, c) in variants)
             LabelNormMap[Norm(v)] = c;
-
-        // Substituições de destinatários — chaves normalizadas, igual ao FRETE.py
-        SubstDestinatarios = new Dictionary<string, string>
-        {
-            [Norm("MARIELA R DE C PEREIRA EIRELI")]          = "A. IPANEMA COMERCIAL DE HORTIFRUTIGRANJEIROS LTDA",
-            [Norm("DISTRIBUIDORA DE ALIMENTOS CAMPESTRE LTDA")]    = "A. IPANEMA COMERCIAL DE HORTIFRUTIGRANJEIROS LTDA",
-            [Norm("MX SUPERMERCADO LTDA")]                       = "A. IPANEMA COMERCIAL DE HORTIFRUTIGRANJEIROS LTDA",
-            [Norm("LX9 EMPREENDIMENTOS LTDA")]                   = "A. IPANEMA COMERCIAL DE HORTIFRUTIGRANJEIROS LTDA",
-            [Norm("F G H COMERCIO LTDA")]                        = "A. IPANEMA COMERCIAL DE HORTIFRUTIGRANJEIROS LTDA",
-            [Norm("P.Q. R. SANTOS COMERCIO DE ALIMENTOS LTD")]   = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
-            [Norm("VINHEDO DIST.DE HORTIFRUTIGRANJEIROS LTD")]   = "MF AMARAL TRANSPORTE LTDA",
-            [Norm("R. DE ALMEIDA LIMA COMERCIO LTDA")]         = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
-            [Norm("C.D. COMERCIO DE HORTIFRUTI LTDA")]     = "DISTRIBUIDORA DE HORTIGRANJEIROS VALE VERDE LTDA",
-            [Norm("VERDURAO DUNAS LTDA ME")]                    = "DISTRIBUIDORA DE HORTIGRANJEIROS VALE VERDE LTDA",
-            [Norm("BOX FRUIT COMERCIO LTDA")]                    = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
-            [Norm("J. M. DA LUZ ROCHA LTDA")]                    = "IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO",
-        };
-
-        // Substituições de cidade/UF após substituição de destinatário
-        SubstCidadeUF = new Dictionary<string, (string, string)>
-        {
-            [Norm("MF AMARAL TRANSPORTE LTDA")]                                        = ("ANAPOLIS", "GO"),
-            [Norm("A. IPANEMA COMERCIAL DE HORTIFRUTIGRANJEIROS LTDA")]               = ("ANAPOLIS", "GO"),
-            [Norm("IRINEU FERRAZ DE PRADO DISTRIBUIDORA PRADO")]                = ("ANAPOLIS", "GO"),
-            [Norm("DISTRIBUIDORA DE HORTIGRANJEIROS VALE VERDE LTDA")]          = ("GOIANIA",  "GO"),
-        };
 
         // Peso por produto (kg/cx) quando pesoL == 0 no XML
         // Chave = produto normalizado (uppercase, sem acento, sem espaços duplos)
@@ -741,8 +711,14 @@ public class NFeImportService
     //   • Agrupa pela MESMA chave do script: cnpj_emit|ie_emit|norm(emit)|norm(dest)
     //   • Cada grupo expõe a lista de NFs individuais com seu peso e nome de arquivo
 
-    public static List<NFeFreteItem> ExtrairParaFrete(IEnumerable<(string xml, string arquivo)> arquivos)
+    /// <param name="substituicoes">
+    /// Grupos da aba Substituições (FRE-03). Sem eles vale o mapa do código.
+    /// </param>
+    public static List<NFeFreteItem> ExtrairParaFrete(IEnumerable<(string xml, string arquivo)> arquivos,
+        IEnumerable<GrupoSubstituicao>? substituicoes = null)
     {
+        var (substDestinatarios, substCidadeUF) = SubstituicoesService.Mapas(substituicoes ?? SubstituicoesService.Padrao, Norm);
+
         // 1. Parsear cada XML e aplicar substituições
         var parseds = new List<(NFeData d, double peso, string arquivo, List<ProdutoSemPeso> semPeso,
             string grupo, string grupoCidade, string grupoUf)>();
@@ -757,13 +733,13 @@ public class NFeImportService
                 // a tela mostra quem realmente emitiu e para quem vai, e ainda
                 // diz por qual nome aquilo é cobrado.
                 string grupo = "", grupoCidade = "", grupoUf = "";
-                if (SubstDestinatarios.TryGetValue(d.DestNorm, out var destSubst))
+                if (substDestinatarios.TryGetValue(d.DestNorm, out var destSubst))
                     grupo = destSubst;
 
                 // A cidade é procurada pelo nome que vale para a cobrança — é o
                 // grupo quando existe, senão o próprio destinatário.
                 var normCobranca = grupo.Length > 0 ? Norm(grupo) : d.DestNorm;
-                if (SubstCidadeUF.TryGetValue(normCobranca, out var cidadeSubst))
+                if (substCidadeUF.TryGetValue(normCobranca, out var cidadeSubst))
                 {
                     grupoCidade = cidadeSubst.cidade;
                     grupoUf     = cidadeSubst.uf;

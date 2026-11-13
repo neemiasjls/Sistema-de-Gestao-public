@@ -93,6 +93,7 @@ builder.Services.AddScoped<RomaneioEstoqueService>();
 builder.Services.AddScoped<ImportacaoEstoqueService>();
 builder.Services.AddScoped<ArquivoNFeService>();
 builder.Services.AddScoped<TiposVolumeService>();
+builder.Services.AddScoped<SubstituicoesService>();
 builder.Services.AddScoped<PlanilhaSeguroService>();
 builder.Services.AddScoped<EmailClienteService>();
 builder.Services.AddScoped<BoletoMontagemService>();
@@ -369,7 +370,7 @@ app.MapGet("/health/tabelas", async (AppDbContext db) =>
         "CargasProdutoA", "VendasProdutoA", "ProdutosAVendidas",
         "CargasProdutoB", "CargaProdutoBItens", "VendasProdutoB",
         "VendaProdutoBItens", "PlanilhasCarga", "ArquivosNFe",
-        "TiposVolume", "EscritasVolume", "AcertosAlfa", "AcertoAlfaArquivos",
+        "TiposVolume", "EscritasVolume", "GruposDestinatario", "ClientesSubstituidos", "AcertosAlfa", "AcertoAlfaArquivos",
         "FaturasPosto", "BoletosPosto", "PlanilhasAbastecimento",
         "PlanilhasSeguro",
         "EmailsClienteConfig", "EmailsClienteEnvios", "BoletosReceber", "BoletosPagarAvulsos",

@@ -663,6 +663,25 @@ export const tiposVolumeApi = {
   auditoria: () => api.get('/api/tipos-volume/auditoria').then(r => comDados(r, d => comoLista<ProdutoAuditado>(d, 'auditoria'))),
 }
 
+// Substituições do frete (FRE-03): cliente da nota que é cobrado pelo nome do grupo
+export interface GrupoSubstituicao {
+  id: number
+  nome: string
+  cidade: string
+  uf: string
+  clientes: { id: number; nome: string }[]
+}
+
+export const substituicoesApi = {
+  listar: () => api.get('/api/calculo-frete/substituicoes').then(r => comDados(r, d =>
+    comoLista<GrupoSubstituicao>(d, 'substituições').map(g => comoObjeto<GrupoSubstituicao>(g, ['clientes'])))),
+  criarGrupo: (data: { nome: string; cidade: string; uf: string }) => api.post<{ id: number }>('/api/calculo-frete/substituicoes/grupos', data),
+  editarGrupo: (id: number, data: { nome: string; cidade: string; uf: string }) => api.put(`/api/calculo-frete/substituicoes/grupos/${id}`, data),
+  excluirGrupo: (id: number) => api.delete(`/api/calculo-frete/substituicoes/grupos/${id}`),
+  adicionarCliente: (grupoId: number, nome: string) => api.post(`/api/calculo-frete/substituicoes/grupos/${grupoId}/clientes`, { nome }),
+  excluirCliente: (id: number) => api.delete(`/api/calculo-frete/substituicoes/clientes/${id}`),
+}
+
 // O ASP.NET manda o nome do arquivo DUAS vezes no Content-Disposition:
 //   filename=PRAT_O.XLSX          → versão só-ASCII, acento virou "_"
 //   filename*=UTF-8''ESTRADA.XLSX  → o nome de verdade, percent-encoded
